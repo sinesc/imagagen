@@ -15,20 +15,22 @@
     - button + input to expand/shrink mask by given pixels
     - button + dropdown to generate mask via given segmentation model (from "models/segmentation" subdirectory)
     - button to clear the mask
-- clone tool: useful for roughly "removing" or cloning areas of an image before inpainting, implemented as a plugin
+- clone tool: shift click to select source, drawing copies from source offset by `current position` - `drawing start position`, implemented as a plugin
 - smudge tool: useful for smudging/blurring areas of an image to roughly fix/cover issues in an image before inpainting, implemented as a plugin
 - each tool remembers the last brush and opacity it was used with
 - unlimited undo/redo for canvas changes
-- save button to save current image to "output" subdirectory, filename derived from prompt with a leading integer number derived from the highest leading integer found in the output directory, (e.g. output contains "123-photo-of-a-turtle.png" then the next saved image name could be "124-photo-of-a-frog.png")
+- save button to save current image to "output" subdirectory, filename derived/sanitized from prompt with a leading integer number derived from the highest leading integer found in the output directory +1 (regardless of prompt), (e.g. output contains "123-photo-of-a-turtle.png" then the next saved image name could be "124-photo-of-a-frog.png")
+- supports zoom via mouse wheel and panning by dragging with the middle mouse button
 
 ### Image generation
 
-- "generate" button, changes to "interrupt" while images are being generated (any already generated images are retained in thumbnails, partial images are not added)
+- "generate" button (starts image generation, clears current thumbnails if any), changes to "interrupt" while images are being generated (any already generated images are retained in thumbnails, partial images are not added)
 - model selector dropdown lists all model configurations:
-    - each detected model ("models/<model-type>/" subdirectory, e.g. "models/sdxl/") without configuration files ("model-configs" subdirectory) gets an in-memory default configuration (so it shows up in the model selector)
+    - each detected model ("models/<model-type>/" subdirectory, e.g. "models/sdxl/") without configuration files ("model-configs" project-subdirectory) gets an in-memory default configuration (so it shows up in the model selector)
     - the user can create multiple configurations per model (e.g. "My SDXL Model" and "My SDXL Model + DMD2 Lora")
     - configuration options: sampler, scheduler, CFG, LORAs. Each option separately for text to image and image to image (inpaint)
     - configured values act as default values when the respective settings below are set to use the model default with the exception of "LORAs" which are always prepended to the selected LORAs
+- model configuration buttons to create/modify/delete model configurations. create: create new config based on currently selected model config, then open edit dialog on the newly created config. edit: open edit dialog on currently selected model config. delete: delete currently selected model config
 - settings for image width and height (for brevity referred to as "image size" in the remainder of the document), sampling steps, sampler, scheduler, CFG, seed, LORAs, batch size, generation-mode, denoising-strength (disabled when not inpainting)
 - "seed": setting this to "-1" means next generation starts with a random value (batch generations increment from that value)
 - "sampler" and "scheduler" settings: these are dropdowns, the first option is "Use model default" and uses the default value configured for the model, followed by the supported samplers/schedulers. samplers and schedulers are implemented via plugins.
@@ -78,12 +80,21 @@ Every change to the canvas and mask is recorded. This includes
 - used to implement samplers, ships with "ancestral Euler" ("Euler a"), "DPM++ 2M", "DPM++ 2M SDE"
 - used to implement schedulers, ships with "Karras", "Polyexponential"
 
+### GPU handling/model loading
+
+- only one model in VRAM
+- if possible unload model to RAM when the user switches models (and reload from RAM if user switches back to that model)
+- also limit models in RAM to 1, retain the last unloaded model
+- support nvidia GPUs only
+- use all available/supported GPUs (my understanding is the user can use `CUDA_VISIBLE_DEVICES` to limit which devices we see)
+
 ## Implementation
 
 - the folder containing this file is the project root
 - python sourcecode goes into `src` subdirectory
 - web-based UI
 - you will be the sole implementor and will need to work out implementation details on your own. Implement all required tooling to enable you to verify/test/debug your implementation
-- make a phased plan that priorizes MVP functionality
-- the parallel folder "sd-webui-forge-classic" contains a python based inference webui that may contain useful code (e.g. sampler implementations)
+- make a phased plan that priorizes MVP functionality (minimal UI, basic working image generation)
+- add an open questions section for major questions like frameworks, libraries etc. and recommend some options you are familiar with
+- the parallel folder "sd-webui-forge-classic" contains a python based inference webui that may contain useful algorithms for reference/copy (e.g. sampler implementations)
 - a segmentation implementation can be found in "sd-webui-forge-classic/extensions/a-person-mask-generator". this is for person-segmentation which is fine for this project
