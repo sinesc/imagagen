@@ -1,0 +1,20 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+
+# user data directories (created at runtime)
+models/*
+loras/*
+brushes/*
+presets/*
+model-configs/*
+output/*
+!models/.gitkeep
+!loras/.gitkeep
+!brushes/.gitkeep
+!presets/.gitkeep
+!model-configs/.gitkeep
+!output/.gitkeep

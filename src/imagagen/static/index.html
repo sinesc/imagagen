@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>imagagen</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main id="app">
+    <h1>imagagen</h1>
+    <p id="status">loading…</p>
+  </main>
+  <script>
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((h) => {
+        document.getElementById("status").textContent =
+          `${h.status} — backend: ${h.backend} — root: ${h.root}`;
+      })
+      .catch((e) => {
+        document.getElementById("status").textContent = "error: " + e;
+      });
+  </script>
+</body>
+</html>
