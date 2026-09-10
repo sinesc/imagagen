@@ -65,7 +65,13 @@ def get_ancestral_step(sigma_from, sigma_to, eta: float = 1.0):
 
 def default_noise_sampler(x: torch.Tensor):
     """k-diffusion's noise sampler: deterministic per-step noise derived
-    from the generation seed (seed + step_index * batch)."""
+    from the generation seed (STEP_SEED_OFFSET + step_index * batch).
+
+    The offset keeps the step seeds clear of the initial-noise seed: a
+    torch.randn with the same seed, shape, device and dtype reproduces the
+    same draw, and step 0 would then re-inject the initial noise itself,
+    inflating the latent variance and degrading the image.
+    """
 
     def noise_sampler(shape, seed, offset=0):
         g = torch.Generator(device=x.device).manual_seed(seed)
@@ -94,7 +100,8 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, eta
         dt = sigma_down - sigmas[i]
         x = x + d * dt
         if sigmas[i + 1] > 0:
-            noise = noise_sampler(x.shape, seed + i * x.shape[0], offset=x.shape[0])
+            noise = noise_sampler(x.shape, _STEP_SEED_OFFSET + seed + i * x.shape[0],
+                                  offset=x.shape[0])
             x = x + noise * s_noise * sigma_up
     return x
 
@@ -103,6 +110,12 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, eta
 # DPM-Solver++(2M) as used by A1111/Forge (verified: its first step is
 # exactly the simple Euler step, so it is consistent with the verified
 # Euler-a path in this codebase).
+
+
+# per-step SDE noise seeds must not collide with the initial-noise seed
+# (same seed + shape + device + dtype -> identical randn draw); see
+# default_noise_sampler._STEP_SEED_OFFSET
+_STEP_SEED_OFFSET = 1_000_000
 
 
 def _dpmpp_2m_denoised(denoised, old_denoised, t, t_prev, t_next) -> torch.Tensor:
@@ -168,7 +181,8 @@ def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, eta: f
         h = t_down - t
         x = (_sigma_from_t(t_down) / _sigma_from_t(t)) * x - (-h).expm1() * denoised_d
         if sigmas[i + 1] > 0 and sigma_up > 0:
-            noise = noise_sampler(x.shape, seed + i * x.shape[0], offset=x.shape[0])
+            noise = noise_sampler(x.shape, _STEP_SEED_OFFSET + seed + i * x.shape[0],
+                                  offset=x.shape[0])
             x = x + noise * s_noise * sigma_up
         old_denoised = denoised
     return x
