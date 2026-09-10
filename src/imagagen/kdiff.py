@@ -90,93 +90,74 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, eta
     return x
 
 
-# ---------------------------------------------------------------- dpmpp ----
+# ---------------------------------------------------------------- dpm++ ----
+# DPM-Solver++(2M) as used by A1111/Forge (verified: its first step is
+# exactly the simple Euler step, so it is consistent with the verified
+# Euler-a path in this codebase).
 
 
-class _DPMSolver:
-    """DPM-Solver step kernels (https://arxiv.org/abs/2206.00927)."""
+def _dpmpp_2m_denoised(denoised, old_denoised, t, t_prev, t_next) -> torch.Tensor:
+    """Midpoint-corrected denoised estimate (2M multistep term)."""
+    if old_denoised is None:
+        return denoised
+    r = (t - t_prev) / (t_next - t)
+    return (1 + 1 / (2 * r)) * denoised - (1 / (2 * r)) * old_denoised
 
-    def __init__(self, model, extra_args=None, eps_callback=None, info_callback=None):
-        self.model = model
-        self.extra_args = {} if extra_args is None else extra_args
-        self.eps_callback = eps_callback
-        self.info_callback = info_callback
 
-    def t(self, sigma):
-        return -sigma.log()
+def _sigma_from_t(t):
+    return t.neg().exp()
 
-    def sigma(self, t):
-        return t.neg().exp()
 
-    def eps(self, eps_cache, key, x, t, *args, **kwargs):
-        if key in eps_cache:
-            return eps_cache[key], eps_cache
-        sigma = self.sigma(t) * x.new_ones([x.shape[0]])
-        eps = (x - self.model(x, sigma, *args, **self.extra_args, **kwargs)) / self.sigma(t)
-        if self.eps_callback is not None:
-            self.eps_callback()
-        return eps, {key: eps, **eps_cache}
-
-    def dpm_solver_1_step(self, x, t, t_next, eps_cache=None):
-        eps_cache = {} if eps_cache is None else eps_cache
-        h = t_next - t
-        eps, eps_cache = self.eps(eps_cache, "eps", x, t)
-        x_1 = x - self.sigma(t_next) * h.expm1() * eps
-        return x_1, eps_cache
-
-    def dpm_solver_2_step(self, x, t, t_next, r1=1 / 2, eps_cache=None):
-        eps_cache = {} if eps_cache is None else eps_cache
-        h = t_next - t
-        eps, eps_cache = self.eps(eps_cache, "eps", x, t)
-        s1 = t + r1 * h
-        u1 = x - self.sigma(s1) * (r1 * h).expm1() * eps
-        eps_r1, eps_cache = self.eps(eps_cache, "eps_r1", u1, s1)
-        x_2 = (x - self.sigma(t_next) * h.expm1() * eps
-               - self.sigma(t_next) / (2 * r1) * h.expm1() * (eps_r1 - eps))
-        return x_2, eps_cache
-
-    def dpm_solver_3_step(self, x, t, t_next, r1=1 / 3, r2=2 / 3, eps_cache=None):
-        eps_cache = {} if eps_cache is None else eps_cache
-        h = t_next - t
-        eps, eps_cache = self.eps(eps_cache, "eps", x, t)
-        s1 = t + r1 * h
-        s2 = t + r2 * h
-        u1 = x - self.sigma(s1) * (r1 * h).expm1() * eps
-        eps_r1, eps_cache = self.eps(eps_cache, "eps_r1", u1, s1)
-        u2 = (x - self.sigma(s2) * (r2 * h).expm1() * eps
-              - self.sigma(s2) * (r2 / r1) * (((r2 * h).expm1() / (r2 * h)) - 1) * (eps_r1 - eps))
-        eps_r2, eps_cache = self.eps(eps_cache, "eps_r2", u2, s2)
-        x_3 = (x - self.sigma(t_next) * h.expm1() * eps
-               - self.sigma(t_next) / r2 * ((h.expm1() / h) - 1) * (eps_r2 - eps))
-        return x_3, eps_cache
+def _t_from_sigma(sigma):
+    return sigma.log().neg()
 
 
 @torch.no_grad()
 def sample_dpmpp_2m(model, x, sigmas, extra_args=None, callback=None):
-    solver = _DPMSolver(model, extra_args=extra_args, info_callback=callback)
-    ts = [solver.t(sigma) for sigma in sigmas]
+    """DPM-Solver++(2M) (https://arxiv.org/abs/2211.01095)."""
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    old_denoised = None
     for i in range(len(sigmas) - 1):
-        t, t_next = ts[i], ts[i + 1]
-        x, _ = solver.dpm_solver_2_step(x, t, t_next)
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback({"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i],
+                      "denoised": denoised})
+        t, t_next = _t_from_sigma(sigmas[i]), _t_from_sigma(sigmas[i + 1])
+        h = t_next - t
+        if old_denoised is None or sigmas[i + 1] == 0:
+            x = (_sigma_from_t(t_next) / _sigma_from_t(t)) * x - (-h).expm1() * denoised
+        else:
+            denoised_d = _dpmpp_2m_denoised(denoised, old_denoised, t, _t_from_sigma(sigmas[i - 1]), t_next)
+            x = (_sigma_from_t(t_next) / _sigma_from_t(t)) * x - (-h).expm1() * denoised_d
+        old_denoised = denoised
     return x
 
 
 @torch.no_grad()
 def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, eta: float = 1.0,
-                        s_noise: float = 1.0, noise_sampler=None, solver_type: str = "midpoint"):
+                        s_noise: float = 1.0, noise_sampler=None):
+    """DPM-Solver++(2M) with ancestral SDE steps: a 2M ODE step down to
+    sigma_down, then independent noise up to the scheduled sigma (the same
+    ancestral decomposition as Euler a)."""
+    extra_args = {} if extra_args is None else extra_args
     noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
-    solver = _DPMSolver(model, extra_args=extra_args, info_callback=callback)
-    ts = [solver.t(sigma) for sigma in sigmas]
+    s_in = x.new_ones([x.shape[0]])
+    old_denoised = None
     for i in range(len(sigmas) - 1):
-        t, t_next = ts[i], ts[i + 1]
-        if i == 0:
-            x, _ = solver.dpm_solver_1_step(x, t, t_next)
-        elif solver_type == "midpoint":
-            x, _ = solver.dpm_solver_3_step(x, t, t_next)
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback({"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i],
+                      "denoised": denoised})
+        sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
+        t, t_down = _t_from_sigma(sigmas[i]), _t_from_sigma(sigma_down)
+        if old_denoised is None or sigma_down == 0:
+            denoised_d = denoised
         else:
-            x, _ = solver.dpm_solver_2_step(x, t, t_next)
-        if sigmas[i + 1] > 0:
-            sd, su = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
-            su = (sigmas[i + 1] ** 2 - sd ** 2) ** 0.5
-            x = x + su * s_noise * noise_sampler(sigmas[i], sigmas[i + 1])
+            denoised_d = _dpmpp_2m_denoised(denoised, old_denoised, t, _t_from_sigma(sigmas[i - 1]), t_down)
+        h = t_down - t
+        x = (_sigma_from_t(t_down) / _sigma_from_t(t)) * x - (-h).expm1() * denoised_d
+        if sigmas[i + 1] > 0 and sigma_up > 0:
+            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+        old_denoised = denoised
     return x

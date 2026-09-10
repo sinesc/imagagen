@@ -4,10 +4,20 @@ Phase 1 ships one sampler (Euler a) and one scheduler (Karras); both are
 chosen from small registries so Phase 5's plugin system can grow them without
 touching this file.
 
-SDXL specifics (matching A1111/Forge k-diffusion behavior):
+SDXL specifics (matching the k-diffusion / A1111 contract):
 - sigma_data = 1.0, karras sigma range [0.1, 10]
-- the UNet timestep is the sigma value directly
-- VAE latents are unscaled during sampling; divide by 0.18215 before decode
+- the UNet expects *training* timesteps (0..999), so each k-diffusion sigma
+  is mapped to the nearest timestep of the model's beta schedule
+  (t = argmin |log(sigma) - log_sigmas|), as diffusers' _sigma_to_t does
+- the UNet expects a *unit-variance* input at every noise level, so the
+  model input is scaled by 1/sqrt(sigma^2 + 1) (exactly what diffusers'
+  EulerDiscreteScheduler.scale_model_input does)
+- the UNet predicts EPSILON; the sampler wants an x0 estimate, so the model
+  wrap returns x0 = x - sigma * eps (the exact inverse of diffusers' Euler)
+- initial noise is randn * sigma_max (the state x is the noisy sample, not
+  the unit-variance prior)
+- sampling runs in the VAE-scaled latent space; divide by
+  vae.config.scaling_factor (0.13025 for SDXL) before decode
 """
 
 from __future__ import annotations
@@ -21,7 +31,6 @@ from . import kdiff
 from .backends import GenerateRequest, GenerateResult, ModelBackend
 
 SIGMA_DATA = 1.0
-VAE_SCALING = 0.18215
 
 
 class _ModelSamplingDiscrete:
@@ -118,6 +127,11 @@ class SdxlBackend(ModelBackend):
         lh, lw = h // 8, w // 8
 
         with torch.inference_mode():
+            # text encoders were offloaded to CPU after the previous encode;
+            # bring them back for this prompt, offload again afterwards
+            pipe.text_encoder.to(device)
+            if getattr(pipe, "text_encoder_2", None) is not None:
+                pipe.text_encoder_2.to(device)
             ek = self._encoder_kwargs()
             # encode_prompt -> (prompt_embeds, neg_embeds, pooled, neg_pooled)
             prompt_embeds, _, pooled, _ = pipe.encode_prompt(prompt=request.prompt, **ek)
@@ -134,6 +148,16 @@ class SdxlBackend(ModelBackend):
 
             time_ids = torch.tensor([h, w, 0, 0, h, w], device=device).unsqueeze(0)
             unet = pipe.unet
+            # training sigmas of the model's beta schedule (from its scheduler
+            # config) -- used to map a k-diffusion sigma to the nearest
+            # training timestep (0..999), exactly like diffusers' _sigma_to_t
+            ac = torch.tensor(
+                pipe.scheduler.alphas_cumprod, dtype=torch.float32, device=device
+            )
+            log_sigmas = torch.log(torch.sqrt((1.0 - ac) / ac))
+
+            def sigma_to_t(sigma):
+                return (torch.log(sigma.float()) - log_sigmas).abs().argmin(-1)
 
             def unet_forward(emb, pool, x, t):
                 added = {"time_ids": time_ids, "text_embeds": pool}
@@ -145,13 +169,18 @@ class SdxlBackend(ModelBackend):
                 if self._cancel:
                     raise InterruptedError("cancelled")
                 self._step += 1
-                t = sigma.to(torch.float32)
-                c = unet_forward(prompt_embeds, pooled, x, t)
-                uc = unet_forward(neg_embeds, neg_pooled, x, t)
+                t = sigma_to_t(sigma)
+                # diffusers' EulerDiscreteScheduler.scale_model_input: the
+                # UNet expects unit-variance input at each noise level
+                x_in = x / (sigma ** 2 + 1.0).sqrt()
+                c = unet_forward(prompt_embeds, pooled, x_in, t)
+                uc = unet_forward(neg_embeds, neg_pooled, x_in, t)
                 if progress and self._step <= self._steps_total:
                     progress(self._step / self._steps_total,
                              f"step {self._step}/{self._steps_total}")
-                return uc + request.cfg * (c - uc)
+                # UNet output is an epsilon prediction -> convert to x0
+                eps = uc + request.cfg * (c - uc)
+                return x - sigma * eps
 
             self._steps_total = request.steps
             self._step = 0
@@ -166,13 +195,16 @@ class SdxlBackend(ModelBackend):
             sigmas = sigmas_fn(
                 request.steps, model_wrap.min_sigma, model_wrap.max_sigma, device=device
             )
-            # seeded initial noise: same seed -> same image (A1111-compatible)
+            # seeded initial noise: same seed -> same image (A1111-compatible).
+            # k-diffusion's state is the noisy sample itself, so scale the
+            # unit prior to the max noise level (sigma_max = 10).
             gen = torch.Generator(device=device).manual_seed(request.seed)
             noise = torch.randn((1, 4, lh, lw), device=device, dtype=torch.float16,
-                                generator=gen)
+                                generator=gen) * model_wrap.max_sigma
             samples = sampler_fn(model_wrap, noise, sigmas)
 
-            latents = samples / VAE_SCALING
+            # sampling ran in VAE-scaled latent space -> unscale before decode
+            latents = samples / pipe.vae.config.scaling_factor
             image = pipe.vae.decode(latents, return_dict=False)[0]
             image = (image / 2 + 0.5).clamp(0, 1)
             arr = (image.cpu().numpy()[0].transpose(1, 2, 0) * 255).astype(np.uint8)
