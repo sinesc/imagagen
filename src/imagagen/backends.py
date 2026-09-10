@@ -28,6 +28,8 @@ class GenerateRequest(BaseModel):
     seed: int = -1  # -1 => random; batch callers pass explicit seeds
     sampler: str | None = None  # None => backend default
     scheduler: str | None = None
+    model_id: str = ""
+    model_name: str = ""
     loras: list[tuple[str, float]] = Field(default_factory=list)
     # inpainting
     init_image: np.ndarray | None = None  # HxWx3 uint8
@@ -56,6 +58,11 @@ class ModelBackend(ABC):
     model_id: str
     #: display name in the UI
     name: str
+    #: backend built-in sampler/scheduler names (used when request leaves them None)
+    default_sampler: str = "Euler a"
+    default_scheduler: str = "Karras"
+    #: md5[:16] of the first 100MB of the checkpoint ("" for mocks)
+    model_hash: str = ""
 
     @abstractmethod
     def generate(

@@ -6,20 +6,61 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <main id="app">
+  <header>
     <h1>imagagen</h1>
-    <p id="status">loading…</p>
-  </main>
-  <script>
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then((h) => {
-        document.getElementById("status").textContent =
-          `${h.status} — backend: ${h.backend} — root: ${h.root}`;
-      })
-      .catch((e) => {
-        document.getElementById("status").textContent = "error: " + e;
-      });
-  </script>
+    <div class="hdr-actions">
+      <span id="status-line" class="muted"></span>
+      <button id="btn-undo" title="undo (canvas changes)">↩ undo</button>
+      <button id="btn-redo" title="redo">↪ redo</button>
+    </div>
+  </header>
+
+  <div id="layout">
+    <aside id="controls">
+      <label>Model
+        <select id="model"></select>
+      </label>
+      <label>Prompt
+        <textarea id="prompt" rows="3" placeholder="a photo of a frog"></textarea>
+      </label>
+      <label>Negative prompt
+        <textarea id="negative" rows="2" placeholder="blurry, low quality"></textarea>
+      </label>
+      <div class="row">
+        <label>Width <input id="width" type="number" value="1024" min="64" max="2048" step="8"></label>
+        <label>Height <input id="height" type="number" value="1024" min="64" max="2048" step="8"></label>
+      </div>
+      <div class="row">
+        <label>Steps <input id="steps" type="number" value="25" min="1" max="150"></label>
+        <label>CFG <input id="cfg" type="number" value="7" min="0" step="0.1"></label>
+      </div>
+      <div class="row">
+        <label>Seed <input id="seed" type="number" value="-1" title="-1 = random"></label>
+        <label>Batch <input id="batch" type="number" value="1" min="1" max="32"></label>
+      </div>
+      <div class="row">
+        <label>Sampler <select id="sampler"><option>Euler a</option></select></label>
+        <label>Scheduler <select id="scheduler"><option>Karras</option></select></label>
+      </div>
+      <div class="row actions">
+        <button id="btn-generate" class="primary">Generate</button>
+        <button id="btn-save">Save</button>
+      </div>
+      <div id="progress-wrap" hidden>
+        <div id="progress-bar"><div id="progress-fill"></div></div>
+        <div id="progress-label" class="muted"></div>
+      </div>
+    </aside>
+
+    <main id="stage">
+      <div id="thumbs" hidden></div>
+      <div id="canvas-holder">
+        <img id="canvas" alt="canvas" hidden>
+        <div id="canvas-empty" class="muted">empty — generate or upload an image</div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
 </body>
 </html>

@@ -9,6 +9,11 @@ dependencies = [
     "pillow>=10",
     "numpy>=2",
     "pydantic>=2",
+    "torch>=2.13.0",
+    "diffusers>=0.40.0",
+    "accelerate>=1.15.0",
+    "transformers>=5.17.0",
+    "safetensors>=0.8.0",
 ]
 
 [project.optional-dependencies]
@@ -40,3 +45,20 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# vendored k-diffusion code keeps upstream line style
+"src/imagagen/kdiff.py" = ["E501"]
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu129" }
+
+[dependency-groups]
+dev = [
+    "websockets>=17.1",
+]

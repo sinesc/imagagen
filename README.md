@@ -20,3 +20,15 @@ bash scripts/smoke.sh        # start mock server + hit endpoints
 
 Place SDXL weights in `models/sdxl/`, LoRAs in `loras/sdxl/`, greyscale brush
 PNGs in `brushes/`. Outputs land in `output/`.
+
+Optional: put an improved VAE (`sdxl_vae.safetensors`, e.g. the ft-MSE
+"Improved VAE") in `models/`. The stock SDXL VAE overflows to NaN in fp16 for
+high-magnitude latents; the improved VAE is fp16-stable and renders color
+better. If it is present, it is swapped in automatically.
+
+### VRAM
+
+SDXL in fp16 is ~6.6 GiB of weights. Generation at 1024² needs roughly
+1.5 GiB more. The text encoders are offloaded to CPU after prompt encoding.
+On a 16 GB card shared with other GPU work, expect 1024² to be at the ceiling
+(512²–768² are comfortable).

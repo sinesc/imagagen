@@ -16,7 +16,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--root", default=None, help="project root (default: $IMAGEN_ROOT or cwd)")
     parser.add_argument(
-        "--mock", action="store_true", help="force the CPU mock backend (default when no CUDA)"
+        "--mock", action="store_true", help="force the CPU mock backend (no GPU/models needed)"
     )
     args = parser.parse_args()
 
@@ -24,13 +24,11 @@ def main() -> None:
     if args.mock:
         from .backends import MockBackend
 
-        backend = MockBackend()
+        app = create_app(config, backend=MockBackend())
     else:
-        # Imported lazily: pulls in torch.
-        from .sdxl_backend import SdxlBackend
-
-        backend = SdxlBackend.from_config(config) or MockBackend()
-    app = create_app(config, backend=backend)
+        # Real mode: the app owns a ModelRegistry and loads models lazily
+        # on first generation / model select (nothing is in VRAM until asked).
+        app = create_app(config)
     uvicorn.run(app, host=args.host, port=args.port)
 
 
