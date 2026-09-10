@@ -64,7 +64,14 @@ def get_ancestral_step(sigma_from, sigma_to, eta: float = 1.0):
 
 
 def default_noise_sampler(x: torch.Tensor):
-    return lambda sigma, sigma_next: torch.randn_like(x)
+    """k-diffusion's noise sampler: deterministic per-step noise derived
+    from the generation seed (seed + step_index * batch)."""
+
+    def noise_sampler(shape, seed, offset=0):
+        g = torch.Generator(device=x.device).manual_seed(seed)
+        return torch.randn(shape, generator=g, device=x.device, dtype=x.dtype)
+
+    return noise_sampler
 
 
 # ---------------------------------------------------------------- euler ----
@@ -76,6 +83,7 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, eta
     """Ancestral sampling with Euler method steps."""
     extra_args = {} if extra_args is None else extra_args
     noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    seed = extra_args.get("seed", 0)
     s_in = x.new_ones([x.shape[0]])
     for i in range(len(sigmas) - 1):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -86,7 +94,8 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, eta
         dt = sigma_down - sigmas[i]
         x = x + d * dt
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            noise = noise_sampler(x.shape, seed + i * x.shape[0], offset=x.shape[0])
+            x = x + noise * s_noise * sigma_up
     return x
 
 
@@ -142,6 +151,7 @@ def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, eta: f
     ancestral decomposition as Euler a)."""
     extra_args = {} if extra_args is None else extra_args
     noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    seed = extra_args.get("seed", 0)
     s_in = x.new_ones([x.shape[0]])
     old_denoised = None
     for i in range(len(sigmas) - 1):
@@ -158,6 +168,7 @@ def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, eta: f
         h = t_down - t
         x = (_sigma_from_t(t_down) / _sigma_from_t(t)) * x - (-h).expm1() * denoised_d
         if sigmas[i + 1] > 0 and sigma_up > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            noise = noise_sampler(x.shape, seed + i * x.shape[0], offset=x.shape[0])
+            x = x + noise * s_noise * sigma_up
         old_denoised = denoised
     return x

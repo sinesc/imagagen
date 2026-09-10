@@ -110,6 +110,9 @@ button.danger:hover { background: #a33; }
   display: flex;
   gap: 0.4rem;
   padding: 0.5rem 1rem;
+  /* reserve space for one row of 96px thumbs so the layout never
+     reflows when the first image arrives */
+  min-height: 117px;
   overflow-x: auto;
   border-bottom: 1px solid #333;
 }

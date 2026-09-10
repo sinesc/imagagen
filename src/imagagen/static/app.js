@@ -48,7 +48,6 @@ function refreshCanvas() {
 function renderThumbs() {
   const strip = $("thumbs");
   strip.innerHTML = "";
-  strip.hidden = state.thumbs.length === 0;
   state.thumbs.forEach((t, i) => {
     const el = document.createElement("img");
     el.src = t.url;
@@ -97,6 +96,8 @@ async function generate() {
     cfg: parseFloat($("cfg").value),
     seed: parseInt($("seed").value, 10),
     batch_size: parseInt($("batch").value, 10),
+    sampler: $("sampler").value || null,
+    scheduler: $("scheduler").value || null,
     model_id: $("model").value || null,
   };
   clearThumbs();
@@ -203,6 +204,25 @@ document.addEventListener("keydown", (e) => {
   });
 });
 
+function loadSamplers() {
+  fetch("/api/samplers")
+    .then((r) => r.json())
+    .then((s) => {
+      for (const [id, names] of [["sampler", s.samplers], ["scheduler", s.schedulers]]) {
+        const sel = $(id);
+        sel.innerHTML = "";
+        names.forEach((n) => {
+          const o = document.createElement("option");
+          o.value = n;
+          o.textContent = n;
+          sel.appendChild(o);
+        });
+      }
+    })
+    .catch(() => {});
+}
+
 loadModels();
+loadSamplers();
 refreshCanvas();
 connectWS();

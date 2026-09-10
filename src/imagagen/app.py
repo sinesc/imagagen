@@ -146,6 +146,12 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
     def list_models() -> dict:
         return {"models": registry.list(), "current": registry.current_id()}
 
+    @app.get("/api/samplers")
+    def list_samplers() -> dict:
+        from .sdxl_backend import SAMPLERS, SCHEDULERS
+
+        return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
+
     @app.post("/api/models/select")
     def select_model(body: dict) -> dict:  # sync: runs in the threadpool
         registry.backend_for(body.get("id"))  # blocks: loading is synchronous

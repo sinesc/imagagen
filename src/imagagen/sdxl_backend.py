@@ -1,7 +1,8 @@
 """SDXL backend: diffusers pipeline + vendored k-diffusion sampling loop.
 
-Phase 1 ships one sampler (Euler a) and one scheduler (Karras); both are
-chosen from small registries so Phase 5's plugin system can grow them without
+Phase 1 ships three samplers (Euler a, DPM++ 2M, DPM++ 2M SDE) and three
+sigma schedules (Karras, Exponential, Polyexponential); both are chosen
+from small registries so Phase 5's plugin system can grow them without
 touching this file.
 
 SDXL specifics (matching the k-diffusion / A1111 contract):
@@ -24,11 +25,19 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import warnings
 
 import numpy as np
 
 from . import kdiff
 from .backends import GenerateRequest, GenerateResult, ModelBackend
+
+# fp16 pipelines are intentionally offloaded to CPU between generations to
+# free VRAM; diffusers warns that fp16 does not compute on CPU -- it does not
+# need to (CPU copies are storage only), so silence the warning once.
+warnings.filterwarnings(
+    "ignore", message="Pipelines loaded with `dtype=torch.float16` cannot run with `cpu` device.*"
+)
 
 SIGMA_DATA = 1.0
 
@@ -42,7 +51,8 @@ class _ModelSamplingDiscrete:
         self.max_sigma = sigma_data * 10.0
         self.min_sigma = sigma_data * 0.1
 
-    def __call__(self, x, sigma):
+    def __call__(self, x, sigma, **extra_args):
+        # extra_args (e.g. the noise seed) are consumed by the samplers, not the model
         return self.fn(x, sigma)
 
 
@@ -70,8 +80,15 @@ def _model_hash(path: str) -> str:
 
 class SdxlBackend(ModelBackend):
     def __init__(self, info) -> None:
+        import os
+        import warnings
+
         import torch
         from diffusers import StableDiffusionXLPipeline
+
+        # Backstop in case load_config() was not used: keep any hub files
+        # from_single_file fetches in the persistent project-local cache.
+        os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(info.path.parent.parent / "hf_cache"))
 
         self.model_id = info.id
         self.name = info.name
@@ -82,18 +99,23 @@ class SdxlBackend(ModelBackend):
         self._step = 0
         self._steps_total = 1
 
-        self.pipe = StableDiffusionXLPipeline.from_single_file(
-            str(info.path), torch_dtype=torch.float16
-        )
-        # Swap in the improved fp16-stable VAE (ft-MSE) if present: the
-        # stock SDXL VAE overflows to NaN in fp16 at high-magnitude latents.
-        vae_path = info.path.parent.parent / "sdxl_vae.safetensors"
-        if vae_path.is_file():
-            from diffusers import AutoencoderKL
-
-            self.pipe.vae = AutoencoderKL.from_single_file(
-                str(vae_path), torch_dtype=torch.float16
+        with warnings.catch_warnings():
+            # loading a partially-cached pipeline emits dtype-casting and
+            # image-processor warnings that are harmless for fp16 use
+            warnings.simplefilter("ignore")
+            self.pipe = StableDiffusionXLPipeline.from_single_file(
+                str(info.path), torch_dtype=torch.float16
             )
+            # Swap in the improved fp16-stable VAE (ft-MSE) if present: the
+            # stock SDXL VAE overflows to NaN in fp16 at high-magnitude latents.
+            vae_path = info.path.parent.parent / "sdxl_vae.safetensors"
+            if vae_path.is_file():
+                from diffusers import AutoencoderKL
+
+                self.pipe.vae = AutoencoderKL.from_pretrained(
+                    str(vae_path.parent), torch_dtype=torch.float16
+                ) if (vae_path.parent / "config.json").is_file() else \
+                    AutoencoderKL.from_single_file(str(vae_path), torch_dtype=torch.float16)
             self.pipe.vae.enable_slicing()
         self.pipe.to(self.device)
         # batch=1 slicing keeps VAE decode at batch-1 memory cost
@@ -151,9 +173,7 @@ class SdxlBackend(ModelBackend):
             # training sigmas of the model's beta schedule (from its scheduler
             # config) -- used to map a k-diffusion sigma to the nearest
             # training timestep (0..999), exactly like diffusers' _sigma_to_t
-            ac = torch.tensor(
-                pipe.scheduler.alphas_cumprod, dtype=torch.float32, device=device
-            )
+            ac = pipe.scheduler.alphas_cumprod.to(device=device, dtype=torch.float32)
             log_sigmas = torch.log(torch.sqrt((1.0 - ac) / ac))
 
             def sigma_to_t(sigma):
@@ -188,6 +208,10 @@ class SdxlBackend(ModelBackend):
             # --- sampler / scheduler registries (Phase 5 grows these into plugins) ---
             sampler_name = request.sampler or self.default_sampler
             scheduler_name = request.scheduler or self.default_scheduler
+            if sampler_name not in SAMPLERS:
+                raise ValueError(f"unknown sampler {sampler_name!r}")
+            if scheduler_name not in SCHEDULERS:
+                raise ValueError(f"unknown scheduler {scheduler_name!r}")
             sampler_fn = SAMPLERS[sampler_name]
             sigmas_fn = SCHEDULERS[scheduler_name]
 
@@ -201,7 +225,9 @@ class SdxlBackend(ModelBackend):
             gen = torch.Generator(device=device).manual_seed(request.seed)
             noise = torch.randn((1, 4, lh, lw), device=device, dtype=torch.float16,
                                 generator=gen) * model_wrap.max_sigma
-            samples = sampler_fn(model_wrap, noise, sigmas)
+            # the seed is threaded into the sampler so SDE/ancestral samplers
+            # derive their per-step noise deterministically from it
+            samples = sampler_fn(model_wrap, noise, sigmas, extra_args={"seed": request.seed})
 
             # sampling ran in VAE-scaled latent space -> unscale before decode
             latents = samples / pipe.vae.config.scaling_factor
