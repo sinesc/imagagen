@@ -94,6 +94,10 @@ class SdxlBackend(ModelBackend):
         self.name = info.name
         self.model_hash = _model_hash(str(info.path))
         self.device = torch.device("cuda:0")
+        # Serializes generate()/unload(): the pipeline is not thread-safe.
+        # The queue runs one worker per GPU and workers can pick tasks for
+        # the same backend; concurrent .to()/forward on the same module
+        # corrupts CUDA state and segfaults the whole process.
         self._lock = threading.Lock()
         self._cancel = False
         self._step = 0
@@ -136,9 +140,14 @@ class SdxlBackend(ModelBackend):
         self._cancel = True
 
     def unload(self) -> None:
-        self.pipe.to("cpu")
+        with self._lock:  # never move the pipeline while a generation is running
+            self.pipe.to("cpu")
 
     def generate(self, request: GenerateRequest, progress=None) -> GenerateResult:
+        with self._lock:
+            return self._generate_impl(request, progress)
+
+    def _generate_impl(self, request: GenerateRequest, progress=None) -> GenerateResult:
         import torch
 
         self._cancel = False
