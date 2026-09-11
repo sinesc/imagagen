@@ -167,21 +167,34 @@ Key architectural decisions:
   with correct numbering. (Verifiable with mock backend end-to-end; with a real
   SDXL file on a GPU machine for the actual inference.)
 
-### Phase 2 — Unified canvas editing
-- Brush engine: default 10px circle; custom brushes loaded from `brushes/*.png`
+### Phase 2 — Unified canvas editing ✅ (commit ad5cb2d)
+- ✅ Brush engine: default 10px circle; custom brushes loaded from `brushes/*.png`
   (greyscale luminance → alpha); log-scale size slider 0.1–100.0; opacity slider.
-- Stroke protocol: pointer events → server stamping (Poisson-disk spacing along
+- ✅ Stroke protocol: pointer events → server stamping (Poisson-disk spacing along
   the segment, standard image-editor behavior); per-tool remembered brush +
-  opacity (client-side state, sent with strokes).
-- **Mask tool**: separate mask buffer; grey overlay compositing in the renderer;
+  opacity (client-side state in tools.js, persisted in localStorage, sent with strokes).
+- ✅ **Mask tool**: separate mask buffer; grey overlay compositing in the renderer;
   shift = erase; dilate/erode endpoint (scipy.ndimage binary_dilation/erosion with
   a disk structuring element sized to the px count); clear mask.
-- Zoom (wheel, cursor-anchored) + middle-button pan (pure client-side transform).
-- Undo/redo v2: mask states recorded too; snapshot on stroke end only.
-- Save flow: filename from prompt + `output/` numbering (implement + unit test
-  `paths.next_output_name`).
-- Deliverable: fully editable canvas + mask with unlimited undo/redo, tested
+- ✅ Zoom (wheel, cursor-anchored) + middle-button pan (pure client-side transform).
+- ✅ Undo/redo v2: mask states recorded too; snapshot on stroke end only.
+- ✅ Save flow: filename from prompt + `output/` numbering (already existed from
+  Phase 1 as `paths.next_output_path` + `sanitize_prompt`, unit-tested in
+  tests/unit/test_paths.py).
+- ✅ Deliverable: fully editable canvas + mask with unlimited undo/redo, tested
   server-side with mock backend.
+
+Implementation notes:
+- The mask is retained across same-size image replacements (e.g. the first
+  generated image auto-set into the canvas, or a thumb selection) and reset on
+  a size change — per spec "the mask is retained across image generations
+  unless the user clears it".
+- The optimistic stroke preview mirrors `Canvas.stamp_positions` on the client;
+  the server remains authoritative on commit.
+- `GET /api/mask.png` is 404 while no canvas is loaded; the UI treats that as
+  an empty mask.
+- The UI (canvas.js/tools.js) is syntax-checked but not browser-tested — no
+  headless browser in this environment (documented v1 gap).
 
 ### Phase 3 — Inpainting & generation modes
 - `generation.py`: inpaint masked + inpaint not masked incl. all bbox/scale/center
