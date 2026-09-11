@@ -241,17 +241,60 @@ Implementation notes:
 - Interrupt semantics (step-level flag).
 - Deliverable: inpaint/outpaint/img2img all working, tested with mock backend.
 
-### Phase 4 — Configuration layer
-- Model configs: CRUD endpoints + UI dialog (create-from-current / edit / delete),
-  `model-configs/*.json`, default in-memory configs for unconfigured models.
-- Default-override resolution: CFG -1 / "Use model default" sampler+scheduler →
-  config value → backend built-in; LoRA lists merged (model config prepended).
-- LoRA UI (list of dropdown+weight, +/−) and application in the SDXL backend
-  (diffusers `fusing` or PEFT `inject_adapter_in_model`; decide at implementation,
-  PEFT is the robust choice).
-- Presets: CRUD dialog with per-setting checkboxes, apply-on-select.
-- Deliverable: all settings from the spec wired up, resolution order covered by
-  unit tests.
+### Phase 4 — Configuration layer ✅ (commit a3a4359)
+- ✅ Model configs: `model-configs/*.json` (one file per named configuration,
+  filename = sanitized name; sections `t2i`/`i2i`, each with sampler, scheduler,
+  CFG, LoRA list; `null` = no override). `ConfigStore` (model_configs.py) merges
+  the files with a read-only in-memory *default* entry for every model no file
+  covers, so the selector is never empty. Create = copy of the selected
+  configuration (concept.md), via a small name dialog; edit/delete via the config
+  dialog. Default entries can't be deleted; name collisions (case-insensitive
+  name or sanitized id) are rejected.
+- ✅ Default-override resolution, server-side in `/api/generate`
+  (`resolve_settings`, unit-tested): the user's setting wins *unless* it is the
+  "use model default" sentinel — CFG `-1` (now a valid `GenerateBody.cfg` / ui-state
+  value), sampler/scheduler `null` — in which case the configuration's value is
+  used; `null` configuration values fall through to the backend built-in
+  (`DEFAULT_CFG = 7.0` in backends.py). The configuration's LoRA list is not an
+  override: it is always *prepended* to the user's LoRAs. `generate` resolves
+  against the `t2i` section, both inpaint modes against `i2i`.
+- ✅ LoRAs: discovery via `list_loras` (`loras/<model-type>/*.safetensors|.ckpt`,
+  names relative to `loras/`), `GET /api/loras`; UI rows are a dropdown + weight
+  (+/−, persisted in ui-state). The SDXL backend applies them with diffusers'
+  `load_lora_weights` / `set_adapters` (PEFT `inject_adapter_in_model` under the
+  hood — the plan's robust choice, and it also normalizes the common on-disk key
+  layouts), one injected adapter per LoRA, per-LoRA weights via `set_adapters`;
+  the active set is cached so unchanged generations don't re-inject. `peft>=0.10`
+  added to the dependencies. Verified on GPU by `devtools/smoke_sdxl_lora.py`
+  (real A1111/sgm-format LoRA: active at 1.0, inert at 0.0, deterministic cache
+  hit, merge with a second adapter, clean unload). One diffusers-0.40 /
+  transformers-5 skew had to be fixed: the A1111 converter emits
+  `text_model.encoder...` te keys but transformers 5 flattened CLIPTextModel, so
+  key→module matching came up empty and loading crashed — `SdxlBackend.
+  _lora_state_dict` re-prefixes the te keys against the actual model layout.
+- ✅ Presets: `presets/*.json` with the spec's per-setting `controls`
+  checkboxes; CRUD + apply-on-select (only checked settings are written into the
+  form, everything else untouched); last-applied preset + LoRA list
+  persisted in ui-state. Manage dialog (new / edit / delete).
+- ✅ UI state: `UiState` gained `loras` and `preset`; `cfg`'s floor moved to -1
+  (the sentinel). The model selector now lists *configurations* (`id`, `name` —
+  with "(default)" suffix for the in-memory entries —, `model_id`, `t2i`, `i2i`),
+  and `model_id` in `/api/generate` is a configuration id.
+- Implementation notes:
+  - Delete endpoints are POST with a body (`/api/model-configs/delete`,
+    `/api/presets/delete`) rather than path params: configuration ids may
+    contain slashes (default entries are named after the model path, e.g.
+    `sdxl/foo.safetensors`).
+  - A configuration name sanitizing to an existing id is treated as an in-place
+    update of that file (the two are indistinguishable anyway).
+  - Resolution is tested end-to-end through the PNG `parameters` metadata the
+    queue writes into the generated thumbnails (tests/integration/test_config_api.py)
+    — cfg -1 → config value, LoRA merge order, explicit-user-wins, and the i2i
+    section for inpaint modes.
+  - The create-config flow uses an in-app dialog, not `prompt()` (Playwright
+    browser tests cover it; native dialogs are a pain point for a local tool).
+- ✅ Deliverable: all settings from the spec wired up, resolution order covered
+  by unit + integration + browser tests.
 
 ### Phase 5 — Plugin system hardening
 - Formalize `SamplerPlugin`/`SchedulerPlugin` interfaces; move Euler a,

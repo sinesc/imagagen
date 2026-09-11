@@ -55,6 +55,11 @@ LoRAs (Phase 4):
   A1111 ``lora_unet_*``) all load without a manual key-mapping layer.
 - multiple LoRAs at per-LoRA weights: one injected adapter per LoRA, then
   ``set_adapters([tags], [weights])`` scales each.
+- transformers-5 te-key fix: diffusers' A1111 conversion emits
+  ``text_model.encoder...`` keys (the transformers-4 CLIPTextModel layout),
+  but transformers 5 flattened CLIPTextModel, so key-to-module matching
+  finds nothing and loading crashes. ``_lora_state_dict`` re-prefixes the
+  text-encoder keys against the actual model layout.
 - the active (name, weight) set is cached: unchanged between generations
   it is not re-injected; switching sets unloads all adapters first.
 """
@@ -262,6 +267,37 @@ class SdxlBackend(ModelBackend):
                 return str(base.with_suffix(suffix))
         return None
 
+    def _lora_state_dict(self, path: str) -> dict:
+        """LoRA checkpoint -> diffusers-format state dict, te keys fixed.
+
+        ``lora_state_dict`` does the real work (A1111/Kohya key conversion,
+        sgm/LDM block remap, alphas). Its text-encoder keys assume the
+        transformers-4 layout (``text_model.encoder...``); on transformers 5
+        CLIPTextModel is flattened (``encoder...``) so key-to-module matching
+        finds nothing and loading crashes with an empty rank dict. Re-prefix
+        the te keys against the actual model layout, then hand the dict to
+        ``load_lora_weights`` (a dict is taken as already-converted).
+        """
+        sd, _alphas, _meta = self.pipe.lora_state_dict(
+            str(path),
+            unet_config=self.pipe.unet.config,
+            return_lora_metadata=True,
+        )
+
+        def has_prefix(te, prefix: str) -> bool:
+            return any(n.startswith(prefix) for n, _ in te.named_modules())
+
+        fix_te1 = not has_prefix(self.pipe.text_encoder, "text_model.")
+        fix_te2 = not has_prefix(self.pipe.text_encoder_2, "text_model.")
+        fixed = {}
+        for k, v in sd.items():
+            if fix_te1 and k.startswith("text_encoder.text_model."):
+                k = k.replace("text_encoder.text_model.", "text_encoder.", 1)
+            elif fix_te2 and k.startswith("text_encoder_2.text_model."):
+                k = k.replace("text_encoder_2.text_model.", "text_encoder_2.", 1)
+            fixed[k] = v
+        return fixed
+
     def _apply_loras(self, loras: list[tuple[str, float]]) -> None:
         """Inject the requested LoRAs into the pipeline (cached per set).
 
@@ -283,7 +319,9 @@ class SdxlBackend(ModelBackend):
             if path is None:
                 raise ValueError(f"LoRA not found: {name!r} (looked in loras/)")
             tag = f"imagagen_{i}"
-            res = self.pipe.load_lora_weights(str(path), adapter_name=tag)
+            res = self.pipe.load_lora_weights(
+                self._lora_state_dict(str(path)), adapter_name=tag
+            )
             failed = res[0] if isinstance(res, tuple) else res
             if failed:
                 raise ValueError(f"failed to load LoRA {name!r}: {failed}")
