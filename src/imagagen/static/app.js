@@ -1,4 +1,5 @@
-/* imagagen UI: controls, thumbnails, WS events, toolbar wiring.
+/* imagagen UI: controls, thumbnails, WS events, toolbar wiring, and the
+   Phase 4 configuration layer (model configs, LoRAs, presets).
    Canvas rendering/input live in canvas.js, tool state in tools.js. */
 "use strict";
 
@@ -9,6 +10,11 @@ const state = {
   job: null,
   thumbs: [], // {job, index, url, seed}
   currentThumb: -1,
+  entries: [], // model configurations from /api/models
+  samplers: [],
+  schedulers: [],
+  loras: [], // lora names from /api/loras
+  presets: [], // preset names
 };
 
 function setStatus(text) {
@@ -24,19 +30,108 @@ async function api(path, body = {}) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    // surface the server's error message (e.g. "mask is empty") instead of
-    // a bare status code when one was sent
-    let msg = `${path}: ${res.status}`;
-    try {
-      const j = await res.json();
-      if (j && j.error) msg = j.error;
-    } catch (e) { /* non-JSON error body */ }
-    throw new Error(msg);
-  }
+  if (!res.ok) throw await apiError(res, path);
   return res.json();
 }
 
+// surface the server's error message (e.g. "mask is empty") instead of
+// a bare status code when one was sent
+async function apiError(res, path) {
+  let msg = `${path}: ${res.status}`;
+  try {
+    const j = await res.json();
+    if (j && j.error) msg = j.error;
+  } catch (e) { /* non-JSON error body */ }
+  return new Error(msg);
+}
+
+// ---------------- small DOM helpers ----------------
+function el(tag, attrs = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === undefined || v === null) continue;
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on") && typeof v === "function") e[k] = v;
+    else e.setAttribute(k, v);
+  }
+  for (const c of children) if (c !== undefined && c !== null) e.append(c);
+  return e;
+}
+const opt = (value, text) => {
+  const o = el("option", { value }, text);
+  return o;
+};
+
+// ---------------- generic dialog ----------------
+let dialogOk = null;
+function openDialog(title, body, onOk, okText = "Save") {
+  $("dialog-title").textContent = title;
+  const b = $("dialog-body");
+  b.innerHTML = "";
+  b.append(body);
+  dialogOk = onOk;
+  $("dialog-ok").textContent = okText;
+  $("dialog-ok").onclick = async () => {
+    if (!dialogOk) { closeDialog(); return; }
+    const r = await dialogOk(); // returning false keeps the dialog open
+    if (r !== false) closeDialog();
+  };
+  $("dialog").hidden = false;
+}
+function closeDialog() {
+  $("dialog").hidden = true;
+  dialogOk = null;
+}
+$("dialog-cancel").onclick = closeDialog;
+$("dialog").onclick = (e) => { if (e.target === $("dialog")) closeDialog(); };
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("dialog").hidden) closeDialog();
+});
+function dialogError(text) {
+  $("dialog-body").append(el("div", { class: "dialog-error" }, text));
+}
+
+// ---------------- LoRA list rows (form + dialogs) ----------------
+function loraRow(name, weight, onChange) {
+  const sel = el("select", { class: "lora-name" });
+  state.loras.forEach((n) => sel.append(opt(n, n)));
+  if (name && !state.loras.includes(name)) sel.append(opt(name, name));
+  sel.value = name || "";
+  const wt = el("input", {
+    class: "lora-weight", type: "number", min: "-10", max: "10", step: "0.05",
+  });
+  wt.value = weight;
+  const rm = el("button", { type: "button", class: "mini lora-rm", title: "remove" }, "−");
+  rm.onclick = () => { rm.closest(".lora-row").remove(); onChange && onChange(); };
+  sel.onchange = () => onChange && onChange();
+  wt.oninput = () => onChange && onChange();
+  return el("div", { class: "lora-row" }, sel, wt, rm);
+}
+function loraAddButton(listEl, onChange) {
+  const add = el("button", { type: "button", class: "mini", title: "add a LoRA" }, "+ LoRA");
+  add.onclick = () => {
+    const row = loraRow("", 1, onChange);
+    listEl.append(row);
+    row.querySelector("select").focus();
+    onChange && onChange();
+  };
+  return add;
+}
+function readLoraList(listEl) {
+  return [...listEl.querySelectorAll(".lora-row")].map((r) => [
+    r.querySelector(".lora-name").value,
+    parseFloat(r.querySelector(".lora-weight").value) || 0,
+  ]);
+}
+// the main form's LoRA list
+function renderMainLoras(items) {
+  const c = $("loras");
+  c.innerHTML = "";
+  (items || []).forEach(([n, w]) => c.append(loraRow(n, w, scheduleSaveUiState)));
+}
+const getLoras = () => readLoraList($("loras")).filter((x) => x[0]);
+
+// ---------------- thumbnails ----------------
 // put a thumbnail's image onto the canvas. Results come from the job;
 // the inpaint source (green border) is not a job result, so its PNG is
 // fetched and re-uploaded.
@@ -57,14 +152,14 @@ function renderThumbs() {
   strip.hidden = state.thumbs.length === 0;
   strip.innerHTML = "";
   state.thumbs.forEach((t, i) => {
-    const el = document.createElement("img");
-    el.src = t.url;
-    el.title = t.source
+    const image = document.createElement("img");
+    image.src = t.url;
+    image.title = t.source
       ? "inpaint source (click to restore)"
       : `#${i} seed ${t.seed}`;
-    if (t.source) el.classList.add("source");
-    if (i === state.currentThumb) el.classList.add("selected");
-    el.onclick = async () => {
+    if (t.source) image.classList.add("source");
+    if (i === state.currentThumb) image.classList.add("selected");
+    image.onclick = async () => {
       try {
         await restoreThumb(t);
       } catch (e) {
@@ -75,7 +170,7 @@ function renderThumbs() {
       renderThumbs();
       viewRefresh();
     };
-    strip.appendChild(el);
+    strip.appendChild(image);
   });
 }
 
@@ -108,11 +203,12 @@ async function generate() {
     width: parseInt($("width").value, 10),
     height: parseInt($("height").value, 10),
     steps: parseInt($("steps").value, 10),
-    cfg: parseFloat($("cfg").value),
+    cfg: parseFloat($("cfg").value), // -1 = "use model default"
     seed: parseInt($("seed").value, 10),
     batch_size: parseInt($("batch").value, 10),
-    sampler: $("sampler").value || null,
+    sampler: $("sampler").value || null, // null = "use model default"
     scheduler: $("scheduler").value || null,
+    loras: getLoras(),
     model_id: $("model").value || null,
     mode: $("mode").value,
     denoise: parseFloat($("denoise").value),
@@ -129,10 +225,305 @@ async function generate() {
   }
 }
 
+// ---------------- model configurations (Phase 4) ----------------
+function currentEntry() {
+  return state.entries.find((e) => e.id === $("model").value) || null;
+}
+
 async function selectModel(id) {
   setStatus(`loading ${id}…`);
-  await api("/api/models/select", { id });
-  setStatus("");
+  try {
+    await api("/api/models/select", { id });
+    setStatus("");
+  } catch (e) {
+    setStatus(`model select failed: ${e.message}`);
+  }
+}
+
+async function refreshModels(keepSelection = true) {
+  const m = await (await fetch("/api/models")).json();
+  if (m.error) throw new Error(m.error);
+  const sel = $("model");
+  const cur = keepSelection ? sel.value : null;
+  state.entries = m.models;
+  sel.innerHTML = "";
+  m.models.forEach((x) => {
+    sel.append(opt(x.id, x.is_default ? `${x.name} (default)` : x.name));
+  });
+  if (cur && m.models.some((x) => x.id === cur)) sel.value = cur;
+  else if (m.current) sel.value = m.current;
+}
+
+function modeFieldset(title, section) {
+  // section: {sampler, scheduler, cfg, loras: [{name, weight}]}
+  const fs = el("fieldset", { class: "cfg-mode" }, el("legend", {}, title));
+  const s = el("select", { class: "cfg-sampler" });
+  s.append(opt("", "Use model default"));
+  state.samplers.forEach((n) => s.append(opt(n, n)));
+  s.value = section.sampler || "";
+  const sc = el("select", { class: "cfg-scheduler" });
+  sc.append(opt("", "Use model default"));
+  state.schedulers.forEach((n) => sc.append(opt(n, n)));
+  sc.value = section.scheduler || "";
+  const cfg = el("input", {
+    class: "cfg-cfg", type: "number", min: "0", step: "0.1",
+    title: "empty = use the model's built-in default",
+  });
+  cfg.value = section.cfg === null ? "" : section.cfg;
+  const loraList = el("div", { class: "lora-list" });
+  (section.loras || []).forEach((l) => loraList.append(loraRow(l.name, l.weight)));
+  fs.append(
+    el("div", { class: "row" },
+      el("label", {}, "sampler", s),
+      el("label", {}, "scheduler", sc)),
+    el("div", { class: "row" }, el("label", { title: "CFG override; empty = model default" }, "CFG", cfg)),
+    el("div", { class: "loras" }, loraList, loraAddButton(loraList)),
+  );
+  return fs;
+}
+
+function readCfgSection(fs) {
+  return {
+    sampler: fs.querySelector(".cfg-sampler").value || null,
+    scheduler: fs.querySelector(".cfg-scheduler").value || null,
+    cfg: fs.querySelector(".cfg-cfg").value === "" ? null : parseFloat(fs.querySelector(".cfg-cfg").value),
+    loras: readLoraList(fs.querySelector(".lora-list")).map(([name, weight]) => ({ name, weight })),
+  };
+}
+
+function openConfigDialog(entry) {
+  const nameIn = el("input", { class: "cfg-name", type: "text", maxlength: "120" });
+  nameIn.value = entry.name;
+  const modelIn = el("input", { class: "cfg-model", type: "text", readonly: "" });
+  modelIn.value = entry.model_id;
+  const f1 = modeFieldset("text to image", entry.t2i);
+  const f2 = modeFieldset("image to image / inpaint", entry.i2i);
+  const box = el("div", { class: "cfg-dialog" },
+    el("label", {}, "name", nameIn),
+    el("label", { class: "muted" }, "model", modelIn),
+    f1, f2);
+  openDialog("Model configuration", box, async () => {
+    const name = nameIn.value.trim();
+    if (!name) { dialogError("name is required"); return false; }
+    try {
+      await api("/api/model-configs", {
+        name,
+        model: entry.model_id,
+        t2i: readCfgSection(f1),
+        i2i: readCfgSection(f2),
+      });
+    } catch (e) {
+      dialogError(e.message);
+      return false;
+    }
+    try {
+      await refreshModels(true);
+    } catch (e) {
+      setStatus(e.message);
+    }
+    scheduleSaveUiState(0);
+  });
+}
+
+function createConfig() {
+  const cur = currentEntry() || state.entries[0];
+  if (!cur) return;
+  const nameIn = el("input", { type: "text", maxlength: "120", class: "cfg-name" });
+  nameIn.value = `${cur.name} (variant)`;
+  openDialog("New model configuration", el("div", {},
+    el("div", { class: "muted" }, "starts as a copy of the selected configuration"),
+    el("label", {}, "name", nameIn)),
+    async () => {
+      const name = nameIn.value.trim();
+      if (!name) { dialogError("name is required"); return false; }
+      try {
+        const entry = await api("/api/model-configs/create", { name, based_on: cur.id });
+        $("model").value = entry.id;
+        await refreshModels(true);
+        scheduleSaveUiState(0);
+        return true;
+      } catch (e) {
+        dialogError(e.message);
+        return false;
+      }
+    },
+    "Create");
+}
+
+async function deleteConfig() {
+  const cur = currentEntry();
+  if (!cur) return;
+  if (cur.is_default) {
+    setStatus("in-memory default configurations cannot be deleted");
+    return;
+  }
+  if (!confirm(`Delete model configuration "${cur.name}"?`)) return;
+  try {
+    await api("/api/model-configs/delete", { id: cur.id });
+    await refreshModels(false);
+    scheduleSaveUiState(0);
+  } catch (e) {
+    setStatus(`delete config failed: ${e.message}`);
+  }
+}
+
+// ---------------- presets (Phase 4) ----------------
+const PRESET_KEYS = ["width", "height", "steps", "cfg", "seed", "batch",
+  "sampler", "scheduler", "mode", "denoise", "loras"];
+
+async function applyPreset(name) {
+  if (!name) return;
+  let p;
+  try {
+    p = (await (await fetch(`/api/presets/${encodeURIComponent(name)}`)).json()).preset;
+  } catch (e) {
+    setStatus(e.message);
+    return;
+  }
+  const controls = p.controls || {};
+  for (const key of PRESET_KEYS) {
+    if (!controls[key] || p[key] === null || p[key] === undefined) continue;
+    if (key === "loras") renderMainLoras(p[key]);
+    else if (key === "mode") {
+      $("mode").value = p[key];
+      syncMode();
+    } else {
+      $(key).value = p[key];
+    }
+  }
+  scheduleSaveUiState(0);
+  setStatus(`preset "${name}" applied`);
+}
+
+async function loadPresets() {
+  const r = await (await fetch("/api/presets")).json();
+  state.presets = r.presets || [];
+  const sel = $("preset");
+  const cur = sel.value;
+  sel.innerHTML = "";
+  sel.append(opt("", "—"));
+  state.presets.forEach((n) => sel.append(opt(n, n)));
+  if (state.presets.includes(cur)) sel.value = cur;
+}
+
+function presetValueInput(kind, value) {
+  if (kind === "loras") {
+    const input = el("div", { class: "lora-list preset-loras" });
+    if (value) value.forEach((x) => input.append(loraRow(x[0], x[1])));
+    input.append(loraAddButton(input));
+    return input;
+  }
+  if (kind === "select") {
+    const input = el("select", { class: "preset-val" });
+    input.append(opt("", "—"));
+    return input;
+  }
+  const input = el("input", { class: "preset-val", type: "number" });
+  if (value !== null && value !== undefined) input.value = value;
+  return input;
+}
+
+function openPresetDialog(existing) {
+  const p = existing || {};
+  const controls = p.controls || {};
+  const nameIn = el("input", { type: "text", maxlength: "120" });
+  nameIn.value = p.name || "";
+  const defs = [
+    ["width", "width", "number", p.width],
+    ["height", "height", "number", p.height],
+    ["steps", "steps", "number", p.steps],
+    ["cfg", "CFG", "number", p.cfg],
+    ["seed", "seed", "number", p.seed],
+    ["batch", "batch size", "number", p.batch],
+    ["sampler", "sampler", "select", p.sampler],
+    ["scheduler", "scheduler", "select", p.scheduler],
+    ["mode", "mode", "select", p.mode],
+    ["denoise", "denoise strength", "number", p.denoise],
+    ["loras", "LORAs", "loras", p.loras],
+  ];
+  const rows = el("div", { class: "preset-rows" });
+  for (const [key, label, kind, value] of defs) {
+    const cb = el("input", { type: "checkbox", class: "preset-cb" });
+    cb.checked = !!controls[key];
+    let input;
+    if (kind === "number" || kind === "loras") {
+      input = presetValueInput(kind, value);
+    } else {
+      input = presetValueInput(kind, value);
+      if (key === "sampler") state.samplers.forEach((n) => input.append(opt(n, n)));
+      if (key === "scheduler") state.schedulers.forEach((n) => input.append(opt(n, n)));
+      if (key === "mode") [
+        ["generate", "generate"],
+        ["inpaint_masked", "inpaint masked"],
+        ["inpaint_not_masked", "inpaint not masked"],
+      ].forEach(([v, t]) => input.append(opt(v, t)));
+      input.value = value || "";
+    }
+    input.dataset.presetKey = key;
+    input.dataset.presetKind = kind;
+    rows.append(el("div", { class: "preset-row" }, cb, el("span", { class: "preset-label" }, label), input));
+  }
+  const box = el("div", { class: "preset-dialog" },
+    el("label", {}, "name", nameIn),
+    el("div", { class: "muted" }, "checked settings are applied when the preset is selected"),
+    rows);
+  openDialog(existing ? "Edit preset" : "New preset", box, async () => {
+    const name = nameIn.value.trim();
+    if (!name) { dialogError("name is required"); return false; }
+    const body = { name, controls: {} };
+    for (const row of rows.children) {
+      const input = row.querySelector("[data-preset-key]");
+      const key = input.dataset.presetKey;
+      body.controls[key] = row.querySelector(".preset-cb").checked;
+      if (input.dataset.presetKind === "loras") body[key] = readLoraList(input);
+      else if (input.dataset.presetKind === "select") body[key] = input.value || null;
+      else body[key] = input.value === "" ? null : parseFloat(input.value);
+    }
+    try {
+      await api("/api/presets", body);
+    } catch (e) {
+      dialogError(e.message);
+      return false;
+    }
+    await loadPresets();
+    $("preset").value = name;
+    scheduleSaveUiState(0);
+  });
+}
+
+function openPresetManage() {
+  const list = el("div", { class: "preset-manage" });
+  const newBtn = el("button", { class: "mini", type: "button" }, "+ New preset");
+  const render = () => {
+    list.querySelectorAll(".preset-manage-row").forEach((r) => r.remove());
+    if (!state.presets.length) list.append(el("div", { class: "muted" }, "no presets yet"));
+    state.presets.forEach((name) => {
+      const nameEl = el("span", { class: "preset-manage-name" }, name);
+      const edit = el("button", { class: "mini", type: "button", title: "edit" }, "✎");
+      const del = el("button", { class: "mini", type: "button", title: "delete" }, "✗");
+      edit.onclick = async () => {
+        closeDialog();
+        let p;
+        try {
+          p = (await (await fetch(`/api/presets/${encodeURIComponent(name)}`)).json()).preset;
+        } catch (e) { setStatus(e.message); return; }
+        openPresetDialog(p);
+      };
+      del.onclick = async () => {
+        if (!confirm(`Delete preset "${name}"?`)) return;
+        try {
+          await api("/api/presets/delete", { name });
+        } catch (e) { setStatus(e.message); return; }
+        await loadPresets();
+        render();
+      };
+      list.append(el("div", { class: "preset-manage-row" }, nameEl, edit, del));
+    });
+    list.append(newBtn);
+  };
+  render();
+  newBtn.onclick = () => { closeDialog(); openPresetDialog(null); };
+  openDialog("Setting presets", el("div", { class: "preset-manage-wrap" }, list), null, "Close");
 }
 
 // ---------------- toolbar: tools, brushes, mask ops, zoom ----------------
@@ -235,6 +626,23 @@ function wireToolbar() {
   $("zoom-fit").onclick = () => viewFit();
 }
 
+// Phase 4 wiring: model configs, LoRAs, presets
+function wireConfig() {
+  $("cfg-create").onclick = createConfig;
+  $("cfg-edit").onclick = () => {
+    const cur = currentEntry();
+    if (cur) openConfigDialog(cur);
+  };
+  $("cfg-delete").onclick = deleteConfig;
+  $("lora-add").onclick = () => {
+    const row = loraRow("", 1, scheduleSaveUiState);
+    $("loras").append(row);
+    row.querySelector("select").focus();
+  };
+  $("preset-manage").onclick = openPresetManage;
+  $("preset").onchange = (e) => applyPreset(e.target.value);
+}
+
 // ---------------- UI state persistence (ui-state.json) ----------------
 function readUiState() {
   return {
@@ -252,6 +660,8 @@ function readUiState() {
     // mode is intentionally not persisted: the UI always opens in
     // "generate" mode since there is nothing to inpaint yet
     denoise: parseFloat($("denoise").value),
+    loras: getLoras(),
+    preset: $("preset").value || null,
   };
 }
 
@@ -270,9 +680,11 @@ function applyUiState(st) {
     ["scheduler", "scheduler"],
     ["denoise", "denoise"],
   ];
-  for (const [el, key] of fields) {
-    if (st[key] !== undefined && st[key] !== null) $(el).value = st[key];
+  for (const [elm, key] of fields) {
+    if (st[key] !== undefined && st[key] !== null) $(elm).value = st[key];
   }
+  renderMainLoras(st.loras || []);
+  if (st.preset && state.presets.includes(st.preset)) $("preset").value = st.preset;
   // display-only restore: the model itself is NOT preloaded (it loads
   // lazily on the next generation, matching the registry design)
   if (st.model) $("model").value = st.model;
@@ -289,45 +701,45 @@ function scheduleSaveUiState(delay = 500) {
 
 // populate the form from the server, then apply the persisted state
 async function init() {
-  let models = { models: [], current: null };
-  let samplers = { samplers: [], schedulers: [] };
-  let saved = null;
+  let m = { models: [], current: null };
+  let s = { samplers: [], schedulers: [] };
+  let u = null;
+  let pr = { presets: [] };
+  let lr = { loras: [] };
   try {
-    const [m, s, u] = await Promise.all([
+    [m, s, u, pr, lr] = await Promise.all([
       fetch("/api/models").then((r) => r.json()),
       fetch("/api/samplers").then((r) => r.json()),
       fetch("/api/ui-state").then((r) => (r.ok ? r.json() : null)),
+      fetch("/api/presets").then((r) => r.json()),
+      fetch("/api/loras").then((r) => r.json()),
     ]);
-    models = m;
-    samplers = s;
-    saved = u && u.state;
   } catch (e) {
     console.error("init:", e);
     return;
   }
+  state.entries = m.models;
+  state.samplers = s.samplers;
+  state.schedulers = s.schedulers;
+  state.presets = pr.presets;
+  state.loras = lr.loras;
   const sel = $("model");
   sel.innerHTML = "";
-  models.models.forEach((x) => {
-    const o = document.createElement("option");
-    o.value = x.id;
-    o.textContent = x.name;
-    if (x.id === models.current) o.selected = true;
-    sel.appendChild(o);
+  m.models.forEach((x) => {
+    sel.append(opt(x.id, x.is_default ? `${x.name} (default)` : x.name));
   });
-  for (const [id, names] of [
-    ["sampler", samplers.samplers],
-    ["scheduler", samplers.schedulers],
-  ]) {
+  if (m.current && m.models.some((x) => x.id === m.current)) sel.value = m.current;
+  for (const id of ["sampler", "scheduler"]) {
     const s2 = $(id);
     s2.innerHTML = "";
-    names.forEach((n) => {
-      const o = document.createElement("option");
-      o.value = n;
-      o.textContent = n;
-      s2.appendChild(o);
-    });
+    s2.append(opt("", "Use model default"));
+    (id === "sampler" ? s.samplers : s.schedulers).forEach((n) => s2.append(opt(n, n)));
   }
-  applyUiState(saved);
+  const pres = $("preset");
+  pres.innerHTML = "";
+  pres.append(opt("", "—"));
+  state.presets.forEach((n) => pres.append(opt(n, n)));
+  applyUiState(u && u.state);
   syncMode();
 }
 
@@ -425,6 +837,7 @@ document.addEventListener("keydown", (e) => {
 Tools.load();
 syncToolbar();
 wireToolbar();
+wireConfig();
 loadBrushes();
 init();
 viewResize();

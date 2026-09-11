@@ -1,0 +1,125 @@
+"""Setting presets (presets/*.json).
+
+A preset captures some of the image-generation settings. Each setting has a
+checkbox ("controls") deciding whether the preset controls that setting: on
+select, only the checked settings are written into the form, everything else
+is left untouched (concept.md).
+
+File layout (one JSON per preset, filename = sanitized name):
+
+    {"name": "Big square",
+     "width": 1024, "height": 1024,
+     "steps": null, "cfg": null, "seed": null, "batch": null,
+     "sampler": null, "scheduler": null, "mode": null, "denoise": null,
+     "loras": null,
+     "controls": {"width": true, "height": true}}
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+
+from .paths import sanitize_prompt
+
+#: the settings a preset may control, in UI order
+PRESET_FIELDS = (
+    "width",
+    "height",
+    "steps",
+    "cfg",
+    "seed",
+    "batch",
+    "sampler",
+    "scheduler",
+    "mode",
+    "denoise",
+    "loras",
+)
+
+
+class PresetError(Exception):
+    """User-facing preset error."""
+
+
+class Preset(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    width: int | None = Field(default=None, ge=64, le=2048)
+    height: int | None = Field(default=None, ge=64, le=2048)
+    steps: int | None = Field(default=None, ge=1, le=150)
+    cfg: float | None = Field(default=None, ge=0)
+    seed: int | None = None
+    batch: int | None = Field(default=None, ge=1, le=32)
+    sampler: str | None = None
+    scheduler: str | None = None
+    mode: str | None = Field(default=None, pattern="^(generate|inpaint_masked|inpaint_not_masked)$")
+    denoise: float | None = Field(default=None, ge=0.0, le=1.0)
+    loras: list[tuple[str, float]] | None = None
+    controls: dict[str, bool] = Field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        d = self.model_dump()
+        # full field list, unchecked = false (unknown keys dropped)
+        d["controls"] = {k: bool(d["controls"].get(k, False)) for k in PRESET_FIELDS}
+        return d
+
+    def controlled(self) -> dict:
+        """Only the settings this preset controls (for UI application)."""
+        out = {}
+        d = self.model_dump()
+        for k in PRESET_FIELDS:
+            if d["controls"].get(k):
+                out[k] = d[k]
+        return out
+
+
+class PresetStore:
+    """Loads/saves presets/*.json. Thread-safe (saves are rare)."""
+
+    def __init__(self, presets_dir: Path) -> None:
+        self.dir = presets_dir
+        self._lock = threading.RLock()
+
+    def _path(self, name: str) -> Path:
+        return self.dir / f"{sanitize_prompt(name, max_len=120)}.json"
+
+    def names(self) -> list[str]:
+        with self._lock:
+            out = []
+            if self.dir.is_dir():
+                for f in sorted(self.dir.glob("*.json")):
+                    p = self.get(f.stem)
+                    if p is not None:
+                        out.append(p.name)
+            return out
+
+    def get(self, id_: str) -> Preset | None:
+        with self._lock:
+            f = self.dir / f"{id_}.json"
+            if not f.is_file():
+                return None
+            try:
+                return Preset.model_validate(json.loads(f.read_text("utf-8")))
+            except (OSError, json.JSONDecodeError, Exception):
+                return None
+
+    def save(self, preset: Preset) -> str:
+        with self._lock:
+            id_ = sanitize_prompt(preset.name, max_len=120)
+            self.dir.mkdir(parents=True, exist_ok=True)
+            tmp = self._path(preset.name).with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(preset.to_dict(), indent=2, ensure_ascii=False) + "\n",
+                           "utf-8")
+            tmp.replace(self._path(preset.name))
+            return id_
+
+    def delete(self, name: str) -> bool:
+        with self._lock:
+            f = self._path(name)
+            if not f.is_file():
+                return False
+            f.unlink()
+            return True

@@ -14,6 +14,10 @@ from dataclasses import dataclass
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
+#: built-in CFG when neither the user (sentinel -1) nor the model
+#: configuration provide an override (A1111's universal default)
+DEFAULT_CFG = 7.0
+
 
 class GenerateRequest(BaseModel):
     # init_image/init_mask are numpy arrays passed in-process (never from JSON);
@@ -24,7 +28,7 @@ class GenerateRequest(BaseModel):
     width: int = 512
     height: int = 512
     steps: int = 20
-    cfg: float = 7.0
+    cfg: float = DEFAULT_CFG
     seed: int = -1  # -1 => random; batch callers pass explicit seeds
     sampler: str | None = None  # None => backend default
     scheduler: str | None = None

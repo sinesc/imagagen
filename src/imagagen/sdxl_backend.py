@@ -46,6 +46,17 @@ VRAM options (imagagen.ini, all optional, all off by default):
   (saves ~1.4 GiB VRAM permanently); CPU fp16 encoding is only ~0.6 s per
   prompt, so the speed cost is ~1 s per generation.
 - vae-tiling = on: tiled VAE decode, lower peak at 1024².
+
+LoRAs (Phase 4):
+- applied via diffusers' `load_lora_weights` / `set_adapters`, which
+  internally does PEFT `inject_adapter_in_model` (the plan's "PEFT is the
+  robust choice") plus diffusers' LoRA weight-format translators, so the
+  common on-disk layouts (Civitai/Kohya ``lora_down``/``lora_up``, legacy
+  A1111 ``lora_unet_*``) all load without a manual key-mapping layer.
+- multiple LoRAs at per-LoRA weights: one injected adapter per LoRA, then
+  ``set_adapters([tags], [weights])`` scales each.
+- the active (name, weight) set is cached: unchanged between generations
+  it is not re-injected; switching sets unloads all adapters first.
 """
 
 from __future__ import annotations
@@ -183,6 +194,8 @@ class SdxlBackend(ModelBackend):
         self._cancel = False
         self._step = 0
         self._steps_total = 1
+        self.config = config  # project Config (loras dir, VRAM options)
+        self._active_loras: tuple[tuple[str, float], ...] | None = None
 
         with warnings.catch_warnings():
             # loading a partially-cached pipeline emits dtype-casting and
@@ -239,6 +252,46 @@ class SdxlBackend(ModelBackend):
         with self._lock:
             return self._generate_impl(request, progress)
 
+    def _lora_path(self, name: str) -> str | None:
+        """LoRA name (relative to loras/, no extension) -> checkpoint path."""
+        if self.config is None:
+            return None
+        base = self.config.loras_dir / name
+        for suffix in (".safetensors", ".ckpt"):
+            if (base.with_suffix(suffix)).is_file():
+                return str(base.with_suffix(suffix))
+        return None
+
+    def _apply_loras(self, loras: list[tuple[str, float]]) -> None:
+        """Inject the requested LoRAs into the pipeline (cached per set).
+
+        Must run under ``self._lock`` (it mutates the UNet's modules).
+        """
+        key = tuple((n, float(w)) for n, w in loras)
+        if key == self._active_loras:
+            return
+        if self._active_loras is not None:
+            # drop the previous set entirely, then rebuild
+            self.pipe.unload_lora_weights()
+            self._active_loras = None
+        self._active_loras = key
+        if not key:
+            return
+        tags, weights = [], []
+        for i, (name, weight) in enumerate(key):
+            path = self._lora_path(name)
+            if path is None:
+                raise ValueError(f"LoRA not found: {name!r} (looked in loras/)")
+            tag = f"imagagen_{i}"
+            res = self.pipe.load_lora_weights(str(path), adapter_name=tag)
+            failed = res[0] if isinstance(res, tuple) else res
+            if failed:
+                raise ValueError(f"failed to load LoRA {name!r}: {failed}")
+            tags.append(tag)
+            weights.append(weight)
+        if weights:
+            self.pipe.set_adapters(tags, weights)
+
     def _encode_init(self, pipe, arr: np.ndarray, device):
         """VAE-encode an HxWx3 uint8 image to its latent (the deterministic
         latent_dist.mode(), i.e. A1111's "Full" encode -- same seed gives the
@@ -259,6 +312,8 @@ class SdxlBackend(ModelBackend):
         w = max(8, (request.width // 8) * 8)
         h = max(8, (request.height // 8) * 8)
         lh, lw = h // 8, w // 8
+
+        self._apply_loras(request.loras)
 
         with torch.inference_mode():
             # text encoders live on self.text_encoder_device (GPU by

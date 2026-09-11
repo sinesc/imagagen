@@ -12,6 +12,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def list_loras(config) -> list[str]:
+    """All LoRAs under ``loras/<model-type>/*.safetensors|ckpt``, as names
+    relative to loras/ without extension (e.g. ``"sdxl/dmd2"``)."""
+    out: list[str] = []
+    loras_dir = config.loras_dir
+    if not loras_dir.is_dir():
+        return out
+    for sub in sorted(loras_dir.iterdir()):
+        if not sub.is_dir():
+            continue
+        files = sorted(sub.glob("*.safetensors")) + sorted(sub.glob("*.ckpt"))
+        for f in files:
+            out.append(f.relative_to(loras_dir).with_suffix("").as_posix())
+    return out
+
+
 @dataclass
 class ModelInfo:
     id: str  # relative path, e.g. "sdxl/sd_xl_base_1.0.safetensors"

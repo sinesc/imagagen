@@ -34,12 +34,17 @@ class UiState(BaseModel):
     width: int = Field(default=1024, ge=64, le=2048)
     height: int = Field(default=1024, ge=64, le=2048)
     steps: int = Field(default=25, ge=1, le=150)
-    cfg: float = Field(default=7.0, ge=0)
+    # -1 = "use model default" (model configuration's CFG, then built-in)
+    cfg: float = Field(default=7.0, ge=-1)
     seed: int = -1  # -1 = random (A1111 convention)
     batch: int = Field(default=1, ge=1, le=32)
-    sampler: str | None = None
-    scheduler: str | None = None
+    sampler: str | None = None  # null = "use model default"
+    scheduler: str | None = None  # null = "use model default"
     denoise: float = Field(1.0, ge=0.0, le=1.0)
+    # user-selected LoRAs, [[name, weight], ...] (model-config LoRAs are
+    # prepended server-side at generation time)
+    loras: list[tuple[str, float]] = Field(default_factory=list)
+    preset: str | None = None  # name of the last-applied preset
 
     # The generation mode is deliberately NOT persisted: the UI always
     # starts in "generate" mode because there is nothing to inpaint until

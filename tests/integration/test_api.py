@@ -58,8 +58,17 @@ def test_index_served(client):
 
 
 def test_models_endpoint(client):
+    # the model selector lists configurations (Phase 4); with no files in
+    # model-configs/ that is just the in-memory default of the mock model
     body = client.get("/api/models").json()
-    assert body["models"] == [{"id": "mock/mock.safetensors", "name": "Mock Model"}]
+    assert body["models"] == [{
+        "id": "mock/mock.safetensors",
+        "name": "Mock Model",
+        "model_id": "mock/mock.safetensors",
+        "t2i": {"sampler": None, "scheduler": None, "cfg": None, "loras": []},
+        "i2i": {"sampler": None, "scheduler": None, "cfg": None, "loras": []},
+        "is_default": True,
+    }]
     assert body["current"] == "mock/mock.safetensors"
 
 

@@ -12,12 +12,14 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from .backends import GenerateRequest, ModelBackend
+from .backends import DEFAULT_CFG, GenerateRequest, ModelBackend
 from .canvas import Canvas
 from .config import Config, ensure_dirs, load_config
 from .generation import GenerationError, with_inpaint
-from .models import ModelRegistry
+from .model_configs import ConfigError, ConfigStore, ModelConfig, resolve_settings
+from .models import ModelRegistry, list_loras
 from .paths import next_output_path
+from .presets import Preset, PresetError, PresetStore
 from .queue import GenerationQueue
 from .uistate import UiState, UiStateStore
 
@@ -169,6 +171,11 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
     app.state.queue = queue
     app.state.registry = registry
     app.state.ui_state = UiStateStore(config.root / "ui-state.json")
+    # model configurations: files in model-configs/ + in-memory defaults
+    # for unconfigured models (Phase 4)
+    app.state.config_store = ConfigStore(config, lambda: registry.list())
+    app.state.preset_store = PresetStore(config.presets_dir)
+    app.state.last_config_id: str | None = None
 
     # --- cache policy ---
     # Local single-user tool: the browser must never serve stale UI state.
@@ -201,10 +208,22 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
             "gpus": gpu_info(config.ignore_gpus, selected),
         }
 
-    # --- models ---
+    # --- models & model configurations (Phase 4) ---
+    # The model selector lists *configurations*, not raw checkpoints:
+    # every file config in model-configs/ plus one in-memory default per
+    # unconfigured model. Generation resolves the config's defaults
+    # (sampler/scheduler/CFG/LoRAs) server-side.
     @app.get("/api/models")
     def list_models() -> dict:
-        return {"models": registry.list(), "current": registry.current_id()}
+        try:
+            entries = app.state.config_store.entries()
+        except ConfigError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        current = app.state.last_config_id
+        ids = {e.id for e in entries}
+        if current not in ids and entries:
+            current = entries[0].id
+        return {"models": [e.to_dict() for e in entries], "current": current}
 
     @app.get("/api/samplers")
     def list_samplers() -> dict:
@@ -212,30 +231,119 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
 
         return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
 
+    @app.get("/api/loras")
+    def loras() -> dict:
+        return {"loras": list_loras(config)}
+
     @app.post("/api/models/select")
     def select_model(body: dict) -> dict:  # sync: runs in the threadpool
-        registry.backend_for(body.get("id"))  # blocks: loading is synchronous
-        return {"current": registry.current_id()}
+        try:
+            entry = app.state.config_store.resolve(body.get("id", ""))
+        except ConfigError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        registry.backend_for(entry.model_id)  # blocks: loading is synchronous
+        app.state.last_config_id = entry.id
+        return {"current": entry.id, "model_id": entry.model_id}
+
+    @app.post("/api/model-configs")
+    def upsert_model_config(mc: ModelConfig) -> dict:
+        try:
+            entry = app.state.config_store.save(mc)
+        except (ConfigError, ValidationError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return entry.to_dict()
+
+    @app.post("/api/model-configs/create")
+    def create_model_config(body: dict) -> dict:
+        """Create a configuration copying `based_on` (concept.md: create =
+        copy of the currently selected configuration, then edit it)."""
+        try:
+            entry = app.state.config_store.create_from(
+                body.get("name", ""), body.get("based_on", "")
+            )
+        except (ConfigError, ValidationError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        app.state.last_config_id = entry.id
+        return entry.to_dict()
+
+    @app.post("/api/model-configs/delete")
+    def delete_model_config(body: dict) -> dict:
+        # POST with a body (not a path param): ids may contain slashes
+        # (default entries are named after the model file)
+        try:
+            app.state.config_store.delete(body.get("id", ""))
+        except ConfigError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        if app.state.last_config_id == body.get("id"):
+            app.state.last_config_id = None
+        return {"ok": True}
+
+    # --- presets (Phase 4) ---
+    @app.get("/api/presets")
+    def presets_list() -> dict:
+        return {"presets": app.state.preset_store.names()}
+
+    @app.get("/api/presets/{name}")
+    def preset_get(name: str) -> dict:
+        p = app.state.preset_store.get(name)
+        if p is None:
+            return JSONResponse({"error": f"unknown preset: {name!r}"}, status_code=404)
+        return {"preset": p.to_dict()}
+
+    @app.post("/api/presets")
+    def preset_save(p: Preset) -> dict:
+        try:
+            id_ = app.state.preset_store.save(p)
+        except (PresetError, ValidationError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {"ok": True, "id": id_}
+
+    @app.post("/api/presets/delete")
+    def preset_delete(body: dict) -> dict:
+        name = body.get("name", "")
+        if not app.state.preset_store.delete(name):
+            return JSONResponse({"error": f"unknown preset: {name!r}"}, status_code=404)
+        return {"ok": True}
 
     # --- generation ---
     @app.post("/api/generate")
     def generate(body: GenerateBody) -> dict:
-        model_id = body.model_id or registry.current_id()
-        if model_id is None and getattr(registry, "models", None):
-            model_id = registry.models[0].id
-        if model_id is None:
-            return {"error": "no model available"}
+        # model_id here is a *configuration* id (Phase 4): files in
+        # model-configs/ or the in-memory default of an unconfigured model.
+        # Default-override resolution (concept.md): user setting -> (only
+        # when it is the "use model default" sentinel: cfg == -1, sampler/
+        # scheduler null) the config's t2i/i2i value -> backend built-in.
+        try:
+            cfg_id = body.model_id or app.state.last_config_id
+            if cfg_id is None:
+                entries = app.state.config_store.entries()
+                cfg_id = entries[0].id if entries else None
+            if cfg_id is None:
+                return {"error": "no model available"}
+            entry = app.state.config_store.resolve(cfg_id)
+            app.state.last_config_id = entry.id
+            sampler, scheduler, cfg, loras = resolve_settings(
+                entry,
+                body.mode,
+                body.cfg,
+                body.sampler,
+                body.scheduler,
+                body.loras,
+            )
+        except ConfigError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        model_id = entry.model_id
         req = GenerateRequest(
             prompt=body.prompt,
             negative_prompt=body.negative_prompt,
             width=body.width,
             height=body.height,
             steps=body.steps,
-            cfg=body.cfg,
+            cfg=cfg if cfg is not None else DEFAULT_CFG,
             seed=body.seed,
-            sampler=body.sampler,
-            scheduler=body.scheduler,
-            loras=body.loras,
+            sampler=sampler,
+            scheduler=scheduler,
+            loras=loras,
         )
         try:
             # inpaint modes snapshot the canvas and populate init image/mask;

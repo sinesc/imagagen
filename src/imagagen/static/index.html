@@ -8,24 +8,45 @@
 <body>
   <div id="layout">
     <aside id="controls">
-      <label>Model
-        <select id="model"></select>
-      </label>
+      <div class="row model-row">
+        <label>Model
+          <select id="model"></select>
+        </label>
+        <span class="mini-btns" title="model configurations">
+          <button id="cfg-create" title="create a new model configuration (copy of the selected one)">+</button>
+          <button id="cfg-edit" title="edit the selected model configuration">✎</button>
+          <button id="cfg-delete" title="delete the selected model configuration (in-memory defaults cannot be deleted)">✗</button>
+        </span>
+      </div>
+      <div class="row">
+        <label title="preset: applies the checked settings of the selected preset on select">Preset
+          <select id="preset"><option value="">—</option></select>
+        </label>
+        <button id="preset-manage" title="create/edit/delete setting presets">⚙</button>
+      </div>
       <div class="row">
         <label>Width <input id="width" type="number" value="1024" min="64" max="2048" step="8"></label>
         <label>Height <input id="height" type="number" value="1024" min="64" max="2048" step="8"></label>
       </div>
       <div class="row">
         <label>Steps <input id="steps" type="number" value="25" min="1" max="150"></label>
-        <label>CFG <input id="cfg" type="number" value="7" min="0" step="0.1"></label>
+        <label title="-1 = use the model configuration's CFG">CFG <input id="cfg" type="number" value="7" min="-1" step="0.1"></label>
       </div>
       <div class="row">
         <label>Seed <input id="seed" type="number" value="-1" title="-1 = random"></label>
         <label>Batch <input id="batch" type="number" value="1" min="1" max="32"></label>
       </div>
       <div class="row">
-        <label>Sampler <select id="sampler"><option>Euler a</option></select></label>
-        <label>Scheduler <select id="scheduler"><option>Karras</option></select></label>
+        <label>Sampler <select id="sampler"><option value="">Use model default</option></select></label>
+        <label>Scheduler <select id="scheduler"><option value="">Use model default</option></select></label>
+      </div>
+      <div class="row">
+        <label title="LoRAs (loras/<model-type>/) are used in addition to the model configuration's LoRAs, which are always prepended">LoRAs
+          <span class="loras">
+            <span id="loras" class="lora-list"></span>
+            <button id="lora-add" type="button" class="mini" title="add a LoRA">+ LoRA</button>
+          </span>
+        </label>
       </div>
       <div class="row">
         <label title="generate: new image — inpaint masked: regenerate the masked area — inpaint not masked: regenerate the whole image (img2img / outpaint), masked content protected">
@@ -97,6 +118,17 @@
         <div id="canvas-empty" class="muted">empty — generate or upload an image</div>
       </div>
     </main>
+  </div>
+
+  <div id="dialog" hidden>
+    <div id="dialog-box">
+      <h3 id="dialog-title"></h3>
+      <div id="dialog-body"></div>
+      <div class="dialog-actions">
+        <button id="dialog-cancel">Cancel</button>
+        <button id="dialog-ok" class="primary">Save</button>
+      </div>
+    </div>
   </div>
 
   <script src="/tools.js"></script>
