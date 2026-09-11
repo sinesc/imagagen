@@ -116,12 +116,35 @@ class SaveBody(BaseModel):
     prompt: str
 
 
+class StrokeBody(BaseModel):
+    points: list[list[float]] = Field(..., min_length=1)  # canvas-pixel coords
+    size: float = Field(10.0, gt=0.05, le=200)
+    opacity: float = Field(1.0, ge=0.0, le=1.0)
+    brush: str = "circle"
+    erase: bool = False  # mask tool: shift-draw
+    color: str = "#ffffff"  # hex, image tool only
+    target: str = "image"  # "image" | "mask"
+
+    def hexcolor(self) -> tuple[int, int, int]:
+        s = self.color.lstrip("#")
+        if len(s) == 3:
+            s = "".join(c * 2 for c in s)
+        if len(s) != 6 or not all(c in "0123456789abcdefABCDEF" for c in s):
+            raise ValueError(f"bad color: {self.color!r}")
+        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+
+
+class MaskOpBody(BaseModel):
+    op: str  # "dilate" | "erode" | "clear"
+    px: int = Field(4, ge=0, le=100)
+
+
 def create_app(config: Config | None = None, backend: ModelBackend | None = None) -> FastAPI:
     config = config or load_config()
     ensure_dirs(config)
 
     hub = EventHub()
-    canvas = Canvas()
+    canvas = Canvas(brushes_dir=config.brushes_dir)
 
     if backend is not None:  # test injection (e.g. MockBackend)
         registry = _MockRegistry(backend)
@@ -267,6 +290,17 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
             return Response(status_code=404)
         return Response(content=data, media_type="image/png")
 
+    @app.get("/api/mask.png")
+    def get_mask() -> Response:
+        data = canvas.to_mask_png_bytes()
+        if data is None:
+            return Response(status_code=404)
+        return Response(content=data, media_type="image/png")
+
+    @app.get("/api/brushes")
+    def list_brushes() -> dict:
+        return {"brushes": canvas.list_brushes()}
+
     @app.post("/api/canvas/upload")
     async def upload_canvas(request: Request) -> dict:
         data = await request.body()
@@ -296,6 +330,40 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
     def canvas_clear() -> dict:
         canvas.clear()
         return {"ok": True}
+
+    @app.post("/api/canvas/stroke")
+    def canvas_stroke(body: StrokeBody) -> dict:
+        try:
+            color = body.hexcolor()
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=422)
+        try:
+            canvas.stroke(
+                points=[(float(x), float(y)) for x, y in body.points],
+                size=body.size,
+                opacity=body.opacity,
+                brush=body.brush,
+                erase=body.erase,
+                color=color,
+                target=body.target,
+            )
+        except (ValueError, KeyError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {"ok": True, "undo": canvas.can_undo(), "redo": canvas.can_redo()}
+
+    @app.post("/api/canvas/mask")
+    def canvas_mask_op(body: MaskOpBody) -> dict:
+        if body.op not in ("dilate", "erode", "clear"):
+            return JSONResponse({"error": "unknown op"}, status_code=422)
+        if not canvas.has_image():
+            return JSONResponse({"error": "canvas is empty"}, status_code=400)
+        changed = {
+            "dilate": lambda: canvas.mask_dilate(body.px),
+            "erode": lambda: canvas.mask_erode(body.px),
+            "clear": lambda: canvas.mask_clear(),
+        }[body.op]()
+        return {"ok": True, "changed": changed,
+                "undo": canvas.can_undo(), "redo": canvas.can_redo()}
 
     # --- save ---
     @app.post("/api/save")

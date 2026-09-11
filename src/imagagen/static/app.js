@@ -1,4 +1,5 @@
-/* imagagen MVP UI: controls + canvas + thumbnails + WS events */
+/* imagagen UI: controls, thumbnails, WS events, toolbar wiring.
+   Canvas rendering/input live in canvas.js, tool state in tools.js. */
 "use strict";
 
 const $ = (id) => document.getElementById(id);
@@ -24,27 +25,6 @@ async function api(path, body) {
   return res.json();
 }
 
-function refreshCanvas() {
-  const img = $("canvas");
-  img.onload = () => {
-    img.hidden = false;
-    $("canvas-empty").hidden = true;
-  };
-  fetch("/api/canvas.png")
-    .then((r) => {
-      if (!r.ok) throw new Error("empty");
-      return r.blob();
-    })
-    .then((b) => {
-      img.src = URL.createObjectURL(b);
-    })
-    .catch(() => {
-      img.hidden = true;
-      img.removeAttribute("src");
-      $("canvas-empty").hidden = false;
-    });
-}
-
 function renderThumbs() {
   const strip = $("thumbs");
   strip.innerHTML = "";
@@ -57,7 +37,7 @@ function renderThumbs() {
       await api("/api/canvas/thumb", { job: t.job, index: t.index });
       state.currentThumb = i;
       renderThumbs();
-      refreshCanvas();
+      viewRefresh();
     };
     strip.appendChild(el);
   });
@@ -112,6 +92,97 @@ async function selectModel(id) {
   setStatus(`loading ${id}…`);
   await api("/api/models/select", { id });
   setStatus("");
+}
+
+// ---------------- toolbar: tools, brushes, mask ops, zoom ----------------
+let brushNames = ["circle"];
+
+async function loadBrushes() {
+  try {
+    brushNames = (await (await fetch("/api/brushes")).json()).brushes;
+  } catch (e) {
+    return;
+  }
+  const sel = $("brush");
+  const cur = sel.value;
+  sel.innerHTML = "";
+  brushNames.forEach((n) => {
+    const o = document.createElement("option");
+    o.value = n;
+    o.textContent = n === "circle" ? "circle (default)" : n;
+    sel.appendChild(o);
+  });
+  if (brushNames.includes(cur)) sel.value = cur;
+  syncToolbar();
+}
+
+// log-scale size: slider 0..1 maps to 0.1..100 px (x1000 across the range)
+const sizeFromSlider = (v) => 0.1 * Math.pow(1000, v);
+const sliderFromSize = (s) => Math.log(Math.max(s, 0.1) / 0.1) / Math.log(1000);
+
+function syncToolbar() {
+  const st = Tools.get();
+  $("tool-brush").classList.toggle("active", Tools.current === "brush");
+  $("tool-mask").classList.toggle("active", Tools.current === "mask");
+  $("brush-color").disabled = Tools.current === "mask";
+  if (brushNames.includes(st.brush)) $("brush").value = st.brush;
+  $("brush-size").value = sliderFromSize(st.size);
+  $("brush-size-val").textContent =
+    st.size < 1 ? st.size.toFixed(2) : st.size.toFixed(1);
+  $("brush-opacity").value = st.opacity;
+  $("brush-opacity-val").textContent = st.opacity.toFixed(2);
+}
+
+function switchTool(t) {
+  Tools.switch(t);
+  syncToolbar();
+}
+
+async function maskOp(op) {
+  try {
+    await api("/api/canvas/mask", {
+      op,
+      px: parseInt($("mask-px").value, 10) || 0,
+    });
+    await viewRefresh();
+  } catch (e) {
+    setStatus(`mask ${op} failed: ${e.message}`);
+  }
+}
+
+function zoomCenter(f) {
+  const r = cv().getBoundingClientRect();
+  viewZoomAt(f, r.width / 2, r.height / 2);
+}
+
+function wireToolbar() {
+  $("tool-brush").onclick = () => switchTool("brush");
+  $("tool-mask").onclick = () => switchTool("mask");
+  $("brush").onchange = (e) => {
+    Tools.get().brush = e.target.value;
+    Tools.save();
+  };
+  $("brush-color").oninput = (e) => {
+    Tools.get().color = e.target.value;
+    Tools.save();
+  };
+  $("brush-size").oninput = (e) => {
+    // round to 0.1 px so the readout and the server request agree
+    Tools.get().size = Math.round(sizeFromSlider(parseFloat(e.target.value)) * 10) / 10;
+    Tools.save();
+    syncToolbar();
+  };
+  $("brush-opacity").oninput = (e) => {
+    Tools.get().opacity = parseFloat(e.target.value);
+    Tools.save();
+    syncToolbar();
+  };
+  $("mask-dilate").onclick = () => maskOp("dilate");
+  $("mask-erode").onclick = () => maskOp("erode");
+  $("mask-clear").onclick = () => maskOp("clear");
+  $("zoom-in").onclick = () => zoomCenter(1.25);
+  $("zoom-out").onclick = () => zoomCenter(0.8);
+  $("zoom-fit").onclick = () => viewFit();
 }
 
 // ---------------- UI state persistence (ui-state.json) ----------------
@@ -225,7 +296,7 @@ function connectWS() {
         renderThumbs();
         break;
       case "canvas_set":
-        refreshCanvas();
+        viewRefresh();
         break;
       case "done":
         setGenerating(false);
@@ -255,11 +326,11 @@ $("btn-save").onclick = async () => {
 };
 $("btn-undo").onclick = async () => {
   await api("/api/canvas/undo");
-  refreshCanvas();
+  viewRefresh();
 };
 $("btn-redo").onclick = async () => {
   await api("/api/canvas/redo");
-  refreshCanvas();
+  viewRefresh();
 };
 $("model").onchange = (e) => {
   selectModel(e.target.value);
@@ -278,13 +349,28 @@ document.addEventListener("keydown", (e) => {
   api("/api/canvas/thumb", { job: t.job, index: t.index }).then(() => {
     state.currentThumb = next;
     renderThumbs();
-    refreshCanvas();
+    viewRefresh();
   });
 });
 
+// B / M switch tools (when not typing in a field)
+document.addEventListener("keydown", (e) => {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
+  if (typing) return;
+  if (e.key === "b" || e.key === "B") switchTool("brush");
+  else if (e.key === "m" || e.key === "M") switchTool("mask");
+});
+
 // ---------------- boot ----------------
+Tools.load();
+syncToolbar();
+wireToolbar();
+loadBrushes();
 init();
-refreshCanvas();
+viewResize();
+viewRefresh();
+setupCanvasInput();
+window.addEventListener("resize", viewResize);
 connectWS();
 
 ["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch"].forEach((id) => {

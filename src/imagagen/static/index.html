@@ -54,13 +54,43 @@
 
     <main id="stage">
       <div id="thumbs" hidden></div>
+      <div id="toolbar">
+        <button id="tool-brush" class="tool active" title="brush tool (B)">brush</button>
+        <button id="tool-mask" class="tool" title="mask tool (M); draw with shift held to erase">mask</button>
+        <select id="brush" title="brush shape (greyscale png from brushes/)"></select>
+        <input id="brush-color" type="color" value="#ffffff" title="brush colour">
+        <label class="slab" title="brush size, logarithmic 0.1–100 px">
+          <span>size</span>
+          <input id="brush-size" type="range" min="0" max="1" step="0.001" value="0.667">
+          <b id="brush-size-val">10.0</b>
+        </label>
+        <label class="slab" title="brush opacity">
+          <span>opacity</span>
+          <input id="brush-opacity" type="range" min="0.05" max="1" step="0.01" value="1">
+          <b id="brush-opacity-val">1.00</b>
+        </label>
+        <span class="sep"></span>
+        <label class="slab num">mask px
+          <input id="mask-px" type="number" value="4" min="0" max="100">
+        </label>
+        <button id="mask-dilate" title="expand the mask by the given pixels">expand</button>
+        <button id="mask-erode" title="shrink the mask by the given pixels">shrink</button>
+        <button id="mask-clear" title="clear the whole mask">clear mask</button>
+        <span class="sep"></span>
+        <button id="zoom-in" title="zoom in (also: mouse wheel)">+</button>
+        <button id="zoom-out" title="zoom out">−</button>
+        <button id="zoom-fit" title="fit image to window (also: double-click)">fit</button>
+        <span id="zoom-label" class="muted"></span>
+      </div>
       <div id="canvas-holder">
-        <img id="canvas" alt="canvas" hidden>
+        <canvas id="canvas" hidden></canvas>
         <div id="canvas-empty" class="muted">empty — generate or upload an image</div>
       </div>
     </main>
   </div>
 
+  <script src="/tools.js"></script>
+  <script src="/canvas.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
