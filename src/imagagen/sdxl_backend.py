@@ -6,7 +6,10 @@ from small registries so Phase 5's plugin system can grow them without
 touching this file.
 
 SDXL specifics (matching the k-diffusion / A1111 contract):
-- sigma_data = 1.0, karras sigma range [0.1, 10]
+- sigma_data = 1.0; the sigma range is the model's actual beta-schedule
+  range (SDXL: ~[0.03, ~14.6]), not the clamped k-diffusion [0.1, 10] --
+  this is the A1111/Forge "rescaled betas" behavior and is what gives the
+  characteristic look (the [0.1, 10] clamp renders flatter and grainier)
 - the UNet expects *training* timesteps (0..999), so each k-diffusion sigma
   is mapped to the nearest timestep of the model's beta schedule
   (t = argmin |log(sigma) - log_sigmas|), as diffusers' _sigma_to_t does
@@ -45,11 +48,12 @@ SIGMA_DATA = 1.0
 class _ModelSamplingDiscrete:
     """k-diffusion ModelSamplingDiscrete: t == sigma, x0 == xphi."""
 
-    def __init__(self, fn, sigma_data: float = 1.0):
+    def __init__(self, fn, sigma_min: float | None = None,
+                 sigma_max: float | None = None, sigma_data: float = 1.0):
         self.fn = fn
         self.sigma_data = sigma_data
-        self.max_sigma = sigma_data * 10.0
-        self.min_sigma = sigma_data * 0.1
+        self.max_sigma = sigma_max if sigma_max is not None else sigma_data * 10.0
+        self.min_sigma = sigma_min if sigma_min is not None else sigma_data * 0.1
 
     def __call__(self, x, sigma, **extra_args):
         # extra_args (e.g. the noise seed) are consumed by the samplers, not the model
@@ -224,13 +228,22 @@ class SdxlBackend(ModelBackend):
             sampler_fn = SAMPLERS[sampler_name]
             sigmas_fn = SCHEDULERS[scheduler_name]
 
-            model_wrap = _ModelSamplingDiscrete(model_fn, sigma_data=SIGMA_DATA)
+            # A1111/Forge "rescaled betas" (their default): sample over the
+            # model's real beta-schedule range instead of the clamped
+            # k-diffusion [0.1, 10]. For SDXL that is ~[0.03, ~14.6]: start
+            # from the true terminal noise level and refine down to almost
+            # zero residual noise. The [0.1, 10] clamp renders visibly
+            # flatter/grainier (see devtools/softness_check.py).
+            beta_sigmas = torch.exp(log_sigmas)
+            sigma_min = float(beta_sigmas[0])
+            sigma_max = float(beta_sigmas[-1])
+            model_wrap = _ModelSamplingDiscrete(model_fn, sigma_min, sigma_max)
             sigmas = sigmas_fn(
                 request.steps, model_wrap.min_sigma, model_wrap.max_sigma, device=device
             )
             # seeded initial noise: same seed -> same image (A1111-compatible).
             # k-diffusion's state is the noisy sample itself, so scale the
-            # unit prior to the max noise level (sigma_max = 10).
+            # unit prior to the max noise level.
             gen = torch.Generator(device=device).manual_seed(request.seed)
             noise = torch.randn((1, 4, lh, lw), device=device, dtype=torch.float16,
                                 generator=gen) * model_wrap.max_sigma
