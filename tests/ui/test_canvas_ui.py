@@ -292,3 +292,44 @@ def test_inpaint_without_mask_shows_server_error(page, server):
         "document.getElementById('status-line').textContent.includes('mask is empty')",
         timeout=15000,
     )
+
+
+def test_progress_bar_reserves_space(page, server):
+    """The progress area keeps its height at all times: the thumbnail strip
+    (which sits below it) must not move when generation starts/stops."""
+    base, root = server
+    _open(page, base)
+    _show(page, base, 200, 150)
+
+    # a few thumbnails so the strip exists below the progress area
+    page.evaluate(
+        """async () => {
+            await fetch('/api/generate', {method: 'POST',
+              headers: {'content-type': 'application/json'},
+              body: JSON.stringify({prompt: 't', width: 64, height: 48,
+                                    batch_size: 3})});
+        }"""
+    )
+    page.wait_for_function(
+        "document.getElementById('thumbs').querySelectorAll('img').length >= 3",
+        timeout=15000,
+    )
+
+    def thumbs_top() -> float:
+        return page.evaluate(
+            "() => document.getElementById('thumbs')"
+            ".getBoundingClientRect().top"
+        )
+
+    top_idle = thumbs_top()
+    page.evaluate("setGenerating(true)")
+    page.evaluate(
+        "() => { document.getElementById('progress-label')"
+        ".textContent = 'sampling 12/25 steps'; }"
+    )
+    top_on = thumbs_top()
+    page.evaluate("setGenerating(false)")  # back to the idle empty track
+    top_off = thumbs_top()
+    assert top_idle == top_on == top_off, (
+        f"sidebar reflowed: idle={top_idle} generating={top_on} off={top_off}"
+    )

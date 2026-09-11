@@ -67,12 +67,14 @@ body {
 }
 #thumbs img.selected { border-color: #4da3ff; }
 
-/* prompt box: top of the stage, full width, ~3:1 positive:negative */
+/* prompt box: top of the stage, full width, ~3:1 positive:negative.
+   Top padding matches #controls so the "Prompt" label lines up with
+   the "Model" label in the sidebar. */
 #prompts {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
-  padding: 0.5rem 1rem;
+  padding: 0.8rem 1rem;
   border-bottom: 1px solid #333;
 }
 #prompts label {
@@ -109,7 +111,14 @@ button.primary:hover { background: #2470c9; }
 button.danger { background: #8a2b2b; border-color: #8a2b2b; }
 button.danger:hover { background: #a33; }
 
-#progress-wrap { font-size: 0.8rem; }
+/* always in flow (empty track + label row when idle) so the sidebar
+   never reflows when generation starts/stops */
+#progress-wrap {
+  font-size: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
 #progress-bar {
   height: 8px;
   background: #2a2a2a;
@@ -121,6 +130,13 @@ button.danger:hover { background: #a33; }
   width: 0;
   background: #1a5fb4;
   transition: width 0.2s;
+}
+#progress-label {
+  height: 1em; /* constant even when empty (an empty div is 0 tall) */
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #stage {

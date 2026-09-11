@@ -67,7 +67,6 @@ function setGenerating(on) {
   const btn = $("btn-generate");
   btn.textContent = on ? "Interrupt" : "Generate";
   btn.classList.toggle("danger", on);
-  $("progress-wrap").hidden = !on;
   if (!on) {
     $("progress-fill").style.width = "0%";
     $("progress-label").textContent = "";
