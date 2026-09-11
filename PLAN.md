@@ -122,8 +122,14 @@ Key architectural decisions:
 - **txt2img ("generate")**: create at the configured image size.
 - **inpaint masked**: bbox = minimal rectangle enclosing mask alpha>0, then the
   *aspect-preserving* bounding: enlarge the bbox on the narrower axis (or both,
-  preserving the target aspect ratio) so it fits the requested W:H, generate at
-  image size, downscale the result to the (enlarged) bbox, blend with mask alpha.
+  preserving the target aspect ratio) so it fits the requested W:H, then add a
+  *context padding* ring (`INPAINT_PADDING` = 256px each side, capped at the
+  mask's largest extent — the A1111/Forge convention) so the model sees the
+  real surroundings and matches their colour/tone (without it the model
+  invents its own background and a visible halo outlines the mask). Generate
+  at image size, downscale the result to the (padded) bbox, blend with mask
+  alpha (the padding ring is discarded, so the canvas outside the mask stays
+  byte-identical).
 - **inpaint not masked**: scale current canvas AR-preserving so it "touches" the
   inside of the target size; paste centered onto empty target canvas; inpaint the
   whole target with mask areas protected (mask is scaled the same way as the image:

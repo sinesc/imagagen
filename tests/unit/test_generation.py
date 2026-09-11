@@ -6,6 +6,7 @@ import pytest
 from imagagen.backends import GenerateRequest
 from imagagen.canvas import Canvas
 from imagagen.generation import (
+    INPAINT_PADDING,
     GenerationError,
     InpaintPlan,
     crop_mask,
@@ -194,7 +195,7 @@ def test_inpaint_masked_populates_request():
     m[10:20, 12:32] = 255
     c.set_image(c.image, mask=m)
     req = GenerateRequest(prompt="x", width=64, height=64)
-    plan = with_inpaint(req, "inpaint_masked", c, 0.8)
+    plan = with_inpaint(req, "inpaint_masked", c, 0.8, padding=0)
     assert isinstance(plan, InpaintPlan)
     # mask 20x10 at (12,10); target ratio 1:1 -> grow height to a 20x20 box
     # centered on the mask (center 22,15)
@@ -208,6 +209,37 @@ def test_inpaint_masked_populates_request():
     assert req.init_mask[32, 32] == 255 and req.init_mask[4, 4] == 0
     # the crop is inside the canvas (uniform value) -> no padding artifacts
     assert (req.init_image == 100).all()
+
+
+def test_inpaint_masked_context_padding():
+    """The box gets a context ring (capped at the mask extent) so the model
+    sees the surroundings; the mask sits in the middle of a zero ring."""
+    # small mask: padding capped at extent 20 -> box 60x60 around the
+    # tight (12,5,20,20)
+    c = _canvas()
+    m = np.zeros((48, 64), dtype=np.uint8)
+    m[10:20, 12:32] = 255
+    c.set_image(c.image, mask=m)
+    req = GenerateRequest(prompt="x", width=64, height=64)
+    plan = with_inpaint(req, "inpaint_masked", c, 0.8)
+    assert plan.bbox == (12 - 20, 5 - 20, 20 + 40, 20 + 40)
+    # mask centred in the padded box: the box centre is masked, the box
+    # corners (pure context) are not
+    assert req.init_mask[32, 32] == 255
+    assert req.init_mask[4, 4] == 0 and req.init_mask[59, 59] == 0
+
+    # large mask (>= INPAINT_PADDING): full 256 px ring
+    c2 = _canvas(512, 512)
+    m2 = np.zeros((512, 512), dtype=np.uint8)
+    m2[100:400, 100:300] = 255  # 300 tall x 200 wide
+    c2.set_image(c2.image, mask=m2)
+    req2 = GenerateRequest(prompt="x", width=64, height=64)
+    plan2 = with_inpaint(req2, "inpaint_masked", c2, 0.8)
+    # tight 1:1 box is 300x300 centred on the mask: left 50, top 100;
+    # the ring adds 256 on every side
+    x0, y0, w, h = plan2.bbox
+    assert (w, h) == (2 * INPAINT_PADDING + 300, 2 * INPAINT_PADDING + 300)
+    assert x0 == 50 - INPAINT_PADDING and y0 == 100 - INPAINT_PADDING
 
 
 def test_inpaint_masked_postprocess_blends_only_mask_region():

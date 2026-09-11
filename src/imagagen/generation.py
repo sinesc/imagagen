@@ -3,12 +3,16 @@
 Three modes (concept.md):
 
 - "generate" (text to image): create a new image at the requested size.
-- "inpaint masked": operate on the *minimal aspect-preserving bounding box*
-  of the mask -- the box has exactly the requested width:height ratio and
-  minimally encloses the mask region (it may extend beyond the canvas).
-  The model generates at the requested image size; the result is downscaled
-  to the box and blended into the canvas via the mask alpha. Canvas size
-  and mask are unchanged.
+- "inpaint masked": operate on the *aspect-preserving bounding box* of the
+  mask plus context padding (``INPAINT_PADDING`` px each side, the A1111/
+  Forge convention) -- the box has (approximately) the requested
+  width:height ratio and encloses the mask region (it may extend beyond the
+  canvas). The padding is there so the model *sees* the real surroundings
+  and can match their colour/tone; without it the model invents its own
+  background and a visible halo outlines the mask. The model generates at
+  the requested image size; the result is downscaled to the box and blended
+  into the canvas via the mask alpha (the padding is discarded). Canvas
+  size and mask are unchanged.
 - "inpaint not masked": scale the canvas AR-preserving so it "touches" the
   inside of the requested size (100x100 -> 250x200 scales to 200x200 and is
   centered at offset 25 right / 0 down), paste it onto a fresh target canvas
@@ -40,10 +44,20 @@ class GenerationError(Exception):
 # ---------------------------------------------------------------- geometry --
 
 
-def masked_bbox(mask: np.ndarray, width: int, height: int) -> tuple[int, int, int, int]:
-    """Minimal box with the aspect ratio ``width:height`` enclosing the mask
-    region (alpha > 0). Returns ``(x0, y0, w, h)`` in canvas pixels; the box
-    is centered on the mask and may extend beyond the canvas bounds."""
+#: context padding (canvas px, each side) added to the inpaint box so the
+#: model sees and matches the surroundings (A1111/Forge default is 256).
+#: ``with_inpaint`` caps it at the mask's largest extent so tiny masks on
+#: small canvases do not get a degenerate box several times the canvas.
+INPAINT_PADDING = 256
+
+
+def masked_bbox(
+    mask: np.ndarray, width: int, height: int, padding: int = 0
+) -> tuple[int, int, int, int]:
+    """Box with the aspect ratio ``width:height`` enclosing the mask region
+    (alpha > 0), optionally grown by ``padding`` px on every side (context
+    for the model). Returns ``(x0, y0, w, h)`` in canvas pixels; the box is
+    centered on the mask and may extend beyond the canvas bounds."""
     support = mask > 0
     if not support.any():
         raise GenerationError("mask is empty")
@@ -59,6 +73,9 @@ def masked_bbox(mask: np.ndarray, width: int, height: int) -> tuple[int, int, in
     else:
         # inner box is taller (or exact) -> grow the width
         bw, bh = ih * ar, float(ih)
+    if padding:
+        bw += 2 * padding
+        bh += 2 * padding
     cx, cy = (ix0 + ix1) / 2.0, (iy0 + iy1) / 2.0
     x0 = int(round(cx - bw / 2.0))
     y0 = int(round(cy - bh / 2.0))
@@ -176,14 +193,21 @@ class InpaintPlan:
 
 
 def with_inpaint(
-    request: GenerateRequest, mode: str, canvas, denoise: float
+    request: GenerateRequest,
+    mode: str,
+    canvas,
+    denoise: float,
+    padding: int = INPAINT_PADDING,
 ) -> InpaintPlan | None:
     """Populate ``request.init_image``/``init_mask``/``denoise`` for an
     inpaint mode and return the post-processing plan (None for "generate").
 
     The mask passed to the backend marks the *inpaint region* (255 =
     regenerate): "inpaint masked" passes the user's mask, "inpaint not
-    masked" passes the inverted one (mask content is protected)."""
+    masked" passes the inverted one (mask content is protected).
+
+    ``padding`` is the context ring around the mask box for "inpaint
+    masked" (see ``INPAINT_PADDING``), capped at the mask's largest extent."""
     if mode == "generate":
         return None
     if mode not in ("inpaint_masked", "inpaint_not_masked"):
@@ -197,7 +221,14 @@ def with_inpaint(
     if mode == "inpaint_masked":
         if mask is None or not (mask > 0).any():
             raise GenerationError("mask is empty")
-        x0, y0, w, h = masked_bbox(mask, request.width, request.height)
+        # context ring, capped so a tiny mask never gets a huge box
+        rows = np.where((mask > 0).any(axis=1))[0]
+        cols = np.where((mask > 0).any(axis=0))[0]
+        extent = int(max(cols[-1] - cols[0] + 1, rows[-1] - rows[0] + 1))
+        x0, y0, w, h = masked_bbox(
+            mask, request.width, request.height,
+            padding=min(padding, extent),
+        )
         request.init_image = resize_image(
             crop_padded(image, x0, y0, w, h), request.width, request.height
         )
