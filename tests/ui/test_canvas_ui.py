@@ -252,3 +252,43 @@ def test_custom_brush_listed_and_used(page, server):
     centre = canvas_px(base, 100, 75)
     edge = canvas_px(base, 100, 93)  # 18 px out: inside a 40px stamp, near its rim
     assert edge[1] < centre[1], f"no falloff: centre={centre} edge={edge}"
+
+
+# ---------------- generation modes ----------------
+
+
+def test_generation_mode_denoise_ui(page, server):
+    base, root = server
+    _open(page, base)
+
+    # denoise is only for the inpaint modes
+    assert page.locator("#denoise").is_disabled()
+    page.select_option("#mode", "inpaint_masked")
+    assert not page.locator("#denoise").is_disabled()
+    set_input(page, "#denoise", "0.42")
+
+    # persisted and restored across a reload
+    page.evaluate("saveUiState()")
+    page.reload()
+    page.wait_for_function("brushNames.length >= 1")
+    assert page.locator("#mode").input_value() == "inpaint_masked"
+    assert page.locator("#denoise").input_value() == "0.42"
+    assert not page.locator("#denoise").is_disabled()
+
+
+def test_inpaint_without_mask_shows_server_error(page, server):
+    base, root = server
+    _open(page, base)
+    _show(page, base, 200, 150)
+    # paint one dot so the canvas is non-empty (default tool: brush)
+    dot(page, 100, 75)
+    assert wait_until(lambda: canvas_px(base, 100, 75) != BG)
+
+    # inpaint masked without a mask: the server rejects, and the message
+    # (not a bare status code) shows up in the status line
+    page.select_option("#mode", "inpaint_masked")
+    page.click("#btn-generate")
+    page.wait_for_function(
+        "document.getElementById('status-line').textContent.includes('mask is empty')",
+        timeout=15000,
+    )

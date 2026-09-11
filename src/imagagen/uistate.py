@@ -1,7 +1,8 @@
 """Persistence of the web UI's input state across server sessions.
 
 The last-used form values (model, prompt, negative prompt, width, height,
-steps, CFG, seed, batch, sampler, scheduler) are serialized as JSON to
+steps, CFG, seed, batch, sampler, scheduler, generation mode, denoise
+strength) are serialized as JSON to
 ``<root>/ui-state.json``. A restarted server serves the saved state via
 ``GET /api/ui-state`` and the UI restores it into the form, so the page
 picks up exactly where the user left off.
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -38,6 +40,8 @@ class UiState(BaseModel):
     batch: int = Field(default=1, ge=1, le=32)
     sampler: str | None = None
     scheduler: str | None = None
+    mode: Literal["generate", "inpaint_masked", "inpaint_not_masked"] = "generate"
+    denoise: float = Field(1.0, ge=0.0, le=1.0)
 
 
 class UiStateStore:

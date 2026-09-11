@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .backends import GenerateRequest, ModelBackend
 from .canvas import Canvas
 from .config import Config, ensure_dirs, load_config
+from .generation import GenerationError, with_inpaint
 from .models import ModelRegistry
 from .paths import next_output_path
 from .queue import GenerationQueue
@@ -105,6 +106,8 @@ class GenerateBody(BaseModel):
     scheduler: str | None = None
     loras: list[tuple[str, float]] = Field(default_factory=list)
     model_id: str | None = None
+    mode: str = "generate"  # "generate" | "inpaint_masked" | "inpaint_not_masked"
+    denoise: float = Field(1.0, ge=0.0, le=1.0)  # denoising strength, inpaint only
 
 
 class ThumbBody(BaseModel):
@@ -234,7 +237,13 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
             scheduler=body.scheduler,
             loras=body.loras,
         )
-        job = queue.submit(model_id, req, body.batch_size)
+        try:
+            # inpaint modes snapshot the canvas and populate init image/mask;
+            # "generate" leaves the request untouched
+            plan = with_inpaint(req, body.mode, canvas, body.denoise)
+        except GenerationError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        job = queue.submit(model_id, req, body.batch_size, plan=plan)
         return {"job_id": job.id}
 
     @app.post("/api/interrupt")

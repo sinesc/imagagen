@@ -24,7 +24,16 @@ async function api(path, body = {}) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${path}: ${res.status}`);
+  if (!res.ok) {
+    // surface the server's error message (e.g. "mask is empty") instead of
+    // a bare status code when one was sent
+    let msg = `${path}: ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j && j.error) msg = j.error;
+    } catch (e) { /* non-JSON error body */ }
+    throw new Error(msg);
+  }
   return res.json();
 }
 
@@ -82,13 +91,19 @@ async function generate() {
     sampler: $("sampler").value || null,
     scheduler: $("scheduler").value || null,
     model_id: $("model").value || null,
+    mode: $("mode").value,
+    denoise: parseFloat($("denoise").value),
   };
   clearThumbs();
   setStatus("queued…");
   saveUiState(); // persist the settings actually about to be used
-  const r = await api("/api/generate", body);
-  state.job = r.job_id;
-  setGenerating(true);
+  try {
+    const r = await api("/api/generate", body);
+    state.job = r.job_id;
+    setGenerating(true);
+  } catch (e) {
+    setStatus(`generate failed: ${e.message}`);
+  }
 }
 
 async function selectModel(id) {
@@ -160,6 +175,12 @@ function zoomCenter(f) {
   viewZoomAt(f, r.width / 2, r.height / 2);
 }
 
+// denoising strength only applies to the inpaint modes (concept.md: "disabled
+// when not inpainting")
+function syncMode() {
+  $("denoise").disabled = $("mode").value === "generate";
+}
+
 function wireToolbar() {
   $("tool-brush").onclick = () => switchTool("brush");
   $("tool-mask").onclick = () => switchTool("mask");
@@ -181,6 +202,10 @@ function wireToolbar() {
     Tools.get().opacity = parseFloat(e.target.value);
     Tools.save();
     syncToolbar();
+  };
+  $("mode").onchange = () => {
+    syncMode();
+    scheduleSaveUiState(0);
   };
   $("mask-dilate").onclick = () => maskOp("dilate");
   $("mask-erode").onclick = () => maskOp("erode");
@@ -204,6 +229,8 @@ function readUiState() {
     batch: parseInt($("batch").value, 10),
     sampler: $("sampler").value || null,
     scheduler: $("scheduler").value || null,
+    mode: $("mode").value,
+    denoise: parseFloat($("denoise").value),
   };
 }
 
@@ -220,6 +247,8 @@ function applyUiState(st) {
     ["batch", "batch"],
     ["sampler", "sampler"],
     ["scheduler", "scheduler"],
+    ["mode", "mode"],
+    ["denoise", "denoise"],
   ];
   for (const [el, key] of fields) {
     if (st[key] !== undefined && st[key] !== null) $(el).value = st[key];
@@ -279,6 +308,7 @@ async function init() {
     });
   }
   applyUiState(saved);
+  syncMode();
 }
 
 // ---------------- WebSocket ----------------
@@ -378,7 +408,7 @@ setupCanvasInput();
 window.addEventListener("resize", viewResize);
 connectWS();
 
-["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch"].forEach((id) => {
+["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch", "denoise"].forEach((id) => {
   $(id).addEventListener("input", () => scheduleSaveUiState());
 });
 ["sampler", "scheduler"].forEach((id) => {

@@ -42,6 +42,19 @@
         <label>Sampler <select id="sampler"><option>Euler a</option></select></label>
         <label>Scheduler <select id="scheduler"><option>Karras</option></select></label>
       </div>
+      <div class="row">
+        <label title="generate: new image — inpaint masked: regenerate the masked area — inpaint not masked: regenerate the whole image (img2img / outpaint), masked content protected">
+          Mode
+          <select id="mode">
+            <option value="generate">generate</option>
+            <option value="inpaint_masked">inpaint masked</option>
+            <option value="inpaint_not_masked">inpaint not masked</option>
+          </select>
+        </label>
+        <label title="denoising strength (inpaint modes only)">Denoise
+          <input id="denoise" type="number" value="1" min="0" max="1" step="0.01" disabled>
+        </label>
+      </div>
       <div class="row actions">
         <button id="btn-generate" class="primary">Generate</button>
         <button id="btn-save">Save</button>

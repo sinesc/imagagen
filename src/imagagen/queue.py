@@ -16,7 +16,10 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from .backends import GenerateRequest, ModelBackend
+from .generation import InpaintPlan
 from .gpus import available_gpus
 
 
@@ -27,6 +30,7 @@ class Job:
     request: GenerateRequest
     batch_size: int
     base_seed: int
+    plan: InpaintPlan | None = None  # inpaint modes: maps output to canvas state
     interrupted: bool = False
     results: dict[int, bytes] = field(default_factory=dict)  # index -> PNG bytes
     finished: set[int] = field(default_factory=set)  # indices settled (ok or error)
@@ -86,12 +90,18 @@ class GenerationQueue:
         with self._job_lock:
             return self._jobs.get(job_id)
 
-    def submit(self, model_id: str, request: GenerateRequest, batch_size: int) -> Job:
+    def submit(
+        self,
+        model_id: str,
+        request: GenerateRequest,
+        batch_size: int,
+        plan: InpaintPlan | None = None,
+    ) -> Job:
         import random
 
         base_seed = random.randrange(2**31) if request.seed == -1 else request.seed
         job = Job(id=self._next_job_id, model_id=model_id, request=request,
-                  batch_size=batch_size, base_seed=base_seed)
+                  batch_size=batch_size, base_seed=base_seed, plan=plan)
         with self._job_lock:
             self._jobs[self._next_job_id] = job
             self._next_job_id += 1
@@ -175,14 +185,26 @@ class GenerationQueue:
 
         if job.interrupted:
             return
-        png = _result_to_png(backend, req, result)
+        # inpaint modes: the backend output is the raw width x height
+        # generation; the plan maps it to canvas state (downscale+blend for
+        # "inpaint masked", whole-canvas replacement + new mask for
+        # "inpaint not masked"). Thumbnails show the resulting canvas state,
+        # so clicking one restores exactly what auto-set would have shown.
+        if job.plan is not None:
+            out_image, new_mask = job.plan.postprocess(result.image)
+        else:
+            out_image, new_mask = result.image, None
+        png = _result_to_png(backend, req, result, out_image)
         job.results[task.index] = png
         self.emit({"type": "image", "job": job.id, "index": task.index,
                    "seed": result.seed, "url": f"/api/thumb/{job.id}/{task.index}.png"})
         if not job.first_emitted:
             job.first_emitted = True
             # spec: first completed image is automatically set in the canvas
-            self.canvas.set_from_png_bytes(png)
+            if new_mask is not None:
+                self.canvas.set_image(out_image, mask=new_mask)
+            else:
+                self.canvas.set_image_keep_mask(out_image)
             self.emit({"type": "canvas_set", "job": job.id, "index": task.index})
         self._settle(job, task.index)
 
@@ -195,13 +217,17 @@ class GenerationQueue:
                 self.emit({"type": "done", "job": job.id})
 
 
-def _result_to_png(backend: ModelBackend, req: GenerateRequest, result) -> bytes:
+def _result_to_png(
+    backend: ModelBackend, req: GenerateRequest, result, image: np.ndarray
+) -> bytes:
     from io import BytesIO
 
     from PIL import Image
 
     from . import metadata
 
+    # width/height describe the final (possibly blended/resized) image, not
+    # the raw generation size
     params = metadata.build_parameters(
         prompt=req.prompt,
         negative_prompt=req.negative_prompt,
@@ -210,13 +236,13 @@ def _result_to_png(backend: ModelBackend, req: GenerateRequest, result) -> bytes
         scheduler=req.scheduler or backend.default_scheduler,
         cfg=req.cfg,
         seed=result.seed,
-        width=req.width,
-        height=req.height,
+        width=image.shape[1],
+        height=image.shape[0],
         model_name=backend.name,
         model_hash=backend.model_hash,
         loras=req.loras,
     )
-    img, pnginfo = metadata.attach_metadata(Image.fromarray(result.image), params)
+    img, pnginfo = metadata.attach_metadata(Image.fromarray(image), params)
     buf = BytesIO()
     img.save(buf, format="PNG", pnginfo=pnginfo)
     return buf.getvalue()

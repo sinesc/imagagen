@@ -121,6 +121,19 @@ class Canvas:
         with self._lock:
             self._commit_locked(image, m)
 
+    def set_image_keep_mask(self, image: np.ndarray) -> None:
+        """Replace the image, retaining the current mask when its shape
+        matches (generation results: the mask is retained across image
+        generations unless the user clears it or the size changes)."""
+        image = np.ascontiguousarray(image)
+        with self._lock:
+            m = (
+                self._mask
+                if self._mask is not None and self._mask.shape == image.shape[:2]
+                else np.zeros(image.shape[:2], dtype=np.uint8)
+            )
+            self._commit_locked(image, m)
+
     def set_from_png_bytes(self, data: bytes) -> None:
         img = Image.open(BytesIO(data))
         arr = np.asarray(img.convert("RGB"))

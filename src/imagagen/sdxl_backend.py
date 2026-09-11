@@ -239,6 +239,17 @@ class SdxlBackend(ModelBackend):
         with self._lock:
             return self._generate_impl(request, progress)
 
+    def _encode_init(self, pipe, arr: np.ndarray, device):
+        """VAE-encode an HxWx3 uint8 image to its latent (the deterministic
+        latent_dist.mode(), i.e. A1111's "Full" encode -- same seed gives the
+        same result)."""
+        import torch
+
+        t = torch.from_numpy(np.ascontiguousarray(arr)).to(device=device)
+        t = t.permute(2, 0, 1).float()[None] / 127.5 - 1.0
+        lat = pipe.vae.encode(t.to(dtype=pipe.vae.dtype)).latent_dist
+        return lat.mode() * pipe.vae.config.scaling_factor
+
     def _generate_impl(self, request: GenerateRequest, progress=None) -> GenerateResult:
         import torch
 
@@ -303,11 +314,22 @@ class SdxlBackend(ModelBackend):
                     raise InterruptedError("cancelled")
                 self._step += 1
                 t = sigma_to_t(sigma)
+                xwork = x
+                if mask_t is not None:
+                    # per-step lock (Forge's cfg_denoiser): before the model
+                    # call, the protected region (mask_t == 1) is replaced by
+                    # fresh init-latent + noise at the current sigma level
+                    xsigma = init_latent * (sigma**2 + 1.0).sqrt()
+                    xnoise = torch.randn_like(x) * sigma
+                    frac = ((sigma - model_wrap.min_sigma)
+                            / (model_wrap.max_sigma - model_wrap.min_sigma)).clamp(0, 1)
+                    xwork = x * (1.0 - mask_t) \
+                        + (xsigma + (xnoise - xsigma) * frac) * mask_t
                 # the UNet expects unit-variance input at each noise level
                 # (x / sqrt(sigma^2 + 1)); computed in fp32, cast to the
                 # UNet's fp16 dtype right before the call (like Forge's
                 # calculate_input + .to(computation_dtype))
-                x_in = (x / (sigma ** 2 + 1.0).sqrt()).to(torch.float16)
+                x_in = (xwork / (sigma ** 2 + 1.0).sqrt()).to(torch.float16)
                 c = unet_forward(prompt_embeds, pooled, x_in, t)
                 uc = unet_forward(neg_embeds, neg_pooled, x_in, t)
                 if progress and self._step <= self._steps_total:
@@ -316,9 +338,13 @@ class SdxlBackend(ModelBackend):
                 # UNet output is an epsilon prediction -> convert to x0.
                 # x is fp32 (solver state), so x0 stays fp32.
                 eps = uc + request.cfg * (c - uc)
-                return x - sigma * eps
+                x0 = xwork - sigma * eps
+                if mask_t is not None:
+                    # and the x0 estimate is locked back to the init latent
+                    # (protected content decodes exactly)
+                    x0 = x0 * (1.0 - mask_t) + init_latent * mask_t
+                return x0
 
-            self._steps_total = request.steps
             self._step = 0
 
             # --- sampler / scheduler registries (Phase 5 grows these into plugins) ---
@@ -350,10 +376,51 @@ class SdxlBackend(ModelBackend):
             # must not quantize (Forge's path promotes to fp32 at step 1).
             gen = torch.Generator(device=device).manual_seed(request.seed)
             noise = torch.randn((1, 4, lh, lw), device=device, dtype=torch.float32,
-                                generator=gen) * model_wrap.max_sigma
+                                generator=gen)
+
+            # --- img2img / inpainting (A1111/Forge kdiff convention) ---
+            # With an init image: start from the init latent instead of pure
+            # noise, truncate the sigma schedule at the denoising strength,
+            # and (with an init mask) lock the protected region (mask 0) to
+            # the init content at every step. init_mask marks the *inpaint*
+            # region, so protected = 1 - mask.
+            init_latent = None
+            mask_t = None
+            sigma_sched = sigmas
+            if request.init_image is not None:
+                init_latent = self._encode_init(pipe, request.init_image, device)
+                # A1111: t_enc = int(min(strength, 0.999) * steps); the
+                # schedule starts at sigmas[steps - 1 - t_enc] (strength 1.0
+                # -> the full schedule)
+                t_enc = int(min(request.denoise, 0.999) * request.steps)
+                sigma_sched = sigmas[request.steps - 1 - t_enc :]
+                # noise_scaling(sigma0, noise, init): the init latent scaled
+                # to the start sigma, blended with fresh noise according to
+                # where sigma0 sits in [sigma_min, sigma_max]
+                sigma0 = sigma_sched[0]
+                xsigma = init_latent * (sigma0**2 + 1.0).sqrt()
+                xnoise = noise * sigma0
+                frac = ((sigma0 - model_wrap.min_sigma)
+                        / (model_wrap.max_sigma - model_wrap.min_sigma)).clamp(0, 1)
+                noise = xsigma + (xnoise - xsigma) * frac
+                if request.init_mask is not None:
+                    m = torch.from_numpy(
+                        np.ascontiguousarray(request.init_mask)
+                    ).to(device=device).float().div(255.0).unsqueeze(0)
+                    m = torch.nn.functional.interpolate(m, size=(lh, lw), mode="bilinear")
+                    mask_t = (1.0 - m).expand(4, lh, lw).contiguous()
+                    # A1111's init composite: only the inpaint region starts
+                    # re-noised; the protected region starts at the clean
+                    # init latent (it is locked there at every step anyway)
+                    noise = noise * (1.0 - mask_t) + init_latent * mask_t
+            self._steps_total = max(1, len(sigma_sched) - 1)
             # the seed is threaded into the sampler so SDE/ancestral samplers
             # derive their per-step noise deterministically from it
-            samples = sampler_fn(model_wrap, noise, sigmas, extra_args={"seed": request.seed})
+            samples = sampler_fn(model_wrap, noise, sigma_sched,
+                                 extra_args={"seed": request.seed})
+            if init_latent is not None and mask_t is not None:
+                # final lock: the protected region is exactly the init latent
+                samples = samples * (1.0 - mask_t) + init_latent * mask_t
 
             # sampling ran in VAE-scaled latent space -> unscale (fp32) and
             # cast to the VAE dtype before decode (like Forge's decode path)
