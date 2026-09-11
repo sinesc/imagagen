@@ -243,8 +243,6 @@ function setupCanvasInput() {
     }
     if (!view.stroke) return;
     const s = view.stroke;
-    view.stroke = null;
-    viewRedraw();
     const st = Tools.get();
     try {
       await api("/api/canvas/stroke", {
@@ -257,10 +255,18 @@ function setupCanvasInput() {
         target: s.tool === "mask" ? "mask" : "image",
         erase: s.erase,
       });
-      await viewRefresh();
     } catch (err) {
+      view.stroke = null;
       setStatus(`stroke failed: ${err.message}`);
+      viewRedraw();
+      return;
     }
+    // Drop the stroke WITHOUT redrawing in between: the screen keeps the
+    // last rendered frame (preview over the old image) until viewRefresh()
+    // has fetched and drawn the committed pixels, so the stroke never
+    // vanishes during the request round trip (no flicker on release).
+    view.stroke = null;
+    await viewRefresh();
   };
   c.addEventListener("pointerup", endStroke);
   c.addEventListener("pointercancel", endStroke);

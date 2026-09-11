@@ -58,7 +58,10 @@
         <button id="tool-brush" class="tool active" title="brush tool (B)">brush</button>
         <button id="tool-mask" class="tool" title="mask tool (M); draw with shift held to erase">mask</button>
         <select id="brush" title="brush shape (greyscale png from brushes/)"></select>
-        <input id="brush-color" type="color" value="#ffffff" title="brush colour">
+        <label class="slab" title="brush colour (mask strokes ignore it)">
+          <span>colour</span>
+          <input id="brush-color" type="color" value="#ffffff">
+        </label>
         <label class="slab" title="brush size, logarithmic 0.1–100 px">
           <span>size</span>
           <input id="brush-size" type="range" min="0" max="1" step="0.001" value="0.667">

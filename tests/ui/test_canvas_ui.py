@@ -102,8 +102,9 @@ def test_mask_tool_shift_erase_and_morph(page, server):
     page.keyboard.press("m")
     assert page.evaluate(
         "document.getElementById('tool-mask').classList.contains('active')")
-    # the colour picker is disabled for the mask tool
-    assert page.evaluate("document.getElementById('brush-color').disabled")
+    # the colour swatch stays live in mask mode (it edits the brush tool's
+    # colour; mask strokes ignore colour server-side)
+    assert not page.evaluate("document.getElementById('brush-color').disabled")
 
     dot(page, 50, 40)  # mask default 30 px -> disc, radius 15
     assert wait_until(lambda: mask_arr(base) is not None and mask_arr(base)[40, 50] == 255)
@@ -134,6 +135,45 @@ def test_mask_tool_shift_erase_and_morph(page, server):
 
 
 # ---------------- zoom / pan ----------------
+
+
+def test_stroke_preview_held_until_server_response(page, server):
+    """No flicker on release: the on-screen preview must stay visible while
+    the stroke request is in flight (regression: endStroke used to clear +
+    redraw before the round trip, so the stroke vanished for ~100 ms)."""
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150 white
+    set_input(page, "#brush-color", "#000000")
+
+    # Delay the stroke response so the round-trip window is wide.
+    page.evaluate("""() => {
+        const orig = window.fetch;
+        window.fetch = async (url, opts) => {
+            const r = await orig(url, opts);
+            if (String(url).includes('/canvas/stroke'))
+                await new Promise((res) => setTimeout(res, 250));
+            return r;
+        };
+    }""")
+    stroke(page, [(90, 40), (110, 40)])  # ends with mouse.up
+
+    def preview_px():
+        return page.evaluate("""() => {
+            const c = document.getElementById('canvas');
+            const x = Math.round((view.ox + 100 * view.scale) * view.dpr);
+            const y = Math.round((view.oy + 40 * view.scale) * view.dpr);
+            const d = c.getContext('2d').getImageData(x, y, 1, 1).data;
+            return [d[0], d[1], d[2]];
+        }""")
+
+    # inside the 250 ms delay: the preview must still be on screen
+    assert preview_px() == [0, 0, 0], \
+        f"preview lost during round trip: {preview_px()}"
+    # ...and the server commits the stroke
+    assert wait_until(lambda: canvas_px(base, 100, 40) == (0, 0, 0))
+    # after the refresh the committed pixels are on screen
+    assert preview_px() == [0, 0, 0]
 
 
 def test_zoom_wheel_fit_pan(page, server):

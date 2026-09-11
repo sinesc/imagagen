@@ -127,7 +127,9 @@ function syncToolbar() {
   const st = Tools.get();
   $("tool-brush").classList.toggle("active", Tools.current === "brush");
   $("tool-mask").classList.toggle("active", Tools.current === "mask");
-  $("brush-color").disabled = Tools.current === "mask";
+  // The colour swatch always edits the brush tool's remembered colour
+  // (mask strokes ignore colour), so it stays live in mask mode too.
+  $("brush-color").value = Tools.state.brush.color || "#ffffff";
   if (brushNames.includes(st.brush)) $("brush").value = st.brush;
   $("brush-size").value = sliderFromSize(st.size);
   $("brush-size-val").textContent =
@@ -166,7 +168,7 @@ function wireToolbar() {
     Tools.save();
   };
   $("brush-color").oninput = (e) => {
-    Tools.get().color = e.target.value;
+    Tools.state.brush.color = e.target.value;
     Tools.save();
   };
   $("brush-size").oninput = (e) => {
