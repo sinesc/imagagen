@@ -144,6 +144,25 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
     app.state.registry = registry
     app.state.ui_state = UiStateStore(config.root / "ui-state.json")
 
+    # --- cache policy ---
+    # Local single-user tool: the browser must never serve stale UI state.
+    # Before this middleware, responses carried no Cache-Control at all,
+    # so Chrome heuristic-cached app.js (and even JSON APIs) for a while
+    # after a deploy -- a restarted server then kept "showing" the old UI.
+    # Default: revalidate every response (no-cache; StaticFiles' ETag makes
+    # unchanged files a cheap 304). Debug mode (imagagen.ini) forbids
+    # caching entirely.
+    @app.middleware("http")
+    async def cache_headers(request: Request, call_next):
+        response = await call_next(request)
+        if config.debug:
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     @app.get("/api/health")
     def health() -> dict:
         from .gpus import gpu_info, select_gpu

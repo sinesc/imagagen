@@ -90,3 +90,17 @@ def test_bad_encoder_device_raises(tmp_path):
     (tmp_path / "imagagen.ini").write_text("[imagagen]\ntext-encoder-device = zzz\n")
     with pytest.raises(ValueError, match="text-encoder-device"):
         load_config(tmp_path)
+
+
+def test_debug_flag(tmp_path):
+    assert load_config(tmp_path).debug is False
+    (tmp_path / "imagagen.ini").write_text("[imagagen]\ndebug = true\n")
+    assert load_config(tmp_path).debug is True
+    (tmp_path / "imagagen.ini").write_text("[imagagen]\ndebug = false\n")
+    assert load_config(tmp_path).debug is False
+
+
+def test_bad_debug_raises(tmp_path):
+    (tmp_path / "imagagen.ini").write_text("[imagagen]\ndebug = maybe\n")
+    with pytest.raises(ValueError, match="debug"):
+        load_config(tmp_path)
