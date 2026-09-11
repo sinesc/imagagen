@@ -34,6 +34,18 @@ Precision (matching Forge's kdiff path exactly):
   same 8-bit mantissa as fp16 but 8x the dynamic range, which is also why
   Forge does not hit the fp16 stock-VAE overflow/NaN that used to make us
   swap in the improved VAE
+
+VRAM options (imagagen.ini, all optional, all off by default):
+- unet-quantization = nf4: bitsandbytes NF4 4-bit weights for the UNet.
+  Saves ~3.2 GiB (768² peak 6.6 -> 3.4 GiB) at the same speed; the output
+  is usable but softer (quantization error diverges from fp16 chaotically).
+  (torchao's int8 was rejected: int8_weight_only overflows in fp16
+  accumulation -> NaN/black images, and int8 dynamic activations are
+  4x slower. bitsandbytes has fused 4-bit kernels.)
+- text-encoder-device = cpu: keeps the CLIP encoders in system RAM
+  (saves ~1.4 GiB VRAM permanently); CPU fp16 encoding is only ~0.6 s per
+  prompt, so the speed cost is ~1 s per generation.
+- vae-tiling = on: tiled VAE decode, lower peak at 1024².
 """
 
 from __future__ import annotations
@@ -84,6 +96,59 @@ SCHEDULERS = {
 }
 
 
+def _quantize_unet_nf4(unet, device) -> int:
+    """Replace every nn.Linear in ``unet`` with a bitsandbytes NF4 layer.
+
+    Post-load quantization: diffusers 0.40 cannot load a raw fp16
+    checkpoint through its quantization framework via from_single_file
+    (PipelineQuantizationConfig hits a quant_method AttributeError; the
+    legacy BitsAndBytesConfig expects pre-quantized state dicts). So we
+    load fp16 and convert in place -- the same trick A1111/Forge use.
+    The Params4bit constructor quantizes fp16 weights on the fly (the
+    exact recipe diffusers' bnb_quantizer uses for unquantized tensors).
+
+    Returns the number of converted layers.
+    """
+    import bitsandbytes as bnb
+    import torch
+    from bitsandbytes import nn as bnn
+
+    def to_nf4(linear):
+        l4 = bnn.Linear4bit(
+            linear.in_features,
+            linear.out_features,
+            bias=linear.bias is not None,
+            compute_dtype=torch.float16,
+            quant_type="nf4",
+            device=device,
+        )
+        # quantization parameters taken from the freshly built Params4bit
+        # template (quant_type, blocksize, storage, compress_statistics)
+        tpl = {
+            k: v
+            for k, v in l4.weight.__dict__.items()
+            if k not in ("data", "requires_grad")
+        }
+        l4.weight = bnb.nn.Params4bit(
+            linear.weight.detach().cpu(), requires_grad=False, **tpl
+        ).to(device)
+        if linear.bias is not None:
+            l4.bias.data = linear.bias.detach().to(device)
+        return l4
+
+    n = 0
+    for name, module in list(unet.named_modules()):
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        parent = unet
+        *prefix, last = name.split(".")
+        for p in prefix:
+            parent = getattr(parent, p)
+        setattr(parent, last, to_nf4(module))
+        n += 1
+    return n
+
+
 def _model_hash(path: str) -> str:
     h = hashlib.md5()
     with open(path, "rb") as f:
@@ -95,7 +160,7 @@ def _model_hash(path: str) -> str:
 
 
 class SdxlBackend(ModelBackend):
-    def __init__(self, info, device) -> None:
+    def __init__(self, info, device, config=None) -> None:
         import os
         import warnings
 
@@ -141,9 +206,25 @@ class SdxlBackend(ModelBackend):
         except Exception:
             pass  # not supported by this UNet variant; fall back to full attention
 
-    def _encoder_kwargs(self) -> dict:
+        # --- VRAM options from imagagen.ini (all default off) ---
+        self.text_encoder_device = self.device
+        if config is not None:
+            if config.text_encoder_device == "cpu":
+                # keep the CLIP encoders in system RAM permanently (~1.4
+                # GiB saved); CPU fp16 encoding is ~0.6 s per prompt
+                self.text_encoder_device = "cpu"
+                self.pipe.text_encoder.cpu()
+                if getattr(self.pipe, "text_encoder_2", None) is not None:
+                    self.pipe.text_encoder_2.cpu()
+            if config.vae_tiling:
+                self.pipe.vae.enable_tiling()
+            if config.unet_quantization == "nf4":
+                _quantize_unet_nf4(self.pipe.unet, self.device)
+                torch.cuda.empty_cache()
+
+    def _encoder_kwargs(self, device) -> dict:
         return {
-            "device": self.device,
+            "device": device,
             "num_images_per_prompt": 1,
         }
 
@@ -169,24 +250,33 @@ class SdxlBackend(ModelBackend):
         lh, lw = h // 8, w // 8
 
         with torch.inference_mode():
-            # text encoders were offloaded to CPU after the previous encode;
-            # bring them back for this prompt, offload again afterwards
-            pipe.text_encoder.to(device)
+            # text encoders live on self.text_encoder_device (GPU by
+            # default, CPU when imagagen.ini says so); with the default
+            # they are parked on CPU between generations to free ~1.4 GiB
+            te_dev = self.text_encoder_device
+            pipe.text_encoder.to(te_dev)
             if getattr(pipe, "text_encoder_2", None) is not None:
-                pipe.text_encoder_2.to(device)
-            ek = self._encoder_kwargs()
+                pipe.text_encoder_2.to(te_dev)
+            ek = self._encoder_kwargs(te_dev)
             # encode_prompt -> (prompt_embeds, neg_embeds, pooled, neg_pooled)
             prompt_embeds, _, pooled, _ = pipe.encode_prompt(prompt=request.prompt, **ek)
             # A1111 semantics: an empty negative prompt means encoding ""
             _, neg_embeds, _, neg_pooled = pipe.encode_prompt(
                 prompt=request.negative_prompt or "", **ek
             )
-            # Free ~1.3 GiB for UNet + VAE activations: the text encoders are
-            # only needed for prompt encoding.
-            pipe.text_encoder.cpu()
-            if getattr(pipe, "text_encoder_2", None) is not None:
-                pipe.text_encoder_2.cpu()
-            torch.cuda.empty_cache()
+            if te_dev == "cpu":
+                # embeddings to the GPU; the encoders stay in system RAM
+                prompt_embeds = prompt_embeds.to(device)
+                neg_embeds = neg_embeds.to(device)
+                pooled = pooled.to(device)
+                neg_pooled = neg_pooled.to(device)
+            else:
+                # Free ~1.3 GiB for UNet + VAE activations: the text
+                # encoders are only needed for prompt encoding.
+                pipe.text_encoder.cpu()
+                if getattr(pipe, "text_encoder_2", None) is not None:
+                    pipe.text_encoder_2.cpu()
+                torch.cuda.empty_cache()
 
             time_ids = torch.tensor([h, w, 0, 0, h, w], device=device).unsqueeze(0)
             unet = pipe.unet

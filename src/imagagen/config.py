@@ -21,6 +21,10 @@ class Config:
     root: Path
     primary_gpu: int | None = None
     ignore_gpus: frozenset[int] = field(default_factory=frozenset)
+    # VRAM options (imagagen.ini): trade VRAM for speed/quality
+    unet_quantization: str = "off"  # "off" | "nf4"
+    text_encoder_device: str = "gpu"  # "gpu" | "cpu"
+    vae_tiling: bool = False
 
     @property
     def models_dir(self) -> Path:
@@ -66,8 +70,21 @@ def load_config(root: Path | str | None = None) -> Config:
     if root is None:
         root = os.environ.get("IMAGEN_ROOT", Path.cwd())
     root = Path(root).expanduser().resolve()
-    primary_gpu, ignore_gpus = _parse_gpu_ini(root / "imagagen.ini")
-    config = Config(root=root, primary_gpu=primary_gpu, ignore_gpus=ignore_gpus)
+    (
+        primary_gpu,
+        ignore_gpus,
+        unet_quantization,
+        text_encoder_device,
+        vae_tiling,
+    ) = _parse_ini(root / "imagagen.ini")
+    config = Config(
+        root=root,
+        primary_gpu=primary_gpu,
+        ignore_gpus=ignore_gpus,
+        unet_quantization=unet_quantization,
+        text_encoder_device=text_encoder_device,
+        vae_tiling=vae_tiling,
+    )
     # Must happen before huggingface_hub is imported (it reads these at
     # import time): cache hub files in the project, keep the console quiet.
     os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(config.hf_cache_dir))
@@ -84,20 +101,22 @@ def load_config(root: Path | str | None = None) -> Config:
     return config
 
 
-def _parse_gpu_ini(path: Path) -> tuple[int | None, frozenset[int]]:
-    """Parse ``primary-gpu`` / ``ignore-gpus`` from ``<root>/imagagen.ini``.
+def _parse_ini(
+    path: Path,
+) -> tuple[int | None, frozenset[int], str, str, bool]:
+    """Parse ``<root>/imagagen.ini``: GPU selection + VRAM options.
 
-    A missing file yields the defaults (auto, none).
+    A missing file yields the defaults (auto, none, off, gpu, False).
     """
     if not path.is_file():
-        return None, frozenset()
+        return None, frozenset(), "off", "gpu", False
     cp = configparser.ConfigParser()
     try:
         cp.read(path, encoding="utf-8")
     except configparser.Error as e:
         raise ValueError(f"cannot parse {path.name}: {e}") from e
     if not cp.has_section("imagagen"):
-        return None, frozenset()
+        return None, frozenset(), "off", "gpu", False
     sec = cp["imagagen"]
 
     raw = sec.get("primary-gpu", "auto").strip().lower()
@@ -125,7 +144,19 @@ def _parse_gpu_ini(path: Path) -> tuple[int | None, frozenset[int]]:
                 f"{path.name}: ignore-gpus must be comma-separated GPU "
                 f"indices, got {part!r}"
             ) from None
-    return primary, frozenset(ignored)
+
+    quant = sec.get("unet-quantization", "off").strip().lower()
+    if quant not in ("off", "nf4"):
+        raise ValueError(
+            f"{path.name}: unet-quantization must be 'off' or 'nf4', got {quant!r}"
+        )
+    te_dev = sec.get("text-encoder-device", "gpu").strip().lower()
+    if te_dev not in ("gpu", "cpu"):
+        raise ValueError(
+            f"{path.name}: text-encoder-device must be 'gpu' or 'cpu', got {te_dev!r}"
+        )
+    vae_tiling = sec.getboolean("vae-tiling", False)
+    return primary, frozenset(ignored), quant, te_dev, vae_tiling
 
 
 def ensure_dirs(config: Config) -> None:

@@ -71,7 +71,8 @@ class ModelRegistry:
             self.emit({"type": "status", "message": f"loading {info.name} …"})
             from .sdxl_backend import SdxlBackend
 
-            self._backend = SdxlBackend(info, self._resolve_device())
+            self._backend = SdxlBackend(info, self._resolve_device(),
+                                        config=self.config)
             self._current_id = model_id
             self.emit({"type": "status", "message": f"loaded {info.name}"})
             return self._backend

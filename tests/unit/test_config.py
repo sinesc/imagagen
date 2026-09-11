@@ -1,4 +1,4 @@
-"""imagagen.ini parsing (primary-gpu / ignore-gpus)."""
+"""imagagen.ini parsing (GPU selection + VRAM options)."""
 
 from __future__ import annotations
 
@@ -57,4 +57,36 @@ def test_bad_primary_raises(tmp_path):
 def test_bad_ignore_raises(tmp_path):
     (tmp_path / "imagagen.ini").write_text("[imagagen]\nignore-gpus = 1, x\n")
     with pytest.raises(ValueError, match="ignore-gpus"):
+        load_config(tmp_path)
+
+
+def test_vram_options_defaults(tmp_path):
+    c = load_config(tmp_path)
+    assert c.unet_quantization == "off"
+    assert c.text_encoder_device == "gpu"
+    assert c.vae_tiling is False
+
+
+def test_vram_options_explicit(tmp_path):
+    (tmp_path / "imagagen.ini").write_text(
+        "[imagagen]\n"
+        "unet-quantization = nf4\n"
+        "text-encoder-device = cpu\n"
+        "vae-tiling = true\n"
+    )
+    c = load_config(tmp_path)
+    assert c.unet_quantization == "nf4"
+    assert c.text_encoder_device == "cpu"
+    assert c.vae_tiling is True
+
+
+def test_bad_quantization_raises(tmp_path):
+    (tmp_path / "imagagen.ini").write_text("[imagagen]\nunet-quantization = int8\n")
+    with pytest.raises(ValueError, match="unet-quantization"):
+        load_config(tmp_path)
+
+
+def test_bad_encoder_device_raises(tmp_path):
+    (tmp_path / "imagagen.ini").write_text("[imagagen]\ntext-encoder-device = zzz\n")
+    with pytest.raises(ValueError, match="text-encoder-device"):
         load_config(tmp_path)
