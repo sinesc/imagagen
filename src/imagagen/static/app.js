@@ -15,8 +15,11 @@ function setStatus(text) {
   $("status-line").textContent = text || "";
 }
 
-async function api(path, body) {
-  const res = await fetch(path, body === undefined ? undefined : {
+// POST-only API helper. Every call is a POST (some endpoints, like
+// /api/canvas/undo, take no body -- an empty {} is sent, which FastAPI
+// ignores for body-less endpoints).
+async function api(path, body = {}) {
+  const res = await fetch(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),

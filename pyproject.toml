@@ -62,5 +62,6 @@ torch = { index = "pytorch-cu129" }
 
 [dependency-groups]
 dev = [
+    "playwright>=1.62.0",
     "websockets>=17.1",
 ]

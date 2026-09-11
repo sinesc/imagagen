@@ -193,8 +193,12 @@ Implementation notes:
   the server remains authoritative on commit.
 - `GET /api/mask.png` is 404 while no canvas is loaded; the UI treats that as
   an empty mask.
-- The UI (canvas.js/tools.js) is syntax-checked but not browser-tested — no
-  headless browser in this environment (documented v1 gap).
+- The UI is browser-tested with Playwright: `tests/ui/test_canvas_ui.py`
+  (Chromium, mock-backend server in a temp root). These caught two real wiring
+  bugs the API-only tests couldn't: the brush tool sent `target: "brush"`
+  (server expects `"image"`) and the no-body `api()` helper fell back to GET
+  while `/api/canvas/undo`|`redo` are POST-only. Playwright is a dev dependency;
+  its Chromium is installed separately (`playwright install --with-deps chromium`).
 
 ### Phase 3 — Inpainting & generation modes
 - `generation.py`: inpaint masked + inpaint not masked incl. all bbox/scale/center
@@ -259,8 +263,13 @@ Implementation notes:
   CFG rescaling, LoRA application points) without an SDXL GPU.
 - On a GPU machine: manual smoke test (real SDXL txt2img, inpaint both modes,
   model switch unload/reload, multi-GPU queue if hardware available).
-- UI: keep JS dependency-free so it's eyeball-testable + a few jsdom-free manual
-  checklists; no automated browser testing in v1 (documented gap).
+- UI: keep JS dependency-free so it's eyeball-testable. `tests/ui/` drives a real
+  headless Chromium (Playwright) against a live mock-backend server in a temp
+  root — stroke/paint, mask+shift-erase+morph, zoom/pan, tool-state persistence
+  and custom-brush listing are asserted against the server-side canvas/mask
+  pixels (authoritative). The `page` fixture skips gracefully when Playwright's
+  Chromium isn't installed (run `playwright install --with-deps chromium` once);
+  the rest of the suite runs browser-less (httpx + WS).
 
 ## Open questions & recommendations
 

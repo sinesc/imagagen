@@ -253,7 +253,8 @@ function setupCanvasInput() {
         opacity: st.opacity,
         brush: st.brush,
         color: st.color || "#ffffff",
-        target: s.tool, // "image" | "mask"
+        // Tools.current is "brush"|"mask"; the API wants "image"|"mask"
+        target: s.tool === "mask" ? "mask" : "image",
         erase: s.erase,
       });
       await viewRefresh();
