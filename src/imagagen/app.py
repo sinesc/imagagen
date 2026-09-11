@@ -124,7 +124,13 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
     if backend is not None:  # test injection (e.g. MockBackend)
         registry = _MockRegistry(backend)
     else:
-        registry = ModelRegistry(config, emit=hub.emit)
+        from .gpus import select_gpu
+
+        # Resolve the generation GPU up front (ini primary-gpu, or auto:
+        # most free VRAM among non-ignored GPUs); the registry re-checks.
+        registry = ModelRegistry(config, emit=hub.emit,
+                                 gpu=select_gpu(config.primary_gpu,
+                                                config.ignore_gpus))
     queue = GenerationQueue(registry=registry, canvas=canvas, emit=hub.emit)
     queue.start()
 
@@ -137,9 +143,15 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
 
     @app.get("/api/health")
     def health() -> dict:
-        from .gpus import gpu_info
+        from .gpus import gpu_info, select_gpu
 
-        return {"status": "ok", "root": str(config.root), "gpus": gpu_info()}
+        selected = select_gpu(config.primary_gpu, config.ignore_gpus)
+        return {
+            "status": "ok",
+            "root": str(config.root),
+            "gpu": selected,
+            "gpus": gpu_info(config.ignore_gpus, selected),
+        }
 
     # --- models ---
     @app.get("/api/models")

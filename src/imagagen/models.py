@@ -23,13 +23,14 @@ class ModelInfo:
 
 
 class ModelRegistry:
-    def __init__(self, config, emit=None) -> None:
+    def __init__(self, config, emit=None, gpu: int | None = None) -> None:
         self.config = config
         self.emit = emit or (lambda e: None)
         self.models: list[ModelInfo] = self.discover()
         self._lock = threading.Lock()  # serializes load/unload/generate
         self._current_id: str | None = None
         self._backend = None
+        self.gpu = gpu  # None -> resolved on first use (ini/auto-pick)
 
     def discover(self) -> list[ModelInfo]:
         models = []
@@ -70,10 +71,33 @@ class ModelRegistry:
             self.emit({"type": "status", "message": f"loading {info.name} …"})
             from .sdxl_backend import SdxlBackend
 
-            self._backend = SdxlBackend(info)
+            self._backend = SdxlBackend(info, self._resolve_device())
             self._current_id = model_id
             self.emit({"type": "status", "message": f"loaded {info.name}"})
             return self._backend
+
+    def _resolve_device(self):
+        """Pick the torch device for generation (cached after first call).
+
+        Explicit ``gpu`` (from /api/health-time selection) wins; otherwise
+        the ini settings decide: primary-gpu, or auto-pick the most-free
+        non-ignored GPU.
+        """
+        import torch
+
+        if self.gpu is None:
+            from .gpus import select_gpu
+
+            self.gpu = select_gpu(self.config.primary_gpu,
+                                  self.config.ignore_gpus)
+        if self.gpu is None:
+            raise RuntimeError(
+                f"no usable GPU for generation (primary-gpu="
+                f"{self.config.primary_gpu if self.config.primary_gpu is not None else 'auto'}, "
+                f"ignore-gpus={sorted(self.config.ignore_gpus) or '-'}); "
+                "check nvidia-smi and imagagen.ini"
+            )
+        return torch.device(f"cuda:{self.gpu}")
 
     def _unload_locked(self) -> None:
         if self._backend is not None:

@@ -59,11 +59,17 @@ class GenerationQueue:
         self._stop = False
         self._job_lock = threading.Lock()
 
-    def start(self) -> None:
-        n = max(1, len(available_gpus()))
+    def start(self, workers: int | None = None) -> None:
+        if workers is None:
+            # one worker per visible, non-ignored GPU (dynamic assignment;
+            # generation on a single backend is serialized by its lock)
+            ignored = getattr(
+                getattr(self.registry, "config", None), "ignore_gpus", frozenset()
+            )
+            workers = max(1, len(available_gpus(ignored)))
         self._workers = [
             threading.Thread(target=self._worker_loop, name=f"gen-worker-{i}", daemon=True)
-            for i in range(n)
+            for i in range(workers)
         ]
         for t in self._workers:
             t.start()

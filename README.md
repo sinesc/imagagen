@@ -32,3 +32,23 @@ SDXL in fp16 is ~6.6 GiB of weights. Generation at 1024² needs roughly
 1.5 GiB more. The text encoders are offloaded to CPU after prompt encoding.
 On a 16 GB card shared with other GPU work, expect 1024² to be at the ceiling
 (512²–768² are comfortable).
+
+### GPU selection
+
+Which GPU the server uses is configured in `imagagen.ini` in the project
+root:
+
+```ini
+[imagagen]
+# "auto" (default): the non-ignored GPU with the most free VRAM
+# or an explicit index, e.g. primary-gpu = 1
+primary-gpu = auto
+# comma-separated indices to exclude from auto-pick (a friendlier
+# alternative to CUDA_VISIBLE_DEVICES), e.g. ignore-gpus = 3,4,5,6
+ignore-gpus =
+```
+
+With `auto` the server re-checks free VRAM on startup and on every
+`/api/health` call, so a card that was busy during development is picked
+around automatically. The chosen GPU is reported by `GET /api/health`
+(`gpu` plus a `selected` flag per entry of `gpus`).

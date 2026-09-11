@@ -79,7 +79,7 @@ def _model_hash(path: str) -> str:
 
 
 class SdxlBackend(ModelBackend):
-    def __init__(self, info) -> None:
+    def __init__(self, info, device) -> None:
         import os
         import warnings
 
@@ -93,7 +93,7 @@ class SdxlBackend(ModelBackend):
         self.model_id = info.id
         self.name = info.name
         self.model_hash = _model_hash(str(info.path))
-        self.device = torch.device("cuda:0")
+        self.device = device  # chosen by ModelRegistry (ini/auto-pick)
         # Serializes generate()/unload(): the pipeline is not thread-safe.
         # The queue runs one worker per GPU and workers can pick tasks for
         # the same backend; concurrent .to()/forward on the same module
