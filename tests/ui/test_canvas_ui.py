@@ -127,7 +127,7 @@ def test_mask_tool_shift_erase_and_morph(page, server):
     page.click("#mask-clear")
     assert wait_until(lambda: bool((mask_arr(base) == 0).all()))
 
-    # header undo/redo restore it
+    # toolbar undo/redo restore it
     page.click("#btn-undo")
     assert wait_until(lambda: int((mask_arr(base) > 0).sum()) > ring + 100)
     page.click("#btn-redo")

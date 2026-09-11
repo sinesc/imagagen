@@ -6,25 +6,10 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <h1>imagagen</h1>
-    <div class="hdr-actions">
-      <span id="status-line" class="muted"></span>
-      <button id="btn-undo" title="undo (canvas changes)">↩ undo</button>
-      <button id="btn-redo" title="redo">↪ redo</button>
-    </div>
-  </header>
-
   <div id="layout">
     <aside id="controls">
       <label>Model
         <select id="model"></select>
-      </label>
-      <label>Prompt
-        <textarea id="prompt" rows="3" placeholder="a photo of a frog"></textarea>
-      </label>
-      <label>Negative prompt
-        <textarea id="negative" rows="2" placeholder="blurry, low quality"></textarea>
       </label>
       <div class="row">
         <label>Width <input id="width" type="number" value="1024" min="64" max="2048" step="8"></label>
@@ -63,10 +48,18 @@
         <div id="progress-bar"><div id="progress-fill"></div></div>
         <div id="progress-label" class="muted"></div>
       </div>
+      <div id="thumbs" hidden></div>
     </aside>
 
     <main id="stage">
-      <div id="thumbs" hidden></div>
+      <div id="prompts">
+        <label>Prompt
+          <textarea id="prompt" placeholder="a photo of a frog"></textarea>
+        </label>
+        <label>Negative prompt
+          <textarea id="negative" placeholder="blurry, low quality"></textarea>
+        </label>
+      </div>
       <div id="toolbar">
         <button id="tool-brush" class="tool active" title="brush tool (B)">brush</button>
         <button id="tool-mask" class="tool" title="mask tool (M); draw with shift held to erase">mask</button>
@@ -97,6 +90,9 @@
         <button id="zoom-out" title="zoom out">−</button>
         <button id="zoom-fit" title="fit image to window (also: double-click)">fit</button>
         <span id="zoom-label" class="muted"></span>
+        <span id="status-line" class="muted"></span>
+        <button id="btn-undo" title="undo (canvas changes)">↩ undo</button>
+        <button id="btn-redo" title="redo">↪ redo</button>
       </div>
       <div id="canvas-holder">
         <canvas id="canvas" hidden></canvas>

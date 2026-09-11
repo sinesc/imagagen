@@ -39,6 +39,7 @@ async function api(path, body = {}) {
 
 function renderThumbs() {
   const strip = $("thumbs");
+  strip.hidden = state.thumbs.length === 0;
   strip.innerHTML = "";
   state.thumbs.forEach((t, i) => {
     const el = document.createElement("img");
