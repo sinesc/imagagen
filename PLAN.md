@@ -147,10 +147,12 @@ Key architectural decisions:
 ### Phase 0 — Scaffolding (foundation)
 - `pyproject.toml` (uv), package skeleton, `config.py`/`paths.py`, empty static dir,
   `python -m imagagen` runs FastAPI on :8080 serving a placeholder page.
-- **Tooling from day one** (needed because this workspace has no GPU):
+- **Tooling from day one**:
   - `--mock` backend flag / env var: `tests/mock_backend.py` exposes the same
     `ModelBackend` interface, producing deterministic noise/gradients; all
-    queue/inpaint/import/UI flows are testable CPU-only.
+    queue/inpaint/import/UI flows are testable CPU-only (fast, deterministic,
+    no VRAM needed for the CI-style suite; the workspace does have GPUs — see
+    "Testing strategy" — and real-GPU verification lives in `devtools/`).
   - pytest + httpx AsyncClient integration tests against the API.
   - ruff + a smoke-test script hitting the main endpoints.
 - Deliverable: server runs, directory layout created on first start, tests green.
@@ -170,8 +172,8 @@ Key architectural decisions:
   generated PNG via `metadata.py`.
 - Undo/redo endpoints (single image snapshot).
 - Deliverable: type a prompt → get batched images → pick one → save to `output/`
-  with correct numbering. (Verifiable with mock backend end-to-end; with a real
-  SDXL file on a GPU machine for the actual inference.)
+  with correct numbering. (Verifiable end-to-end with the mock backend; real
+  inference runs on this workspace's GPUs — see "Testing strategy".)
 
 ### Phase 2 — Unified canvas editing ✅ (commit ad5cb2d)
 - ✅ Brush engine: default 10px circle; custom brushes loaded from `brushes/*.png`
@@ -276,10 +278,22 @@ Implementation notes:
 - Final pass: `README.md` (setup, model download, CUDA_VISIBLE_DEVICES note),
   full test suite green, manual GPU test checklist.
 
-## Testing strategy (no GPU in this workspace)
+## Testing strategy
 
-- **Mock backend** is the workhorse: every phase's acceptance criteria are testable
-  via the API + a headless browser-less client (httpx + WS) without CUDA.
+**This workspace has two GPUs** (checked 2025-07: `nvidia-smi`) — index 0: RTX
+5070 Ti 16GB, index 1: RTX 4060 Ti 16GB; both comfortably run SDXL. Servers and
+devtools select one via the `primary-gpu` ini setting (or
+`CUDA_VISIBLE_DEVICES`). Real-GPU verification is therefore part of normal
+workflow here, not something deferred to "a GPU machine".
+
+- **Mock backend** is still the workhorse for the automated suite: every
+  phase's acceptance criteria are testable via the API + a headless
+  browser-less client (httpx + WS) without CUDA — fast and deterministic.
+  **But the mock never exercises the torch code paths**: the SDXL inpaint
+  crash (3D tensor into `F.interpolate`) passed all 143 tests and only showed
+  up in the UI. After any change to `sdxl_backend.py`'s sampling, run
+  `devtools/smoke_sdxl_inpaint.py` (and ideally
+  `devtools/e2e_inpaint_ui_flow.py`) on a GPU.
 - Unit tests: output naming, prompt sanitization, scheduler sigma shapes (known
   values for Karras/Polyexponential at fixed step counts), mask bbox/enlarge math,
   AR-scale+center math (including the 100→250×200 example), dilate/erode,
@@ -288,8 +302,11 @@ Implementation notes:
 - Sampler correctness: compare Euler a / DPM++ 2M outputs against `k_diffusion`
   reference runs on a tiny fake model (CPU) — catches wiring bugs (sigma scaling,
   CFG rescaling, LoRA application points) without an SDXL GPU.
-- On a GPU machine: manual smoke test (real SDXL txt2img, inpaint both modes,
-  model switch unload/reload, multi-GPU queue if hardware available).
+- On the local GPUs: `devtools/` scripts automate the smoke test (real SDXL
+  txt2img, inpaint both modes with protected-region assertions, seed
+  determinism, sampler/scheduler combos over HTTP+WS, offline cache check,
+  pipeline reference diff). Manual: model switch unload/reload, two-GPU queue
+  (both cards present — see above).
 - UI: keep JS dependency-free so it's eyeball-testable. `tests/ui/` drives a real
   headless Chromium (Playwright) against a live mock-backend server in a temp
   root — stroke/paint, mask+shift-erase+morph, zoom/pan, tool-state persistence
@@ -328,6 +345,7 @@ Implementation notes:
 - **Undo memory**: full-res snapshots of a 1024² canvas ≈ 3MB RGB; cap stack at
   ~200 entries, document the cap (spec says "unlimited" — revisit if user-visible,
   e.g. store PNG-compressed).
-- **No GPU here**: real-inference bugs (device placement, dtype, VRAM) will only
-  surface on a GPU machine; keep the mock backend interface faithful to the real
-  one to minimize the delta.
+- **Mock-only coverage is not enough for the backend**: real-inference bugs
+  (tensor shapes, device placement, dtype, VRAM) only surface when torch code
+  actually runs — see "Testing strategy" for the GPU smoke workflow. Keep the
+  mock backend interface faithful to the real one to minimize the delta.
