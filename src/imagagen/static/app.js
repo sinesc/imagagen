@@ -102,6 +102,7 @@ async function generate() {
   };
   clearThumbs();
   setStatus("queued…");
+  saveUiState(); // persist the settings actually about to be used
   const r = await api("/api/generate", body);
   state.job = r.job_id;
   setGenerating(true);
@@ -113,21 +114,95 @@ async function selectModel(id) {
   setStatus("");
 }
 
-function loadModels() {
-  fetch("/api/models")
-    .then((r) => r.json())
-    .then((m) => {
-      const sel = $("model");
-      sel.innerHTML = "";
-      m.models.forEach((x) => {
-        const o = document.createElement("option");
-        o.value = x.id;
-        o.textContent = x.name;
-        if (x.id === m.current) o.selected = true;
-        sel.appendChild(o);
-      });
-    })
-    .catch(() => {});
+// ---------------- UI state persistence (ui-state.json) ----------------
+function readUiState() {
+  return {
+    model: $("model").value || null,
+    prompt: $("prompt").value,
+    negative_prompt: $("negative").value,
+    width: parseInt($("width").value, 10),
+    height: parseInt($("height").value, 10),
+    steps: parseInt($("steps").value, 10),
+    cfg: parseFloat($("cfg").value),
+    seed: parseInt($("seed").value, 10),
+    batch: parseInt($("batch").value, 10),
+    sampler: $("sampler").value || null,
+    scheduler: $("scheduler").value || null,
+  };
+}
+
+function applyUiState(st) {
+  if (!st) return;
+  const fields = [
+    ["prompt", "prompt"],
+    ["negative", "negative_prompt"],
+    ["width", "width"],
+    ["height", "height"],
+    ["steps", "steps"],
+    ["cfg", "cfg"],
+    ["seed", "seed"],
+    ["batch", "batch"],
+    ["sampler", "sampler"],
+    ["scheduler", "scheduler"],
+  ];
+  for (const [el, key] of fields) {
+    if (st[key] !== undefined && st[key] !== null) $(el).value = st[key];
+  }
+  // display-only restore: the model itself is NOT preloaded (it loads
+  // lazily on the next generation, matching the registry design)
+  if (st.model) $("model").value = st.model;
+}
+
+let saveTimer = null;
+function saveUiState() {
+  return api("/api/ui-state", readUiState()).catch(() => {});
+}
+function scheduleSaveUiState(delay = 500) {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveUiState, delay);
+}
+
+// populate the form from the server, then apply the persisted state
+async function init() {
+  let models = { models: [], current: null };
+  let samplers = { samplers: [], schedulers: [] };
+  let saved = null;
+  try {
+    const [m, s, u] = await Promise.all([
+      fetch("/api/models").then((r) => r.json()),
+      fetch("/api/samplers").then((r) => r.json()),
+      fetch("/api/ui-state").then((r) => (r.ok ? r.json() : null)),
+    ]);
+    models = m;
+    samplers = s;
+    saved = u && u.state;
+  } catch (e) {
+    console.error("init:", e);
+    return;
+  }
+  const sel = $("model");
+  sel.innerHTML = "";
+  models.models.forEach((x) => {
+    const o = document.createElement("option");
+    o.value = x.id;
+    o.textContent = x.name;
+    if (x.id === models.current) o.selected = true;
+    sel.appendChild(o);
+  });
+  for (const [id, names] of [
+    ["sampler", samplers.samplers],
+    ["scheduler", samplers.schedulers],
+  ]) {
+    const s2 = $(id);
+    s2.innerHTML = "";
+    names.forEach((n) => {
+      const o = document.createElement("option");
+      o.value = n;
+      o.textContent = n;
+      s2.appendChild(o);
+    });
+  }
+  applyUiState(saved);
 }
 
 // ---------------- WebSocket ----------------
@@ -186,7 +261,10 @@ $("btn-redo").onclick = async () => {
   await api("/api/canvas/redo");
   refreshCanvas();
 };
-$("model").onchange = (e) => selectModel(e.target.value);
+$("model").onchange = (e) => {
+  selectModel(e.target.value);
+  scheduleSaveUiState(0);
+};
 
 // left/right keys switch between thumbnail variants (when not typing)
 document.addEventListener("keydown", (e) => {
@@ -204,25 +282,24 @@ document.addEventListener("keydown", (e) => {
   });
 });
 
-function loadSamplers() {
-  fetch("/api/samplers")
-    .then((r) => r.json())
-    .then((s) => {
-      for (const [id, names] of [["sampler", s.samplers], ["scheduler", s.schedulers]]) {
-        const sel = $(id);
-        sel.innerHTML = "";
-        names.forEach((n) => {
-          const o = document.createElement("option");
-          o.value = n;
-          o.textContent = n;
-          sel.appendChild(o);
-        });
-      }
-    })
-    .catch(() => {});
-}
-
-loadModels();
-loadSamplers();
+// ---------------- boot ----------------
+init();
 refreshCanvas();
 connectWS();
+
+["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch"].forEach((id) => {
+  $(id).addEventListener("input", () => scheduleSaveUiState());
+});
+["sampler", "scheduler"].forEach((id) => {
+  $(id).onchange = () => scheduleSaveUiState(0);
+});
+// last-ditch save on tab close (sendBeacon is fire-and-forget, always
+// delivered; the endpoint ignores content-type to accept its text/plain)
+window.addEventListener("beforeunload", () => {
+  try {
+    navigator.sendBeacon(
+      "/api/ui-state",
+      new Blob([JSON.stringify(readUiState())], { type: "text/plain" })
+    );
+  } catch (e) {}
+});

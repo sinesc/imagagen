@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .backends import GenerateRequest, ModelBackend
 from .canvas import Canvas
@@ -17,6 +18,7 @@ from .config import Config, ensure_dirs, load_config
 from .models import ModelRegistry
 from .paths import next_output_path
 from .queue import GenerationQueue
+from .uistate import UiState, UiStateStore
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -140,6 +142,7 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
     app.state.canvas = canvas
     app.state.queue = queue
     app.state.registry = registry
+    app.state.ui_state = UiStateStore(config.root / "ui-state.json")
 
     @app.get("/api/health")
     def health() -> dict:
@@ -209,6 +212,33 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
         if data is None:
             return Response(status_code=404)
         return Response(content=data, media_type="image/png")
+
+    # --- UI state (persisted form inputs, restored on server start) ---
+    @app.get("/api/ui-state")
+    def get_ui_state() -> dict:
+        return {"state": app.state.ui_state.load().model_dump()}
+
+    @app.post("/api/ui-state")
+    async def save_ui_state(request: Request) -> dict:
+        # Content-type agnostic on purpose: the UI also sends this via
+        # navigator.sendBeacon on tab close, which forces text/plain.
+        raw = await request.body()
+        try:
+            data = json.loads(raw or b"{}")
+        except json.JSONDecodeError:
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+        if not isinstance(data, dict):
+            return JSONResponse(
+                {"error": "invalid state: expected a JSON object"}, status_code=400
+            )
+        try:
+            state = UiState.model_validate(data)
+        except ValidationError as e:
+            return JSONResponse(
+                {"error": f"invalid state: {e.errors()[:3]}"}, status_code=422
+            )
+        app.state.ui_state.save(state)
+        return {"ok": True}
 
     # --- canvas ---
     @app.get("/api/canvas.png")

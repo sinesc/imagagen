@@ -52,3 +52,27 @@ With `auto` the server re-checks free VRAM on startup and on every
 `/api/health` call, so a card that was busy during development is picked
 around automatically. The chosen GPU is reported by `GET /api/health`
 (`gpu` plus a `selected` flag per entry of `gpus`).
+
+### UI state persistence
+
+The web UI's last-used form inputs (model, prompt, negative prompt,
+size, steps, CFG, seed, batch, sampler, scheduler) are saved automatically
+to `ui-state.json` in the project root as you type and on every
+generation. On server start the UI restores them, so the page picks up
+where you left off. The file is plain JSON and safe to edit by hand;
+a missing or corrupt file simply falls back to the form defaults.
+
+```json
+{
+  "model": "models/sdxl/epicrealismXL11.0.safetensors",
+  "prompt": "a red panda on a mossy log",
+  "steps": 28,
+  "cfg": 6.5,
+  "sampler": "DPM++ 2M",
+  "scheduler": "Karras"
+}
+```
+
+This is deliberately separate from `imagagen.ini` (operator
+configuration): `ui-state.json` is rewritten constantly by the app, while
+the INI is something you edit by hand.
