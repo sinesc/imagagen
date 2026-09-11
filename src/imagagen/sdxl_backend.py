@@ -404,11 +404,13 @@ class SdxlBackend(ModelBackend):
                         / (model_wrap.max_sigma - model_wrap.min_sigma)).clamp(0, 1)
                 noise = xsigma + (xnoise - xsigma) * frac
                 if request.init_mask is not None:
+                    # (1,1,H,W) -> bilinear to the latent grid; this shape
+                    # broadcasts against the (1,4,lh,lw) solver tensors
                     m = torch.from_numpy(
                         np.ascontiguousarray(request.init_mask)
-                    ).to(device=device).float().div(255.0).unsqueeze(0)
+                    ).to(device=device).float().div(255.0)[None, None]
                     m = torch.nn.functional.interpolate(m, size=(lh, lw), mode="bilinear")
-                    mask_t = (1.0 - m).expand(4, lh, lw).contiguous()
+                    mask_t = (1.0 - m)
                     # A1111's init composite: only the inpaint region starts
                     # re-noised; the protected region starts at the clean
                     # init latent (it is locked there at every step anyway)

@@ -15,6 +15,8 @@ the project root with the venv interpreter, e.g.:
 | `server_smoke.py [port]` | With a server running: one generation per sampler/scheduler combo over the real HTTP+WebSocket stack. Reports per-combo ok/error. |
 | `offline_check.py` | Fresh subprocess with `HF_HUB_OFFLINE=1`: proves `models/hf_cache` is complete (load + generate with zero network). |
 | `pipeline_reference.py` | Golden reference: runs the stock diffusers SDXL pipeline and our loop side by side and diffs the latent trajectory step by step (saved to `/tmp/ref_pipeline.png`, `/tmp/ref_mine.png`). Re-run whenever the sampling loop changes — a step-by-step growing diff pinpoints the regression. This is the tool that found the original four sampling-contract bugs. |
+| `smoke_sdxl_inpaint.py` | Live SDXL img2img/inpaint check: txt2img baseline, whole-box denoise, and half-protected inpaint (asserts protected region stays ~identical, inpainted region changes). The mock backend never exercises the real mask-lock path, so re-run whenever `sdxl_backend.py` sampling changes. |
+| `e2e_inpaint_ui_flow.py` | End-to-end over the real HTTP stack (temp root, GPU from a generated ini): bird generation → painted mask → `inpaint_masked` denoise 0.6, asserting masked-region change, unmasked preservation and mask retention. This is the tool that caught the `F.interpolate` 3D-tensor crash in the SDXL inpaint path. |
 
 ## Notes
 
