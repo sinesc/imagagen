@@ -31,6 +31,7 @@ class Job:
     batch_size: int
     base_seed: int
     plan: InpaintPlan | None = None  # inpaint modes: maps output to canvas state
+    source_png: bytes | None = None  # inpaint modes: source canvas snapshot
     interrupted: bool = False
     results: dict[int, bytes] = field(default_factory=dict)  # index -> PNG bytes
     finished: set[int] = field(default_factory=set)  # indices settled (ok or error)
@@ -102,6 +103,11 @@ class GenerationQueue:
         base_seed = random.randrange(2**31) if request.seed == -1 else request.seed
         job = Job(id=self._next_job_id, model_id=model_id, request=request,
                   batch_size=batch_size, base_seed=base_seed, plan=plan)
+        if plan is not None:
+            # the inpaint source image, for the UI's source thumbnail
+            # (green border): lets the user go back to it when none of the
+            # results turn out good
+            job.source_png = _plain_png(plan.base_image)
         with self._job_lock:
             self._jobs[self._next_job_id] = job
             self._next_job_id += 1
@@ -111,6 +117,11 @@ class GenerationQueue:
             self._cond.notify_all()
         self.emit({"type": "job_started", "job": job.id, "batch_size": batch_size,
                    "base_seed": base_seed})
+        if job.source_png is not None:
+            # right after job_started: the UI shows the source before any
+            # result arrives
+            self.emit({"type": "source_image", "job": job.id,
+                       "url": f"/api/thumb/{job.id}/source.png"})
         return job
 
     def interrupt(self, job_id: int) -> None:
@@ -215,6 +226,16 @@ class GenerationQueue:
             if not job.done_emitted and len(job.finished) >= job.batch_size:
                 job.done_emitted = True
                 self.emit({"type": "done", "job": job.id})
+
+
+def _plain_png(image: np.ndarray) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.fromarray(image).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def _result_to_png(

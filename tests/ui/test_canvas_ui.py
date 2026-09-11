@@ -267,13 +267,45 @@ def test_generation_mode_denoise_ui(page, server):
     assert not page.locator("#denoise").is_disabled()
     set_input(page, "#denoise", "0.42")
 
-    # persisted and restored across a reload
+    # denoise is persisted across a reload; the mode is not and always
+    # comes back as "generate" (nothing to inpaint until the user has
+    # generated an image first)
     page.evaluate("saveUiState()")
     page.reload()
     page.wait_for_function("brushNames.length >= 1")
-    assert page.locator("#mode").input_value() == "inpaint_masked"
+    assert page.locator("#mode").input_value() == "generate"
     assert page.locator("#denoise").input_value() == "0.42"
-    assert not page.locator("#denoise").is_disabled()
+    assert page.locator("#denoise").is_disabled()
+
+
+def test_inpaint_source_thumbnail(page, server):
+    """An inpaint generation immediately shows a source thumbnail (green
+    border); clicking it restores the source image."""
+    base, _ = server
+    _open(page, base)
+    _show(page, base, 200, 150)
+    # paint a mask dot in the centre
+    page.click("#tool-mask")
+    dot(page, 100, 75)
+    assert wait_until(lambda: mask_arr(base) is not None and mask_arr(base).any())
+
+    page.select_option("#mode", "inpaint_masked")
+    set_input(page, "#denoise", "0.6")
+    page.click("#btn-generate")
+
+    # the source arrives before (or with) the first result
+    page.wait_for_function("state.thumbs.length >= 2")
+    first = page.locator("#thumbs img").first
+    assert "source" in (first.get_attribute("class") or "")
+    assert first.get_attribute("title") == "inpaint source (click to restore)"
+
+    # the masked centre got regenerated... clicking the source thumbnail
+    # brings the original image back
+    assert wait_until(lambda: canvas_px(base, 100, 75) != BG), \
+        f"centre after inpaint: {canvas_px(base, 100, 75)}"
+    first.click()
+    assert wait_until(lambda: canvas_px(base, 100, 75) == BG), \
+        f"centre after source restore: {canvas_px(base, 100, 75)}"
 
 
 def test_inpaint_without_mask_shows_server_error(page, server):

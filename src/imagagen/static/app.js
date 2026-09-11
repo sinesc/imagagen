@@ -37,6 +37,21 @@ async function api(path, body = {}) {
   return res.json();
 }
 
+// put a thumbnail's image onto the canvas. Results come from the job;
+// the inpaint source (green border) is not a job result, so its PNG is
+// fetched and re-uploaded.
+async function restoreThumb(t) {
+  if (t.source) {
+    const res = await fetch(t.url);
+    if (!res.ok) throw new Error(`source: ${res.status}`);
+    const data = await res.arrayBuffer();
+    const up = await fetch("/api/canvas/upload", { method: "POST", body: data });
+    if (!up.ok) throw new Error(`upload: ${up.status}`);
+    return;
+  }
+  await api("/api/canvas/thumb", { job: t.job, index: t.index });
+}
+
 function renderThumbs() {
   const strip = $("thumbs");
   strip.hidden = state.thumbs.length === 0;
@@ -44,10 +59,18 @@ function renderThumbs() {
   state.thumbs.forEach((t, i) => {
     const el = document.createElement("img");
     el.src = t.url;
-    el.title = `#${i} seed ${t.seed}`;
+    el.title = t.source
+      ? "inpaint source (click to restore)"
+      : `#${i} seed ${t.seed}`;
+    if (t.source) el.classList.add("source");
     if (i === state.currentThumb) el.classList.add("selected");
     el.onclick = async () => {
-      await api("/api/canvas/thumb", { job: t.job, index: t.index });
+      try {
+        await restoreThumb(t);
+      } catch (e) {
+        setStatus(e.message);
+        return;
+      }
       state.currentThumb = i;
       renderThumbs();
       viewRefresh();
@@ -203,10 +226,7 @@ function wireToolbar() {
     Tools.save();
     syncToolbar();
   };
-  $("mode").onchange = () => {
-    syncMode();
-    scheduleSaveUiState(0);
-  };
+  $("mode").onchange = () => syncMode(); // mode is not persisted
   $("mask-dilate").onclick = () => maskOp("dilate");
   $("mask-erode").onclick = () => maskOp("erode");
   $("mask-clear").onclick = () => maskOp("clear");
@@ -229,7 +249,8 @@ function readUiState() {
     batch: parseInt($("batch").value, 10),
     sampler: $("sampler").value || null,
     scheduler: $("scheduler").value || null,
-    mode: $("mode").value,
+    // mode is intentionally not persisted: the UI always opens in
+    // "generate" mode since there is nothing to inpaint yet
     denoise: parseFloat($("denoise").value),
   };
 }
@@ -247,7 +268,6 @@ function applyUiState(st) {
     ["batch", "batch"],
     ["sampler", "sampler"],
     ["scheduler", "scheduler"],
-    ["mode", "mode"],
     ["denoise", "denoise"],
   ];
   for (const [el, key] of fields) {
@@ -325,6 +345,11 @@ function connectWS() {
         $("progress-fill").style.width = `${Math.round(msg.fraction * 100)}%`;
         $("progress-label").textContent = msg.message;
         break;
+      case "source_image":
+        // inpaint source snapshot, shown before any result arrives
+        state.thumbs.unshift({ source: true, url: msg.url });
+        renderThumbs();
+        break;
       case "image":
         state.thumbs.push({ job: msg.job, index: msg.index, url: msg.url, seed: msg.seed });
         if (state.currentThumb === -1) state.currentThumb = state.thumbs.length - 1;
@@ -381,7 +406,7 @@ document.addEventListener("keydown", (e) => {
   const d = e.key === "ArrowRight" ? 1 : -1;
   const next = (state.currentThumb + d + state.thumbs.length) % state.thumbs.length;
   const t = state.thumbs[next];
-  api("/api/canvas/thumb", { job: t.job, index: t.index }).then(() => {
+  restoreThumb(t).then(() => {
     state.currentThumb = next;
     renderThumbs();
     viewRefresh();

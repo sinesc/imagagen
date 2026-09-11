@@ -7,6 +7,7 @@ spread, while untouched regions keep their exact fill value.
 """
 
 import io
+import json
 
 import numpy as np
 import pytest
@@ -167,6 +168,34 @@ def test_inpaint_masked_thumbnail_is_blended_canvas(client):
     np.testing.assert_array_equal(t, _img(client))
 
 
+def test_inpaint_source_thumbnail(client):
+    """Inpaint jobs publish the source image snapshot (the UI shows it
+    with a green border so the user can go back to it)."""
+    _set_canvas(client, 16, 16, 55)
+    _mask_dot(client, 8, 8, 6)
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": "x", "width": 16, "height": 16,
+            "mode": "inpaint_masked", "batch_size": 1})
+        job = r.json()["job_id"]
+        src = _wait_for(ws, "source_image")
+        assert src["job"] == job
+        assert src["url"] == f"/api/thumb/{job}/source.png"
+        _wait_for(ws, "done")
+    r = client.get(f"/api/thumb/{job}/source.png")
+    assert r.status_code == 200
+    np.testing.assert_array_equal(
+        np.asarray(Image.open(io.BytesIO(r.content))),
+        np.full((16, 16, 3), 55, dtype=np.uint8))
+
+
+def test_generate_has_no_source_thumbnail(client):
+    _set_canvas(client)
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws)
+    assert client.get(f"/api/thumb/{job['job_id']}/source.png").status_code == 404
+
+
 # ----------------------------------------------------- inpaint not masked --
 
 
@@ -220,19 +249,24 @@ def test_inpaint_unknown_mode_rejected(client):
 # ------------------------------------------------------------ state + ui --
 
 
-def test_uistate_persists_mode_and_denoise(client):
+def test_uistate_persists_denoise_but_not_mode(client):
+    # the generation mode is never persisted (the UI always opens in
+    # "generate" mode); an old file's mode key is simply ignored
     r = client.post("/api/ui-state", json={
         "mode": "inpaint_not_masked", "denoise": 0.42})
     assert r.status_code == 200
     st = client.get("/api/ui-state").json()["state"]
-    assert st["mode"] == "inpaint_not_masked"
+    assert "mode" not in st
     assert st["denoise"] == 0.42
+    on_disk = json.loads(client.app.state.ui_state.path.read_text())
+    assert "mode" not in on_disk
 
 
-def test_uistate_rejects_bad_mode_and_denoise(client):
-    assert client.post("/api/ui-state", json={"mode": "bogus"}).status_code == 422
+def test_uistate_rejects_bad_denoise(client):
     assert client.post("/api/ui-state", json={"denoise": 1.5}).status_code == 422
     assert client.post("/api/ui-state", json={"denoise": -0.1}).status_code == 422
+    # unknown keys (like an old "mode") are ignored, not rejected
+    assert client.post("/api/ui-state", json={"mode": "bogus"}).status_code == 200
 
 
 def test_generate_body_denoise_validated(client):

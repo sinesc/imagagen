@@ -256,6 +256,17 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
                 queue.interrupt(jid)
         return {"ok": True}
 
+    @app.get("/api/thumb/{job_id}/source.png")
+    def thumb_source(job_id: int) -> Response:
+        # the inpaint source image (canvas snapshot at submit time);
+        # registered before the {index}.png route so "source" is not
+        # parsed as an index
+        job = queue.job(job_id)
+        data = job.source_png if job else None
+        if data is None:
+            return Response(status_code=404)
+        return Response(content=data, media_type="image/png")
+
     @app.get("/api/thumb/{job_id}/{index}.png")
     def thumb(job_id: int, index: int) -> Response:
         job = queue.job(job_id)
