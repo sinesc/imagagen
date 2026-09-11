@@ -200,15 +200,36 @@ Implementation notes:
   while `/api/canvas/undo`|`redo` are POST-only. Playwright is a dev dependency;
   its Chromium is installed separately (`playwright install --with-deps chromium`).
 
-### Phase 3 — Inpainting & generation modes
-- `generation.py`: inpaint masked + inpaint not masked incl. all bbox/scale/center
-  math (pure functions, heavily unit-tested); mask protection for not-masked;
+### Phase 3 — Inpainting & generation modes ✅ (commit 719d341)
+- ✅ `generation.py`: inpaint masked + inpaint not masked incl. all bbox/scale/
+  center math (pure functions, 15 unit tests); mask protection for not-masked;
   canvas resize + mask rescale on not-masked (100→250×200 case in tests).
-- UI: generation-mode select, denoising-strength (disabled unless inpainting),
-  mask retained across generations.
-- Thumbnails during generation: WS `image_done` events arrive in completion order;
-  first done image auto-set to canvas (unless user changed canvas meanwhile →
-  snapshot for undo, per spec); ←/→ keys switch variant.
+- ✅ Backend contract: the backend always generates at the requested
+  width × height; `InpaintPlan` (snapshotted at submit time) maps the raw
+  output to canvas state afterwards -- "inpaint masked" downscales to the
+  aspect-preserving bbox and alpha-blends (canvas size + mask unchanged),
+  "inpaint not masked" is the whole new canvas (edge-replicated borders,
+  inverted init mask protects the user mask; canvas + mask rescaled). The
+  mask passed to the backend marks the *inpaint* region (255 = regenerate),
+  so "inpaint not masked" inverts it.
+- ✅ SDXL img2img/inpaint in the vendored k-diffusion loop (A1111/Forge
+  convention): init latent via deterministic VAE encode, sigma schedule
+  truncated at the denoising strength (`t_enc = int(min(ds, 0.999)·steps)`),
+  per-step re-noise + x0-lock of the protected region, final lock before
+  decode. Mock backend emulates denoise via an init-image blend.
+- ✅ UI: mode select (generate / inpaint masked / inpaint not masked) +
+  denoise input, disabled unless inpainting; both persisted in ui-state.
+  Server-side setup errors ("canvas is empty", "mask is empty") are
+  surfaced in the status line (the API helper now extracts `error` from
+  non-OK JSON bodies).
+- ✅ Mask retained across generations: `Canvas.set_image_keep_mask` keeps
+  the mask when the size is unchanged (thumb clicks via the existing
+  `set_from_png_bytes` already did).
+- ✅ Thumbnails show the post-processed canvas state, so clicking one
+  restores exactly what auto-set would have shown.
+- Thumbnails during generation: WS `image_done` events arrive in completion
+  order; first done image auto-set to canvas (unless user changed canvas
+  meanwhile → snapshot for undo, per spec); ←/→ keys switch variant.
 - Interrupt semantics (step-level flag).
 - Deliverable: inpaint/outpaint/img2img all working, tested with mock backend.
 
