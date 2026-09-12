@@ -19,3 +19,7 @@ The imagagen subdirectory `devtools/references/` contains reference images gener
 ## Environment
 
 This environment has access to two GPUs, one of which should have enough VRAM to spare for running stable diffusion.
+
+## Process monitoring
+
+When monitoring a process be sure your monitoring script doesn't match itself (finds the monitoring string in its own process string).
