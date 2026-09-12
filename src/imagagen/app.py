@@ -100,8 +100,8 @@ class GenerateBody(BaseModel):
     negative_prompt: str = ""
     width: int = 1024
     height: int = 1024
-    steps: int = 25
-    cfg: float = 7.0
+    steps: int = 25  # -1 = use the model configuration's steps
+    cfg: float = 7.0  # -1 = use the model configuration's CFG
     seed: int = -1
     batch_size: int = 1
     sampler: str | None = None
@@ -329,13 +329,14 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
                 return {"error": "no model available"}
             entry = app.state.config_store.resolve(cfg_id)
             app.state.last_config_id = entry.id
-            sampler, scheduler, cfg, loras = resolve_settings(
+            sampler, scheduler, cfg, rsteps, loras = resolve_settings(
                 entry,
                 body.mode,
                 body.cfg,
                 body.sampler,
                 body.scheduler,
                 body.loras,
+                body.steps,
             )
         except ConfigError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -345,7 +346,9 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
             negative_prompt=body.negative_prompt,
             width=body.width,
             height=body.height,
-            steps=body.steps,
+            # rsteps is None only when the user used the -1 sentinel and
+            # the configuration has no override -> built-in default
+            steps=rsteps if rsteps is not None else 25,
             cfg=cfg if cfg is not None else DEFAULT_CFG,
             seed=body.seed,
             sampler=sampler,

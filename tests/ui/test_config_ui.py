@@ -65,6 +65,7 @@ def test_create_and_edit_model_config(page, server):
     wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
     assert page.locator(".cfg-mode").count() == 2
     page.locator(".cfg-mode").first.locator(".cfg-cfg").fill("4.25")
+    page.locator(".cfg-mode").first.locator(".cfg-steps").fill("12")
     page.locator(".cfg-mode").first.locator(".cfg-sampler").select_option("DPM++ 2M")
     page.click("#dialog-ok")
     wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
@@ -72,12 +73,14 @@ def test_create_and_edit_model_config(page, server):
 
     on_disk = json.loads((root / "model-configs" / "mock-tuned.json").read_text())
     assert on_disk["t2i"]["cfg"] == 4.25
+    assert on_disk["t2i"]["steps"] == 12
     assert on_disk["t2i"]["sampler"] == "DPM++ 2M"
 
     # re-open: values round-trip
     page.click("#cfg-edit")
     wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
     assert page.locator(".cfg-mode").first.locator(".cfg-cfg").input_value() == "4.25"
+    assert page.locator(".cfg-mode").first.locator(".cfg-steps").input_value() == "12"
     assert page.locator(".cfg-mode").first.locator(".cfg-sampler").input_value() == "DPM++ 2M"
     page.click("#dialog-cancel")
     wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
@@ -155,6 +158,21 @@ def test_lora_rows(page, server):
     # remove the row again
     page.locator("#loras .lora-row .lora-rm").click()
     assert page.evaluate("getLoras()") == []
+
+    # in the config dialog the lora dropdown must dominate the row (the
+    # .cfg-mode width:100% rule used to squash it to ~15px and stretch the
+    # weight input instead)
+    page.click("#cfg-edit")
+    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
+    page.locator(".cfg-mode").first.locator("button:has-text('+ LoRA')").first.click()
+    wait_until(lambda: page.locator(".cfg-mode .lora-row").count() >= 1)
+    sel_w, in_w = page.locator(".cfg-mode").first.locator(".lora-row").evaluate(
+        """r => [
+            r.querySelector('.lora-name').getBoundingClientRect().width,
+            r.querySelector('.lora-weight').getBoundingClientRect().width,
+        ]""")
+    assert sel_w > 4 * in_w, (sel_w, in_w)
+    page.click("#dialog-cancel")
 
 
 # ---------------- presets ----------------

@@ -8,6 +8,7 @@ import pytest
 from imagagen.config import Config
 from imagagen.model_configs import (
     CFG_SENTINEL,
+    STEPS_SENTINEL,
     ConfigError,
     ConfigStore,
     LoraRef,
@@ -59,7 +60,7 @@ def test_file_layout(tmp_path):
     assert on_disk["model"] == "sdxl/a.safetensors"
     assert on_disk["t2i"]["loras"] == [{"name": "sdxl/dmd2", "weight": 0.8}]
     assert on_disk["i2i"] == {"sampler": None, "scheduler": None,
-                              "cfg": None, "loras": []}
+                              "steps": None, "cfg": None, "loras": []}
 
 
 def test_save_updates_existing_and_rejects_collisions(tmp_path):
@@ -143,49 +144,62 @@ def test_corrupt_file_is_reported(tmp_path):
 # ---------------------------------------------------------- resolution ----
 
 
-def _entry(sampler=None, scheduler=None, cfg=None, loras=(), i2i=None):
+def _entry(sampler=None, scheduler=None, cfg=None, loras=(), i2i=None, steps=None):
     from imagagen.model_configs import ConfigEntry
 
     i2i = i2i or ModeConfig()
     return ConfigEntry(id="x", name="x", model_id="m",
                        t2i=ModeConfig(sampler=sampler, scheduler=scheduler,
-                                      cfg=cfg,
+                                      steps=steps, cfg=cfg,
                                       loras=[LoraRef(name=t[0], weight=t[1])
                                               for t in loras]),
                        i2i=i2i, is_default=False)
 
 
 def test_resolve_user_wins():
-    e = _entry(sampler="Euler a", scheduler="Karras", cfg=4.0, loras=[("a", 1)])
-    sampler, scheduler, cfg, loras = resolve_settings(
-        e, "generate", 7.5, "DPM++ 2M", "Polyexponential", [("b", 0.5)])
-    assert (sampler, scheduler, cfg) == ("DPM++ 2M", "Polyexponential", 7.5)
+    e = _entry(sampler="Euler a", scheduler="Karras", cfg=4.0, loras=[("a", 1)], steps=12)
+    sampler, scheduler, cfg, steps, loras = resolve_settings(
+        e, "generate", 7.5, "DPM++ 2M", "Polyexponential", [("b", 0.5)], 25)
+    assert (sampler, scheduler, cfg, steps) == ("DPM++ 2M", "Polyexponential", 7.5, 25)
     # config loras are prepended to the user's list
     assert loras == [("a", 1.0), ("b", 0.5)]
 
 
 def test_resolve_defaults_fall_to_config():
-    e = _entry(sampler="Euler a", scheduler="Karras", cfg=4.0, loras=[("a", 1)])
-    sampler, scheduler, cfg, loras = resolve_settings(
-        e, "generate", CFG_SENTINEL, None, None, [])
-    assert (sampler, scheduler, cfg) == ("Euler a", "Karras", 4.0)
+    e = _entry(sampler="Euler a", scheduler="Karras", cfg=4.0, loras=[("a", 1)], steps=12)
+    sampler, scheduler, cfg, steps, loras = resolve_settings(
+        e, "generate", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
+    assert (sampler, scheduler, cfg, steps) == ("Euler a", "Karras", 4.0, 12)
     assert loras == [("a", 1.0)]
 
 
 def test_resolve_null_config_falls_to_backend_builtin():
     e = _entry()
-    sampler, scheduler, cfg, loras = resolve_settings(
-        e, "generate", CFG_SENTINEL, None, None)
-    assert (sampler, scheduler, cfg, loras) == (None, None, None, [])
+    sampler, scheduler, cfg, steps, loras = resolve_settings(
+        e, "generate", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
+    assert (sampler, scheduler, cfg, steps, loras) == (None, None, None, None, [])
+
+
+def test_resolve_steps_sentinel_falls_to_config():
+    # -1 in the main UI -> the configuration's steps; a null config value
+    # falls through to the backend built-in (None), same logic as CFG
+    e = _entry(steps=18)
+    _, _, _, steps, _ = resolve_settings(e, "generate", 7.0, None, None, [], STEPS_SENTINEL)
+    assert steps == 18
+    _, _, _, steps, _ = resolve_settings(e, "generate", 7.0, None, None, [], 30)
+    assert steps == 30
+    e_null = _entry()
+    _, _, _, steps, _ = resolve_settings(e_null, "generate", 7.0, None, None, [], STEPS_SENTINEL)
+    assert steps is None
 
 
 def test_resolve_mode_selects_section():
-    e = _entry(cfg=4.0, i2i=ModeConfig(sampler="DPM++ 2M SDE", cfg=6.0))
+    e = _entry(cfg=4.0, steps=10, i2i=ModeConfig(sampler="DPM++ 2M SDE", cfg=6.0, steps=14))
     # inpaint modes use the i2i section
-    sampler, _, cfg, _ = resolve_settings(e, "inpaint_masked", CFG_SENTINEL, None, None)
-    assert (sampler, cfg) == ("DPM++ 2M SDE", 6.0)
-    _, _, cfg_t2i, _ = resolve_settings(e, "generate", CFG_SENTINEL, None, None)
-    assert cfg_t2i == 4.0
+    sampler, _, cfg, steps, _ = resolve_settings(e, "inpaint_masked", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
+    assert (sampler, cfg, steps) == ("DPM++ 2M SDE", 6.0, 14)
+    _, _, cfg_t2i, steps_t2i, _ = resolve_settings(e, "generate", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
+    assert (cfg_t2i, steps_t2i) == (4.0, 10)
 
 
 def test_entry_id_sanitizes():

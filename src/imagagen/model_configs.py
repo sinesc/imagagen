@@ -38,8 +38,9 @@ from pydantic import BaseModel, Field
 
 from .paths import sanitize_prompt
 
-# the "no override" CFG sentinel in the *user* settings (form field)
+# the "no override" sentinels in the *user* settings (form field)
 CFG_SENTINEL = -1.0
+STEPS_SENTINEL = -1
 
 
 class LoraRef(BaseModel):
@@ -52,6 +53,7 @@ class ModeConfig(BaseModel):
 
     sampler: str | None = None
     scheduler: str | None = None
+    steps: int | None = Field(default=None, ge=1)
     cfg: float | None = Field(default=None, ge=0)
     loras: list[LoraRef] = Field(default_factory=list)
 
@@ -242,22 +244,25 @@ def resolve_settings(
     user_sampler: str | None,
     user_scheduler: str | None,
     user_loras: list[tuple[str, float]] | None = None,
-) -> tuple[str | None, str | None, float | None, list[tuple[str, float]]]:
+    user_steps: int = 25,
+) -> tuple[str | None, str | None, float | None, int | None, list[tuple[str, float]]]:
     """Resolve the effective generation settings.
 
     Order per setting (concept.md): the user's setting wins unless it is the
-    "use model default" sentinel (cfg == -1, sampler/scheduler == null),
-    in which case the *configuration's* value is used; null configuration
-    values fall through to the backend built-in (returned as None / None,
-    the caller substitutes ``DEFAULT_CFG``). The configuration's LoRA list is
-    always *prepended* to the user's LoRAs. ``mode`` picks the t2i section
-    for "generate" and the i2i section for the inpaint modes.
+    "use model default" sentinel (cfg == -1, steps == -1,
+    sampler/scheduler == null), in which case the *configuration's* value is
+    used; null configuration values fall through to the backend built-in
+    (returned as None / None, the caller substitutes the built-in default).
+    The configuration's LoRA list is always *prepended* to the user's LoRAs.
+    ``mode`` picks the t2i section for "generate" and the i2i section for
+    the inpaint modes.
 
-    Returns ``(sampler, scheduler, cfg, loras)`` with cfg possibly None
-    (= backend built-in)."""
+    Returns ``(sampler, scheduler, cfg, steps, loras)`` with cfg/steps
+    possibly None (= backend built-in)."""
     section = entry.t2i if mode == "generate" else entry.i2i
     sampler = user_sampler if user_sampler else section.sampler
     scheduler = user_scheduler if user_scheduler else section.scheduler
     cfg = section.cfg if user_cfg == CFG_SENTINEL else user_cfg
+    steps = section.steps if user_steps == STEPS_SENTINEL else user_steps
     loras = [(ref.name, ref.weight) for ref in section.loras] + list(user_loras or [])
-    return sampler, scheduler, cfg, loras
+    return sampler, scheduler, cfg, steps, loras

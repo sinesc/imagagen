@@ -70,8 +70,8 @@ def test_models_lists_default_entry(client):
     assert e["name"] == "Mock Model"
     assert e["model_id"] == MOCK_ID
     assert e["is_default"] is True
-    assert e["t2i"] == {"sampler": None, "scheduler": None, "cfg": None,
-                        "loras": []}
+    assert e["t2i"] == {"sampler": None, "scheduler": None, "steps": None,
+                        "cfg": None, "loras": []}
     assert body["current"] == MOCK_ID
 
 
@@ -156,6 +156,19 @@ def test_cfg_sentinel_resolves_to_config_value(client):
         _wait_done(client, ws, job)
         m = _thumb_meta(client, job)
     assert m["cfg"] == 9.5  # config override, not the built-in 7.0
+
+
+def test_steps_sentinel_resolves_to_config_value(client):
+    client, _ = client
+    client.post("/api/model-configs", json={
+        "name": "Tuned", "model": MOCK_ID,
+        "t2i": {"sampler": None, "scheduler": None, "steps": 9, "cfg": None, "loras": []},
+    })
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, steps=-1, model_id="tuned")
+        _wait_done(client, ws, job)
+        m = _thumb_meta(client, job)
+    assert m["steps"] == 9  # config override, not the request's -1
 
 
 def test_cfg_sentinel_without_config_uses_builtin(client):

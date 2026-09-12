@@ -273,6 +273,11 @@ function modeFieldset(title, section) {
   sc.append(opt("", "Use model default"));
   state.schedulers.forEach((n) => sc.append(opt(n, n)));
   sc.value = section.scheduler || "";
+  const steps = el("input", {
+    class: "cfg-steps", type: "number", min: "1", step: "1",
+    title: "empty = use the built-in default",
+  });
+  steps.value = section.steps === null ? "" : section.steps;
   const cfg = el("input", {
     class: "cfg-cfg", type: "number", min: "0", step: "0.1",
     title: "empty = use the model's built-in default",
@@ -284,7 +289,9 @@ function modeFieldset(title, section) {
     el("div", { class: "row" },
       el("label", {}, "sampler", s),
       el("label", {}, "scheduler", sc)),
-    el("div", { class: "row" }, el("label", { title: "CFG override; empty = model default" }, "CFG", cfg)),
+    el("div", { class: "row" },
+      el("label", { title: "steps override; empty = built-in default" }, "steps", steps),
+      el("label", { title: "CFG override; empty = model default" }, "CFG", cfg)),
     el("div", { class: "loras" }, loraList, loraAddButton(loraList)),
   );
   return fs;
@@ -294,6 +301,7 @@ function readCfgSection(fs) {
   return {
     sampler: fs.querySelector(".cfg-sampler").value || null,
     scheduler: fs.querySelector(".cfg-scheduler").value || null,
+    steps: fs.querySelector(".cfg-steps").value === "" ? null : parseInt(fs.querySelector(".cfg-steps").value, 10),
     cfg: fs.querySelector(".cfg-cfg").value === "" ? null : parseFloat(fs.querySelector(".cfg-cfg").value),
     loras: readLoraList(fs.querySelector(".lora-list")).map(([name, weight]) => ({ name, weight })),
   };
