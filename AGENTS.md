@@ -12,13 +12,11 @@ Early development.
 
 ## References
 
-The parallel folder `sd-webui-forge-classic` contains a StableDiffusion WebUI implementation that may be useful to look at for reference implementations (e.g. sampler code).
-
-The imagagen subdirectory `devtools/references/` contains reference images generated with Forge. Note: these were generated in a different environment and not necessarily the exact same version of the provided StableDiffusion WebUI reference implementation so don't expect to achieve pixel perfect matches.
+The parallel folder `stable-diffusion-webui-forge` contains the branch `reference-branch` with an identical backend to the one used to generate the reference images in `devtools/references/` (the checkout only lacks a few UI changes). All provided LORAs and models are exact copies of the ones used for the reference images. All reference images were decoded using the provided `sdxl_vae.safetensors` VAE. Reference images were generated in a different environment so don't expect to achieve pixel perfect matches.
 
 ## Environment
 
-This environment has access to two GPUs, one of which should have enough VRAM to spare for running stable diffusion.
+This environment has access to two GPUs that will be largely occupied by running your AI model, but one of them should should have enough VRAM to spare for running stable diffusion. If you do need more VRAM ask the user to temporarily move your model to a cloud GPU.
 
 ## Process monitoring
 
