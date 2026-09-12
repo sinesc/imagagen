@@ -133,6 +133,19 @@ button.mini:hover { background: #383838; }
 }
 #prompt { height: 92px; }
 #negative { height: 30px; }
+/* PNG drag&drop target on the canvas: sets the image only (no metadata) */
+#canvas-holder.drop {
+  outline: 2px dashed #7ab;
+  outline-offset: -4px;
+}
+
+/* PNG drag&drop target (prompt / negative prompt fields) */
+#prompts textarea.drop {
+  border-color: #7ab;  /* soft teal outline while a file is dragged over */
+  background: #232a2d;
+  outline: 1px dashed #7ab;
+  outline-offset: -4px;
+}
 
 button {
   background: #2a2a2a;

@@ -205,17 +205,19 @@ class GenerationQueue:
             out_image, new_mask = job.plan.postprocess(result.image)
         else:
             out_image, new_mask = result.image, None
-        png = _result_to_png(backend, req, result, out_image)
+        png, info = _result_to_png(backend, req, result, out_image)
         job.results[task.index] = png
         self.emit({"type": "image", "job": job.id, "index": task.index,
                    "seed": result.seed, "url": f"/api/thumb/{job.id}/{task.index}.png"})
         if not job.first_emitted:
             job.first_emitted = True
             # spec: first completed image is automatically set in the canvas
+            # carry the result's PNG text chunks onto the canvas so a
+            # later save keeps the generation metadata
             if new_mask is not None:
-                self.canvas.set_image(out_image, mask=new_mask)
+                self.canvas.set_image(out_image, mask=new_mask, info=info)
             else:
-                self.canvas.set_image_keep_mask(out_image)
+                self.canvas.set_image_keep_mask(out_image, info=info)
             self.emit({"type": "canvas_set", "job": job.id, "index": task.index})
         self._settle(job, task.index)
 
@@ -240,7 +242,9 @@ def _plain_png(image: np.ndarray) -> bytes:
 
 def _result_to_png(
     backend: ModelBackend, req: GenerateRequest, result, image: np.ndarray
-) -> bytes:
+) -> tuple[bytes, dict]:
+    """Return (PNG bytes, text-chunk dict). The dict carries the metadata
+    onto the canvas so saves of the canvas keep it too."""
     from io import BytesIO
 
     from PIL import Image
@@ -266,4 +270,7 @@ def _result_to_png(
     img, pnginfo = metadata.attach_metadata(Image.fromarray(image), params)
     buf = BytesIO()
     img.save(buf, format="PNG", pnginfo=pnginfo)
-    return buf.getvalue()
+    # read the text chunks back from the saved bytes: PngInfo doesn't
+    # expose its chunks as a plain dict across Pillow versions
+    text = {k: v for k, v in Image.open(buf).info.items() if isinstance(v, str)}
+    return buf.getvalue(), text

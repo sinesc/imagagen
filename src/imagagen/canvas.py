@@ -107,11 +107,18 @@ class Canvas:
         self._image, self._mask, self._extra_info = new
         return True
 
-    def set_image(self, image: np.ndarray, mask: np.ndarray | None = None) -> None:
+    def set_image(
+        self,
+        image: np.ndarray,
+        mask: np.ndarray | None = None,
+        info: dict | None = None,
+    ) -> None:
         """Replace the whole image (thumb selection, upload, generation).
 
         A fresh image gets a fresh empty mask of the same shape; pass an
-        explicit mask to retain one (Phase 3 inpaint resize does)."""
+        explicit mask to retain one (Phase 3 inpaint resize does). Pass the
+        PNG text chunks of the source image to carry its generation
+        metadata (so a later save keeps it); None retains the current info."""
         image = np.ascontiguousarray(image)
         m = (
             mask
@@ -119,12 +126,16 @@ class Canvas:
             else np.zeros(image.shape[:2], dtype=np.uint8)
         )
         with self._lock:
-            self._commit_locked(image, m)
+            self._commit_locked(image, m, info)
 
-    def set_image_keep_mask(self, image: np.ndarray) -> None:
+    def set_image_keep_mask(
+        self, image: np.ndarray, info: dict | None = None
+    ) -> None:
         """Replace the image, retaining the current mask when its shape
         matches (generation results: the mask is retained across image
-        generations unless the user clears it or the size changes)."""
+        generations unless the user clears it or the size changes). Pass
+        PNG text chunks to update the carried metadata; None retains the
+        current info."""
         image = np.ascontiguousarray(image)
         with self._lock:
             m = (
@@ -132,7 +143,7 @@ class Canvas:
                 if self._mask is not None and self._mask.shape == image.shape[:2]
                 else np.zeros(image.shape[:2], dtype=np.uint8)
             )
-            self._commit_locked(image, m)
+            self._commit_locked(image, m, info)
 
     def set_from_png_bytes(self, data: bytes) -> None:
         img = Image.open(BytesIO(data))

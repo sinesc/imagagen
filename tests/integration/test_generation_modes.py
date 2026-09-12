@@ -274,3 +274,53 @@ def test_generate_body_denoise_validated(client):
     r = client.post("/api/generate",
                     json={"prompt": "x", "mode": "generate", "denoise": 3.0})
     assert r.status_code == 422
+
+
+# ---------------------------------------------------- canvas metadata --
+# Regression: the queue auto-sets the canvas from raw arrays; the result's
+# PNG text chunks must be carried over, or "Save" writes a metadata-less
+# PNG (which then yields nothing on drag&drop import).
+
+def _canvas_meta(client) -> dict | None:
+    from imagagen import metadata as md
+
+    r = client.get("/api/canvas.png")
+    assert r.status_code == 200
+    return md.read_metadata(r.content)
+
+
+def test_generate_carries_metadata_to_canvas_and_save(client, tmp_path):
+    with client.websocket_connect("/api/ws") as ws:
+        _generate(client, ws, prompt="a test prompt", mode="generate")
+    meta = _canvas_meta(client)
+    assert meta is not None
+    assert meta["prompt"] == "a test prompt"
+
+    r = client.post("/api/save", json={"prompt": "a test prompt"})
+    assert r.status_code == 200
+    saved = (tmp_path / "output" / r.json()["path"]).read_bytes()
+    from imagagen import metadata as md
+    meta = md.read_metadata(saved)
+    assert meta is not None
+    assert meta["prompt"] == "a test prompt"
+
+
+def test_inpaint_carries_metadata_to_canvas(client):
+    _set_canvas(client)
+    _mask_dot(client, 8, 8, 4)
+    with client.websocket_connect("/api/ws") as ws:
+        _generate(client, ws, prompt="painted over", mode="inpaint_masked")
+    meta = _canvas_meta(client)
+    assert meta is not None
+    assert meta["prompt"] == "painted over"
+
+
+def test_strokes_retain_canvas_metadata(client):
+    _set_canvas(client)
+    with client.websocket_connect("/api/ws") as ws:
+        _generate(client, ws, prompt="before strokes", mode="generate")
+    client.post("/api/canvas/stroke", json={
+        "points": [[4.0, 4.0]], "size": 4, "target": "image"})
+    meta = _canvas_meta(client)
+    assert meta is not None
+    assert meta["prompt"] == "before strokes"

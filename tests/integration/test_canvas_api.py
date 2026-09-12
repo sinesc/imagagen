@@ -187,3 +187,54 @@ def test_mask_reset_on_size_change(tmp_path):
         assert _mask(c)[12, 16] == 255
         _set_canvas(c, _png_bytes(64, 48))  # different size -> fresh mask
         assert (_mask(c) == 0).all()
+
+
+def _png_with_meta(w=16, h=12) -> bytes:
+    from imagagen import metadata
+
+    buf = io.BytesIO()
+    img, info = metadata.attach_metadata(
+        Image.new("RGB", (w, h), (5, 5, 5)),
+        metadata.build_parameters(
+            "a test prompt", "bad thing", 20, "Euler a", "Karras", 6.5,
+            42, w, h, "some_model", "abc123", loras=[("lora_a", 0.8)]),
+    )
+    img.save(buf, format="PNG", pnginfo=info)
+    return buf.getvalue()
+
+
+def test_png_meta_with_metadata(tmp_path):
+    with _client(tmp_path) as c:
+        r = c.post("/api/png-meta", content=_png_with_meta(16, 12))
+        assert r.status_code == 200
+        j = r.json()
+        assert j["width"] == 16
+        assert j["height"] == 12
+        m = j["meta"]
+        assert m["prompt"] == "a test prompt"
+        assert m["negative_prompt"] == "bad thing"
+        assert m["steps"] == 20
+        assert m["sampler"] == "Euler a"
+        assert m["scheduler"] == "Karras"
+        assert m["cfg"] == 6.5
+        assert m["seed"] == 42
+        assert m["width"] == 16 and m["height"] == 12
+        assert m["model"] == "some_model"
+        assert m["model_hash"] == "abc123"
+        assert m["loras"] == ["lora_a@0.8"]
+
+
+def test_png_meta_without_metadata(tmp_path):
+    with _client(tmp_path) as c:
+        r = c.post("/api/png-meta", content=_png_bytes(28, 20))
+        assert r.status_code == 200
+        j = r.json()
+        assert j["meta"] is None
+        assert j["width"] == 28
+        assert j["height"] == 20
+
+
+def test_png_meta_not_an_image(tmp_path):
+    with _client(tmp_path) as c:
+        r = c.post("/api/png-meta", content=b"this is not a png")
+        assert r.status_code == 400

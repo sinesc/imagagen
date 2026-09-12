@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from io import BytesIO
 from pathlib import Path
+
+from PIL import Image
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
@@ -17,6 +20,7 @@ from .canvas import Canvas
 from .config import Config, ensure_dirs, load_config
 from .generation import GenerationError, with_inpaint
 from .model_configs import ConfigError, ConfigStore, ModelConfig, ModelConfigUpsert, resolve_settings
+from . import metadata
 from .models import ModelRegistry, list_loras
 from .paths import next_output_path
 from .presets import Preset, PresetError, PresetStore
@@ -444,6 +448,19 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
         data = await request.body()
         canvas.set_from_png_bytes(data)
         return {"ok": True, "canvas": canvas.has_image()}
+
+    @app.post("/api/png-meta")
+    async def png_meta(request: Request) -> dict:
+        """Parse the PNG's embedded generation metadata (A1111/Forge
+        'parameters' chunk or standalone text chunks) plus the image
+        dimensions, for drag&drop import in the UI."""
+        data = await request.body()
+        try:
+            img = Image.open(BytesIO(data))
+            width, height = img.size
+        except Exception:
+            return JSONResponse({"error": "could not read image"}, status_code=400)
+        return {"meta": metadata.read_metadata(data), "width": width, "height": height}
 
     @app.post("/api/canvas/thumb")
     def set_canvas_from_thumb(body: ThumbBody) -> dict:

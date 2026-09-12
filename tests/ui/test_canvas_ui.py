@@ -8,6 +8,7 @@ tool-state persistence across reload, custom brush listing.
 import io
 from pathlib import Path
 
+import httpx
 import numpy as np
 import pytest
 from conftest import (
@@ -365,3 +366,100 @@ def test_progress_bar_reserves_space(page, server):
     assert top_idle == top_on == top_off, (
         f"sidebar reflowed: idle={top_idle} generating={top_on} off={top_off}"
     )
+
+
+# ---------------- PNG drag&drop ----------------
+
+
+def _canvas_size(base):
+    with httpx.Client(base_url=base, timeout=10) as c:
+        r = c.get("/api/canvas.png")
+        if r.status_code == 404:
+            return None
+        return Image.open(io.BytesIO(r.content)).size
+
+
+def _meta_png(w=120, h=90, rgb=(9, 10, 11), prompt="the meta prompt"):
+    """PNG bytes with an A1111-style parameters chunk."""
+    import base64
+
+    from imagagen import metadata as md
+
+    img, info = md.attach_metadata(
+        Image.new("RGB", (w, h), rgb),
+        md.build_parameters(prompt, "the negative", 17, "Euler a", "Karras",
+                            6.5, 7, w, h, "some_model", "abc123"),
+    )
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", pnginfo=info)
+    return buf.getvalue()
+
+
+def _drop_png(page, selector, png: bytes, name="drop.png"):
+    """Simulate a file drop of `png` onto the given element."""
+    import base64
+
+    page.evaluate(
+        """async ([selector, b64, name]) => {
+            const el = document.querySelector(selector);
+            const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+            const dt = new DataTransfer();
+            dt.items.add(new File([bytes], name, {type: "image/png"}));
+            el.dispatchEvent(new DragEvent("dragover",
+                {dataTransfer: dt, bubbles: true, cancelable: true}));
+            el.dispatchEvent(new DragEvent("drop",
+                {dataTransfer: dt, bubbles: true, cancelable: true}));
+        }""",
+        [selector, base64.b64encode(png).decode(), name],
+    )
+
+
+def test_drop_png_on_canvas_sets_image_only(page, server):
+    base, _ = server
+    _open(page, base)
+    page.fill("#prompt", "existing prompt")
+    page.fill("#negative", "existing negative")
+
+    _drop_png(page, "#canvas-holder", _meta_png(120, 90, rgb=BG))
+    assert wait_until(lambda: _canvas_size(base) == (120, 90))
+    assert canvas_px(base, 1, 1) == BG
+    # the image is rendered, the drop highlight is gone...
+    assert page.evaluate("document.getElementById('canvas').hidden === false")
+    assert not page.locator("#canvas-holder").evaluate(
+        "el => el.classList.contains('drop')")
+    # ...and NO metadata was applied to the controls
+    assert page.input_value("#prompt") == "existing prompt"
+    assert page.input_value("#negative") == "existing negative"
+    assert page.input_value("#width") != "120"
+
+
+def test_drop_png_on_prompt_applies_metadata_and_sets_canvas(page, server):
+    base, _ = server
+    _open(page, base)
+
+    _drop_png(page, "#prompt", _meta_png(120, 90))
+    assert wait_until(lambda: _canvas_size(base) == (120, 90))
+    assert wait_until(
+        lambda: page.input_value("#prompt") == "the meta prompt")
+    assert page.input_value("#negative") == "the negative"
+    assert page.input_value("#steps") == "17"
+    assert page.input_value("#cfg") == "6.5"
+    assert page.input_value("#seed") == "7"
+    assert page.input_value("#width") == "120"
+    assert page.input_value("#height") == "90"
+    assert page.input_value("#sampler") == "Euler a"
+    assert page.input_value("#scheduler") == "Karras"
+
+
+def test_drop_png_without_metadata_only_sets_size(page, server):
+    base, _ = server
+    _open(page, base)
+    page.fill("#prompt", "keep me")
+
+    buf = io.BytesIO()
+    Image.new("RGB", (112, 88), BG).save(buf, format="PNG")
+    _drop_png(page, "#negative", buf.getvalue())
+    assert wait_until(lambda: _canvas_size(base) == (112, 88))
+    assert page.input_value("#width") == "112"
+    assert page.input_value("#height") == "88"
+    assert page.input_value("#prompt") == "keep me"

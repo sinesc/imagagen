@@ -664,6 +664,118 @@ function wireConfig() {
   $("preset").onchange = (e) => applyPreset(e.target.value);
 }
 
+// ---------------- PNG drag&drop import (prompt / negative prompt) ----------------
+// Dropping a PNG onto the prompt or negative-prompt field sets the image on
+// the canvas and applies its embedded metadata to the controls. Without
+// metadata, only the width/height come from the image dimensions.
+async function importPng(file) {
+  try {
+    const metaRes = await fetch("/api/png-meta", { method: "POST", body: await file.arrayBuffer() });
+    if (!metaRes.ok) {
+      const j = await metaRes.json().catch(() => null);
+      throw new Error(j?.error || `png-meta: ${metaRes.status}`);
+    }
+    const { meta, width, height } = await metaRes.json();
+    const up = await fetch("/api/canvas/upload", { method: "POST", body: await file.arrayBuffer() });
+    if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
+    applyPngMeta(meta, width, height);
+    viewRefresh();
+    setStatus(meta ? `imported ${file.name} (metadata applied)` : `loaded ${file.name} onto the canvas (no metadata)`);
+  } catch (e) {
+    setStatus(`png import failed: ${e.message}`);
+  }
+}
+
+function applyPngMeta(meta, width, height) {
+  if (!meta) {
+    $("width").value = width;
+    $("height").value = height;
+    scheduleSaveUiState();
+    return;
+  }
+  if (meta.prompt !== undefined && meta.prompt !== null) $("prompt").value = meta.prompt;
+  if (meta.negative_prompt !== undefined && meta.negative_prompt !== null) $("negative").value = meta.negative_prompt;
+  for (const id of ["steps", "cfg", "seed", "width", "height"]) {
+    if (meta[id] !== undefined && meta[id] !== null) $(id).value = meta[id];
+  }
+  for (const id of ["sampler", "scheduler"]) {
+    const sel = $(id);
+    if (meta[id] && [...sel.options].some((o) => o.value === meta[id])) sel.value = meta[id];
+  }
+  if (meta.loras?.length) renderMainLoras(parseMetaLoras(meta.loras));
+  // meta "Model" carries the model's display name; match it against the
+  // loaded configurations (fall back to id for robustness)
+  if (meta.model) {
+    const entry = state.entries.find((e) => e.name === meta.model || e.id === meta.model);
+    if (entry) {
+      $("model").value = entry.id;
+      selectModel(entry.id);
+    }
+  }
+  scheduleSaveUiState();
+}
+
+// meta LoRAs travel as "name@weight" strings (A1111/Forge format)
+function parseMetaLoras(items) {
+  return (items || []).map((s) => {
+    const m = String(s).match(/^(.*)@(-?\d+(?:\.\d+)?)$/);
+    return m ? [m[1], parseFloat(m[2])] : [String(s), 1];
+  });
+}
+
+// Dropping a PNG directly on the canvas just sets the image there --
+// applying metadata is what dropping on the prompt fields is for.
+function wireCanvasDrop() {
+  const holder = $("canvas-holder");
+  holder.addEventListener("dragover", (e) => {
+    if (!(e.dataTransfer?.types || []).includes("Files")) return;
+    e.preventDefault();
+    holder.classList.add("drop");
+  });
+  holder.addEventListener("dragleave", () => holder.classList.remove("drop"));
+  holder.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    holder.classList.remove("drop");
+    const files = [...(e.dataTransfer?.files || [])];
+    const file = files.find((f) => f.type === "image/png" || /\.png$/i.test(f.name));
+    if (!file) {
+      setStatus("drop a PNG file");
+      return;
+    }
+    try {
+      const up = await fetch("/api/canvas/upload", { method: "POST", body: await file.arrayBuffer() });
+      if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
+      viewRefresh();
+      setStatus(`loaded ${file.name} onto the canvas`);
+    } catch (err) {
+      setStatus(`canvas drop failed: ${err.message}`);
+    }
+  });
+}
+
+function wirePromptDrop() {
+  for (const id of ["prompt", "negative"]) {
+    const t = $(id);
+    t.addEventListener("dragover", (e) => {
+      if (!(e.dataTransfer?.types || []).includes("Files")) return;
+      e.preventDefault(); // needed to allow the drop
+      t.classList.add("drop");
+    });
+    t.addEventListener("dragleave", () => t.classList.remove("drop"));
+    t.addEventListener("drop", (e) => {
+      e.preventDefault();
+      t.classList.remove("drop");
+      const files = [...(e.dataTransfer?.files || [])];
+      const file = files.find((f) => f.type === "image/png" || /\.png$/i.test(f.name));
+      if (!file) {
+        setStatus("drop a PNG file");
+        return;
+      }
+      importPng(file);
+    });
+  }
+}
+
 // ---------------- UI state persistence (ui-state.json) ----------------
 function readUiState() {
   return {
@@ -868,6 +980,8 @@ Tools.load();
 syncToolbar();
 wireToolbar();
 wireConfig();
+wirePromptDrop();
+wireCanvasDrop();
 loadBrushes();
 init();
 viewResize();
