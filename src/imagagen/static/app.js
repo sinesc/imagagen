@@ -197,6 +197,7 @@ async function generate() {
     setGenerating(false);
     return;
   }
+  statusIsError = false;
   const body = {
     prompt: $("prompt").value,
     negative_prompt: $("negative").value,
@@ -219,7 +220,14 @@ async function generate() {
   try {
     const r = await api("/api/generate", body);
     state.job = r.job_id;
-    setGenerating(true);
+    if (finishedJobs.has(r.job_id)) {
+      // The job already settled (fast error, interrupt, ...) before this
+      // POST response arrived: the WS handler processed done/interrupt
+      // first, so re-arming the button would stick it on "Interrupt".
+      setGenerating(false);
+    } else {
+      setGenerating(true);
+    }
   } catch (e) {
     setStatus(`generate failed: ${e.message}`);
   }
@@ -744,6 +752,12 @@ async function init() {
 }
 
 // ---------------- WebSocket ----------------
+// Job ids whose terminal event (done / job_interrupted) already arrived.
+// A job can settle before the /api/generate POST response reaches us
+// (fast failures), so generate() checks this before flipping the button.
+const finishedJobs = new Set();
+// true while the status line shows an error: "done" must not wipe it
+let statusIsError = false;
 let ws = null;
 function connectWS() {
   ws = new WebSocket(`ws://${location.host}/api/ws`);
@@ -771,14 +785,17 @@ function connectWS() {
         viewRefresh();
         break;
       case "done":
+        finishedJobs.add(msg.job);
         setGenerating(false);
-        setStatus("");
+        if (!statusIsError) setStatus("");
         break;
       case "job_interrupted":
+        finishedJobs.add(msg.job);
         setGenerating(false);
         setStatus("interrupted (partial images discarded)");
         break;
       case "error":
+        statusIsError = true;
         setStatus(`error: ${msg.message}`);
         break;
     }

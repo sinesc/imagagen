@@ -260,13 +260,18 @@ class SdxlBackend(ModelBackend):
             return self._generate_impl(request, progress)
 
     def _lora_path(self, name: str) -> str | None:
-        """LoRA name (relative to loras/, no extension) -> checkpoint path."""
+        """LoRA name (relative to loras/, no extension) -> checkpoint path.
+
+        The suffix is *appended*, never `Path.with_suffix`: names may
+        themselves contain dots ("sdxl/EnvyZoomSliderXL1.0"), and
+        with_suffix would replace the ".0" instead of adding ".safetensors".
+        """
         if self.config is None:
             return None
-        base = self.config.loras_dir / name
         for suffix in (".safetensors", ".ckpt"):
-            if (base.with_suffix(suffix)).is_file():
-                return str(base.with_suffix(suffix))
+            p = self.config.loras_dir / (name + suffix)
+            if p.is_file():
+                return str(p)
         return None
 
     def _lora_state_dict(self, path: str) -> dict:
@@ -308,21 +313,28 @@ class SdxlBackend(ModelBackend):
         key = tuple((n, float(w)) for n, w in loras)
         if key == self._active_loras:
             return
+        # Resolve every path first: a missing file must not leave the
+        # pipeline half-unloaded, and (crucially) `_active_loras` is only
+        # committed on full success -- a failed set must not poison the
+        # cache or the next identical request would skip loading and run
+        # silently without the LoRAs.
+        paths = []
+        for name, _w in key:
+            path = self._lora_path(name)
+            if path is None:
+                raise ValueError(f"LoRA not found: {name!r} (looked in loras/)")
+            paths.append(path)
         if self._active_loras is not None:
             # drop the previous set entirely, then rebuild
             self.pipe.unload_lora_weights()
             self._active_loras = None
-        self._active_loras = key
         if not key:
             return
         tags, weights = [], []
         for i, (name, weight) in enumerate(key):
-            path = self._lora_path(name)
-            if path is None:
-                raise ValueError(f"LoRA not found: {name!r} (looked in loras/)")
             tag = f"imagagen_{i}"
             res = self.pipe.load_lora_weights(
-                self._lora_state_dict(str(path)), adapter_name=tag
+                self._lora_state_dict(paths[i]), adapter_name=tag
             )
             failed = res[0] if isinstance(res, tuple) else res
             if failed:
@@ -331,6 +343,7 @@ class SdxlBackend(ModelBackend):
             weights.append(weight)
         if weights:
             self.pipe.set_adapters(tags, weights)
+        self._active_loras = key
 
     def _encode_init(self, pipe, arr: np.ndarray, device):
         """VAE-encode an HxWx3 uint8 image to its latent (the deterministic
