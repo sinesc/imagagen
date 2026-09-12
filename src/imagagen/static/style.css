@@ -44,13 +44,26 @@ body {
   resize: vertical;
 }
 .row { display: flex; gap: 0.5rem; }
-.row > label { flex: 1; }
+.row > label { flex: 1; min-width: 0; }
+/* selects have an intrinsic min-width and won't shrink in flex by
+   default (rows would overflow the 300px pane); force them to their
+   slot width instead */
+#controls .row > label select { width: 100%; min-width: 0; }
 .actions { margin-top: 0.3rem; }
 .actions button { flex: 1; }
 
 /* model configuration buttons next to the model selector */
 .model-row { align-items: flex-end; }
+.bottom-row { align-items: flex-end; }
 .mini-btns { display: flex; gap: 0.25rem; }
+
+/* small icon buttons next to the model/preset selectors, all the same size */
+button.icon {
+  width: 1.7rem;
+  padding: 0.3rem 0;
+  font-size: 0.85rem;
+  flex: none;
+}
 
 /* small buttons (LoRA rows, preset management, config buttons) */
 button.mini {
