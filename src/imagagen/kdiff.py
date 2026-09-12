@@ -2,8 +2,9 @@
 
 Vendored (MIT, madebyollin/k-diffusion) and trimmed to what imagagen needs:
 the ancestral/multistep samplers and the sigma schedules. Avoids the PyPI
-`k_diffusion` package because it drags in torchvision/torchsde for features
-we don't use.
+`k_diffusion` package (it drags in torchvision for features we don't use),
+but DPM++ 2M SDE needs `torchsde`'s BrownianTree for its correlated SDE
+noise (the same dependency Forge's k_diffusion uses).
 
 Model contract (matches k-diffusion): the wrapped model is called as
 ``model(x, sigma)`` and returns the denoised x0 estimate for the noise level
@@ -13,8 +14,17 @@ Model contract (matches k-diffusion): the wrapped model is called as
 from __future__ import annotations
 
 import math
+import warnings
 
 import torch
+import torchsde
+
+# torchsde warns when a sigma query sits within fp rounding of the tree's
+# rounded [sigma_min, sigma_max] bounds; the values are clamped, the noise is
+# unaffected (Forge's path emits the same warnings)
+warnings.filterwarnings(
+    "ignore", message=r"^Should have (ta>=t0|tb<=t1) but got "
+)
 
 # ---------------------------------------------------------------- sigmas ----
 
@@ -156,33 +166,86 @@ def sample_dpmpp_2m(model, x, sigmas, extra_args=None, callback=None):
     return x
 
 
+def _brownian_sort(a, b):
+    return (a, b, 1) if a < b else (b, a, -1)
+
+
+class BrownianTreeNoiseSampler:
+    """k-diffusion's BrownianTreeNoiseSampler (vendored, MIT,
+    madebyollin/k-diffusion -- identical to Forge's vendored copy).
+
+    A single Brownian path over the full [sigma_min, sigma_max] interval
+    (torchsde.BrownianTree, seeded from the generation seed): the noise
+    injected on consecutive SDE steps is the increment of that one path, so
+    adjacent increments are correlated (negative between neighbors) and
+    largely cancel. Independent per-step noise instead accumulates and gives
+    high-contrast, hard-edged images.
+    """
+
+    def __init__(self, x, sigma_min, sigma_max, seed=None):
+        t0, t1, self.sign = _brownian_sort(
+            torch.as_tensor(sigma_min), torch.as_tensor(sigma_max))
+        w0 = torch.zeros_like(x)
+        # the tree itself lives on CPU (k-diffusion's cpu=True default)
+        self.tree = torchsde.BrownianTree(
+            t0.detach().cpu(), w0.detach().cpu(), t1.detach().cpu(), entropy=seed)
+
+    def __call__(self, sigma, sigma_next):
+        t0, t1, sign = _brownian_sort(torch.as_tensor(sigma), torch.as_tensor(sigma_next))
+        device, dtype = t0.device, t0.dtype
+        t0, t1 = t0.detach().cpu().float(), t1.detach().cpu().float()
+        w = self.tree(t0, t1).to(device=device, dtype=dtype) * (self.sign * sign)
+        # normalize to unit variance (the raw increment has variance |t1 - t0|)
+        return w / (torch.as_tensor(sigma_next) - torch.as_tensor(sigma)).abs().sqrt()
+
+
 @torch.no_grad()
 def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, eta: float = 1.0,
                         s_noise: float = 1.0, noise_sampler=None):
-    """DPM-Solver++(2M) with ancestral SDE steps: a 2M ODE step down to
-    sigma_down, then independent noise up to the scheduled sigma (the same
-    ancestral decomposition as Euler a)."""
+    """DPM-Solver++(2M)[SDE], ported from A1111/Forge's vendored k-diffusion
+    (modules_forge/packages/k_diffusion/sampling.py, which mirrors ComfyUI's).
+
+    One SDE update per step (instead of an ODE step to sigma_down followed
+    by independent noise, as Euler a does): the 2M update is expressed in
+    half-log-SNR time (lambda = -log sigma for the x0 model, sigma_data = 1)
+    with the correlated Brownian-tree noise; the final step (sigma_next = 0)
+    is a full denoise. solver_type is "midpoint" (Forge's default)."""
+    if len(sigmas) <= 1:
+        return x
+
     extra_args = {} if extra_args is None else extra_args
-    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
-    seed = extra_args.get("seed", 0)
+    seed = extra_args.get("seed", None)
+    sigma_min = sigmas[sigmas > 0].min()
+    sigma_max = sigmas.max()
+    if noise_sampler is None:
+        noise_sampler = BrownianTreeNoiseSampler(x, sigma_min, sigma_max, seed=seed)
     s_in = x.new_ones([x.shape[0]])
+
     old_denoised = None
+    h = h_last = None
     for i in range(len(sigmas) - 1):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
         if callback is not None:
             callback({"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i],
                       "denoised": denoised})
-        sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
-        t, t_down = _t_from_sigma(sigmas[i]), _t_from_sigma(sigma_down)
-        if old_denoised is None or sigma_down == 0:
-            denoised_d = denoised
-        else:
-            denoised_d = _dpmpp_2m_denoised(denoised, old_denoised, t, _t_from_sigma(sigmas[i - 1]), t_down)
-        h = t_down - t
-        x = (_sigma_from_t(t_down) / _sigma_from_t(t)) * x - (-h).expm1() * denoised_d
-        if sigmas[i + 1] > 0 and sigma_up > 0:
-            noise = noise_sampler(x.shape, _STEP_SEED_OFFSET + seed + i * x.shape[0],
-                                  offset=x.shape[0])
-            x = x + noise * s_noise * sigma_up
+        if sigmas[i + 1] == 0:
+            # final step: full denoise, no noise
+            x = denoised
+            old_denoised = denoised
+            continue
+        lambda_s, lambda_t = sigmas[i].log().neg(), sigmas[i + 1].log().neg()
+        h = lambda_t - lambda_s
+        h_eta = h * (eta + 1)
+        alpha_t = sigmas[i + 1] * lambda_t.exp()
+        x = (sigmas[i + 1] / sigmas[i]) * (-h * eta).exp() * x \
+            + alpha_t * (-h_eta).expm1().neg() * denoised
+        if old_denoised is not None:
+            r = h_last / h
+            # 2M multistep correction (midpoint solver)
+            x = x + 0.5 * alpha_t * (-h_eta).expm1().neg() * (1 / r) * (denoised - old_denoised)
+        if eta > 0 and s_noise > 0:
+            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * sigmas[i + 1] \
+                * (-2 * h * eta).expm1().neg().sqrt() * s_noise
         old_denoised = denoised
+        h_last = h
     return x

@@ -17,6 +17,7 @@ dependencies = [
     "peft>=0.10.0",
     "bitsandbytes>=0.50.2",
     "scipy>=1.11",
+    "torchsde>=0.2.6",
 ]
 
 [project.optional-dependencies]
