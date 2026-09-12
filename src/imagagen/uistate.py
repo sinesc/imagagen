@@ -33,8 +33,8 @@ class UiState(BaseModel):
     negative_prompt: str = ""
     width: int = Field(default=1024, ge=64, le=2048)
     height: int = Field(default=1024, ge=64, le=2048)
-    steps: int = Field(default=25, ge=1, le=150)
-    # -1 = "use model default" (model configuration's CFG, then built-in)
+    # -1 = "use model default" (the model configuration's value, then built-in)
+    steps: int = Field(default=25, ge=-1, le=150)
     cfg: float = Field(default=7.0, ge=-1)
     seed: int = -1  # -1 = random (A1111 convention)
     batch: int = Field(default=1, ge=1, le=32)
@@ -44,12 +44,12 @@ class UiState(BaseModel):
     # user-selected LoRAs, [[name, weight], ...] (model-config LoRAs are
     # prepended server-side at generation time)
     loras: list[tuple[str, float]] = Field(default_factory=list)
-    preset: str | None = None  # name of the last-applied preset
 
-    # The generation mode is deliberately NOT persisted: the UI always
-    # starts in "generate" mode because there is nothing to inpaint until
-    # the user has generated an image first. Old state files that still
-    # contain a "mode" key are loaded fine (unknown keys are ignored).
+    # The generation mode and the selected preset are deliberately NOT
+    # persisted: the UI always starts in "generate" mode (there is nothing
+    # to inpaint yet) with the preset dropdown at "—". Old state files
+    # that still contain "mode"/"preset" keys are loaded fine (unknown
+    # keys are ignored).
 
 
 class UiStateStore:

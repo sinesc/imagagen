@@ -289,6 +289,41 @@ def test_preset_crud_and_apply_payload(client, tmp_path):
     assert client.get("/api/presets/big-square").status_code == 404
 
 
+def test_preset_with_model_default_sentinels(client):
+    client, _ = client
+    # the "set the form to use-model-defaults" preset: steps/cfg = -1
+    r = client.post("/api/presets", json={
+        "name": "Set defaults", "steps": -1, "cfg": -1.0,
+        "controls": {"steps": True, "cfg": True}})
+    assert r.status_code == 200, r.text
+    p = client.get("/api/presets/set-defaults").json()["preset"]
+    assert p["steps"] == -1
+    assert p["cfg"] == -1.0
+    # lookup by the *display* name works too (the UI select holds names,
+    # the files are stored under the sanitized id)
+    p2 = client.get("/api/presets/Set%20defaults").json()["preset"]
+    assert p2 == p
+    assert client.get("/api/presets/nope").status_code == 404
+
+
+def test_preset_sampler_use_model_default(client):
+    client, _ = client
+    # "" is the main UI's "use model default" option for sampler/scheduler
+    r = client.post("/api/presets", json={
+        "name": "Reset sampler", "sampler": "", "scheduler": "",
+        "controls": {"sampler": True, "scheduler": True}})
+    assert r.status_code == 200, r.text
+    p = client.get("/api/presets/reset-sampler").json()["preset"]
+    assert p["sampler"] == ""
+    assert p["scheduler"] == ""
+    # mode has no empty state: "" is rejected
+    r = client.post("/api/presets", json={"name": "bad", "mode": ""})
+    assert r.status_code == 422
+    # genuinely out-of-range values are still rejected
+    r = client.post("/api/presets", json={"name": "bad", "steps": -2})
+    assert r.status_code == 422
+
+
 def test_preset_validation(client):
     client, _ = client
     r = client.post("/api/presets", json={"name": "x", "width": 9999})

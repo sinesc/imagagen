@@ -41,6 +41,10 @@ async function apiError(res, path) {
   try {
     const j = await res.json();
     if (j && j.error) msg = j.error;
+    else if (j && Array.isArray(j.detail)) {
+      // FastAPI validation errors: ["loc", "msg"] pairs
+      msg = j.detail.map((d) => `${(d.loc || []).join(".")}: ${d.msg}`).join("; ");
+    } else if (j && j.detail) msg = String(j.detail);
   } catch (e) { /* non-JSON error body */ }
   return new Error(msg);
 }
@@ -393,17 +397,22 @@ const PRESET_KEYS = ["width", "height", "steps", "cfg", "seed", "batch",
   "sampler", "scheduler", "mode", "denoise", "loras"];
 
 async function applyPreset(name) {
-  if (!name) return;
+  if (!name) return false;
   let p;
   try {
-    p = (await (await fetch(`/api/presets/${encodeURIComponent(name)}`)).json()).preset;
+    const res = await fetch(`/api/presets/${encodeURIComponent(name)}`);
+    if (!res.ok) throw new Error(`preset: ${res.status}`);
+    p = (await res.json()).preset;
   } catch (e) {
     setStatus(e.message);
-    return;
+    return false;
   }
   const controls = p.controls || {};
   for (const key of PRESET_KEYS) {
     if (!controls[key] || p[key] === null || p[key] === undefined) continue;
+    // "" resets sampler/scheduler to "use model default" (the main UI's
+    // empty option); mode has no empty state
+    if (p[key] === "" && key !== "sampler" && key !== "scheduler") continue;
     if (key === "loras") renderMainLoras(p[key]);
     else if (key === "mode") {
       $("mode").value = p[key];
@@ -414,6 +423,7 @@ async function applyPreset(name) {
   }
   scheduleSaveUiState(0);
   setStatus(`preset "${name}" applied`);
+  return true;
 }
 
 async function loadPresets() {
@@ -427,7 +437,7 @@ async function loadPresets() {
   if (state.presets.includes(cur)) sel.value = cur;
 }
 
-function presetValueInput(kind, value) {
+function presetValueInput(kind, value, emptyLabel = "—") {
   if (kind === "loras") {
     const input = el("div", { class: "lora-list preset-loras" });
     if (value) value.forEach((x) => input.append(loraRow(x[0], x[1])));
@@ -436,7 +446,9 @@ function presetValueInput(kind, value) {
   }
   if (kind === "select") {
     const input = el("select", { class: "preset-val" });
-    input.append(opt("", "—"));
+    // sampler/scheduler: "" = reset the form to "use model default" (same
+    // option as the main UI); mode has no such state, so plain "—"
+    input.append(opt("", emptyLabel));
     return input;
   }
   const input = el("input", { class: "preset-val", type: "number" });
@@ -470,7 +482,9 @@ function openPresetDialog(existing) {
     if (kind === "number" || kind === "loras") {
       input = presetValueInput(kind, value);
     } else {
-      input = presetValueInput(kind, value);
+      // sampler/scheduler: "" means "use model default" (applied on select);
+      // mode has no such state
+      input = presetValueInput(kind, value, key === "mode" ? "—" : "Use model default");
       if (key === "sampler") state.samplers.forEach((n) => input.append(opt(n, n)));
       if (key === "scheduler") state.schedulers.forEach((n) => input.append(opt(n, n)));
       if (key === "mode") [
@@ -497,7 +511,13 @@ function openPresetDialog(existing) {
       const key = input.dataset.presetKey;
       body.controls[key] = row.querySelector(".preset-cb").checked;
       if (input.dataset.presetKind === "loras") body[key] = readLoraList(input);
-      else if (input.dataset.presetKind === "select") body[key] = input.value || null;
+      else if (input.dataset.presetKind === "select") {
+        // sampler/scheduler: "" is a real value ("use model default", the
+        // main UI's empty option); mode has no empty state, so "" -> null
+        body[key] = input.value === ""
+          ? (key === "sampler" || key === "scheduler" ? "" : null)
+          : input.value;
+      }
       else body[key] = input.value === "" ? null : parseFloat(input.value);
     }
     try {
@@ -507,7 +527,6 @@ function openPresetDialog(existing) {
       return false;
     }
     await loadPresets();
-    $("preset").value = name;
     scheduleSaveUiState(0);
   });
 }
@@ -661,7 +680,12 @@ function wireConfig() {
     row.querySelector("select").focus();
   };
   $("preset-manage").onclick = openPresetManage;
-  $("preset").onchange = (e) => applyPreset(e.target.value);
+  // apply on change, then reset to "—" so the same preset can be
+  // re-selected (change only fires on a different selection)
+  $("preset").onchange = (e) => {
+    const sel = e.target;
+    applyPreset(sel.value).then((ok) => { if (ok) sel.value = ""; });
+  };
 }
 
 // ---------------- PNG drag&drop import (prompt / negative prompt) ----------------
@@ -794,7 +818,7 @@ function readUiState() {
     // "generate" mode since there is nothing to inpaint yet
     denoise: parseFloat($("denoise").value),
     loras: getLoras(),
-    preset: $("preset").value || null,
+    // preset is not persisted either: the dropdown always starts at "—"
   };
 }
 
@@ -817,7 +841,6 @@ function applyUiState(st) {
     if (st[key] !== undefined && st[key] !== null) $(elm).value = st[key];
   }
   renderMainLoras(st.loras || []);
-  if (st.preset && state.presets.includes(st.preset)) $("preset").value = st.preset;
   // display-only restore: the model itself is NOT preloaded (it loads
   // lazily on the next generation, matching the registry design)
   if (st.model) $("model").value = st.model;

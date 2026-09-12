@@ -59,13 +59,16 @@ def test_invalid_values_rejected(tmp_path):
     with _client(tmp_path) as c:
         assert c.post("/api/ui-state", json={"steps": "abc"}).status_code == 422
         assert c.post("/api/ui-state", json={"width": 99999}).status_code == 422
-        # cfg -1 is the "use model default" sentinel and valid (Phase 4)
+        # cfg/steps of -2 are below the -1 sentinel: rejected
         assert c.post("/api/ui-state", json={"cfg": -2}).status_code == 422
+        assert c.post("/api/ui-state", json={"steps": -2}).status_code == 422
         assert c.post("/api/ui-state", json={"batch": 0}).status_code == 422
         assert c.post("/api/ui-state", content=b"not json").status_code == 400
         assert c.post("/api/ui-state", content=b"[1,2,3]").status_code == 400
         # rejected bodies never write the file
         assert not (tmp_path / "ui-state.json").exists()
+        # -1 is the "use model default" sentinel for both cfg and steps (Phase 4)
+        assert c.post("/api/ui-state", json={"steps": -1, "cfg": -1.0}).status_code == 200
         # empty body = reset to defaults
         assert c.post("/api/ui-state", content=b"").status_code == 200
 

@@ -49,8 +49,9 @@ class Preset(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     width: int | None = Field(default=None, ge=64, le=2048)
     height: int | None = Field(default=None, ge=64, le=2048)
-    steps: int | None = Field(default=None, ge=1, le=150)
-    cfg: float | None = Field(default=None, ge=0)
+    # steps/cfg: -1 = the "use model default" sentinel (same as the form)
+    steps: int | None = Field(default=None, ge=-1, le=150)
+    cfg: float | None = Field(default=None, ge=-1.0)
     seed: int | None = None
     batch: int | None = Field(default=None, ge=1, le=32)
     sampler: str | None = None
@@ -97,8 +98,10 @@ class PresetStore:
             return out
 
     def get(self, id_: str) -> Preset | None:
+        """Look up by sanitized id or by display name (both map to the
+        same file, since files are named after the sanitized name)."""
         with self._lock:
-            f = self.dir / f"{id_}.json"
+            f = self.dir / f"{sanitize_prompt(id_, max_len=120)}.json"
             if not f.is_file():
                 return None
             try:

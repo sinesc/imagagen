@@ -39,6 +39,29 @@ def test_file_layout(tmp_path):
     assert on_disk["controls"]["seed"] is False  # normalized to full field list
 
 
+def test_sampler_scheduler_empty_string_roundtrip(tmp_path):
+    """sampler/scheduler "" means "use model default" (the main UI's empty
+    option) and must survive the round trip, unlike null (unset)."""
+    s = PresetStore(tmp_path / "presets")
+    s.save(Preset(name="Reset", sampler="", scheduler="", mode=None,
+                  controls={"sampler": True, "scheduler": True}))
+    got = s.get("reset")
+    assert got.sampler == ""
+    assert got.scheduler == ""
+    assert got.controlled() == {"sampler": "", "scheduler": ""}
+    with pytest.raises(ValueError):
+        Preset(name="x", mode="")  # mode has no empty state
+
+
+def test_get_by_display_name_or_id(tmp_path):
+    s = PresetStore(tmp_path / "presets")
+    s.save(Preset(name="Set defaults", steps=-1, cfg=-1.0))
+    assert s.get("set-defaults") is not None   # sanitized id
+    assert s.get("Set defaults") is not None   # display name
+    assert s.get("set-defaults") == s.get("Set defaults")
+    assert s.get("missing") is None
+
+
 def test_controlled_returns_only_checked_settings(tmp_path):
     s = PresetStore(tmp_path / "presets")
     p = Preset(name="Size only", width=512, height=768, steps=99,
@@ -57,6 +80,21 @@ def test_validation(tmp_path):
         s.save(Preset(name="x", width=9999))
     with pytest.raises(ValueError):
         s.save(Preset(name="x", mode="bogus"))
+
+
+def test_model_default_sentinels_allowed(tmp_path):
+    """steps/cfg of -1 mean "use model default" (same as the form), so a
+    preset must be able to carry them."""
+    s = PresetStore(tmp_path / "presets")
+    p = Preset(name="Set defaults", steps=-1, cfg=-1.0,
+               controls={"steps": True, "cfg": True})
+    s.save(p)
+    got = s.get("set-defaults")
+    assert got.controlled() == {"steps": -1, "cfg": -1.0}
+    with pytest.raises(ValueError):
+        Preset(name="x", steps=-2)
+    with pytest.raises(ValueError):
+        Preset(name="x", cfg=-1.5)
 
 
 def test_unknown_keys_ignored_on_save(tmp_path):

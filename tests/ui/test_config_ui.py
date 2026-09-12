@@ -5,6 +5,8 @@ configurations, the model-config create/edit dialog, the LoRA list rows,
 and preset select/application. Uses the mock-backend server in a temp root.
 """
 
+import time
+
 import httpx
 from conftest import wait_until
 
@@ -203,3 +205,91 @@ def test_preset_apply_and_manage(page, server):
     _dialogs(page, "")
     page.locator(".preset-manage-row .mini").last.click()
     wait_until(lambda: page.evaluate("state.presets.length === 0"))
+
+
+def test_preset_dropdown_resets_after_apply_and_not_persisted(page, server):
+    base, _ = server
+    with httpx.Client(base_url=base, timeout=10) as c:
+        r = c.post("/api/presets", json={
+            "name": "Small", "width": 512,
+            "controls": {"width": True},
+        })
+        assert r.status_code == 200, r.text
+        # an old state file may still carry a preset selection: ignored
+        r = c.post("/api/ui-state", json={"preset": "Small", "width": 777})
+        assert r.status_code == 200
+    _open(page, base, "state.presets.length >= 1")
+    # the dropdown starts at "—" even though the persisted state named one
+    assert page.input_value("#preset") == ""
+    # width was persisted, so the restore happened (sanity)
+    wait_until(lambda: page.input_value("#width") == "777")
+
+    # selecting applies the preset AND resets the dropdown to "—"
+    page.select_option("#preset", "Small")
+    wait_until(lambda: page.input_value("#width") == "512")
+    wait_until(lambda: page.input_value("#preset") == "")
+
+    # the same preset can be selected again straight away (change fires
+    # because the dropdown was reset, not stuck on "Small")
+    page.select_option("#preset", "Small")
+    wait_until(lambda: page.input_value("#preset") == "")
+    assert page.input_value("#width") == "512"
+
+    # the selection itself was not persisted
+    wait_until(lambda: (
+        httpx.get(base + "/api/ui-state", timeout=10).json()["state"].get("preset") is None))
+
+
+def test_preset_dialog_sampler_use_model_default(page, server):
+    base, _ = server
+    _open(page, base)
+
+    # the dialog's sampler/scheduler offer the same "Use model default"
+    # option as the main UI, and saving it stores "" (not null)
+    page.click("#preset-manage")
+    page.click("text=+ New preset")
+    box = page.locator(".preset-dialog")
+    box.locator("label input").first.fill("Reset sampler")
+    srow = box.locator(".preset-row", has_text="sampler").first
+    assert srow.locator(".preset-val option").first.text_content() == "Use model default"
+    srow.locator(".preset-cb").check()
+    srow.locator(".preset-val").select_option("Euler a")
+    # scheduler stays at "Use model default" (index 0), checked as well
+    hrow = box.locator(".preset-row", has_text="scheduler").first
+    hrow.locator(".preset-cb").check()
+    page.click("#dialog-ok")
+    page.wait_for_function("document.getElementById('dialog').hidden")
+    with httpx.Client(base_url=base, timeout=10) as c:
+        p = c.get("/api/presets/reset-sampler").json()["preset"]
+    assert p["sampler"] == "Euler a"
+    assert p["scheduler"] == ""
+
+    # applying resets a concrete scheduler to "use model default"
+    page.select_option("#scheduler", "Karras")
+    page.select_option("#preset", "Reset sampler")
+    wait_until(lambda: page.input_value("#scheduler") == "")
+    assert page.locator("#scheduler option:checked").text_content() == "Use model default"
+    assert page.input_value("#sampler") == "Euler a"
+
+
+def test_preset_multiword_name_select(page, server):
+    # regression: preset names containing spaces 404'd on select because the
+    # store looked up by sanitized file id while the UI holds display names
+    base, _ = server
+    with httpx.Client(base_url=base, timeout=10) as c:
+        r = c.post("/api/presets", json={
+            "name": "Set defaults", "steps": -1, "cfg": -1.0,
+            "controls": {"steps": True, "cfg": True},
+        })
+        assert r.status_code == 200, r.text
+    _open(page, base, "state.presets.length >= 1")
+    console_errors = []
+    page.on("console", lambda m: console_errors.append(m.text)
+            if m.type == "error" else None)
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    page.select_option("#preset", "Set defaults")
+    wait_until(lambda: page.evaluate("document.getElementById('steps').value") == "-1")
+    wait_until(lambda: page.evaluate("document.getElementById('cfg').value") == "-1")
+    time.sleep(0.3)
+    # the fetch no longer 404s and applyPreset no longer throws
+    assert console_errors == []

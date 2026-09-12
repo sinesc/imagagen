@@ -249,17 +249,20 @@ def test_inpaint_unknown_mode_rejected(client):
 # ------------------------------------------------------------ state + ui --
 
 
-def test_uistate_persists_denoise_but_not_mode(client):
-    # the generation mode is never persisted (the UI always opens in
-    # "generate" mode); an old file's mode key is simply ignored
+def test_uistate_persists_denoise_but_not_mode_or_preset(client):
+    # the generation mode and the preset selection are never persisted
+    # (the UI always opens in "generate" mode with the preset dropdown at
+    # "—"); old-file keys are simply ignored
     r = client.post("/api/ui-state", json={
-        "mode": "inpaint_not_masked", "denoise": 0.42})
+        "mode": "inpaint_not_masked", "denoise": 0.42, "preset": "Some preset"})
     assert r.status_code == 200
     st = client.get("/api/ui-state").json()["state"]
     assert "mode" not in st
+    assert "preset" not in st
     assert st["denoise"] == 0.42
     on_disk = json.loads(client.app.state.ui_state.path.read_text())
     assert "mode" not in on_disk
+    assert "preset" not in on_disk
 
 
 def test_uistate_rejects_bad_denoise(client):
