@@ -6,10 +6,58 @@ seed: 42
 model: epicrealismXL11.0.safetensors
 CFG: 7
 steps: 25
-sampler: DMP++ 2M
+sampler: DPM++ 2M
 scheduler: Karras
 resolution: 768x768
 user description: sharp facial details and hat, slightly out of focus ears and clothing, blurry grey background with a sliver of sky and ocean on the left of the image, image looks slightly burned (likely CFG to high for the model)
+
+# white-bunny-eulera.png
+
+prompt: a cute white bunny in a field of green grass, sniffing a yellow flower
+negative:
+seed: 1
+model: epicrealismXL11.0.safetensors
+CFG: 6
+steps: 20
+sampler: Euler a
+scheduler: Karras
+resolution: 1024x1024
+
+# white-bunny-dpm2m.png
+
+prompt: a cute white bunny in a field of green grass, sniffing a yellow flower
+negative:
+seed: 4
+model: epicrealismXL11.0.safetensors
+CFG: 6
+steps: 20
+sampler: DPM++ 2M
+scheduler: Karras
+resolution: 1024x1024
+
+# white-bunny-dpm2m-zoom-3.png
+
+prompt: a cute white bunny in a field of green grass, sniffing a yellow flower<lora:EnvyZoomSliderXL1.0:-3.0>
+negative:
+seed: 4
+model: epicrealismXL11.0.safetensors
+CFG: 6
+steps: 20
+sampler: DPM++ 2M
+scheduler: Karras
+resolution: 1024x1024
+
+# white-bunny-dpm2msde.png
+
+prompt: a cute white bunny in a field of green grass, sniffing a yellow flower
+negative:
+seed: 3
+model: epicrealismXL11.0.safetensors
+CFG: 6
+steps: 20
+sampler: DPM++ 2M SDE
+scheduler: Karras
+resolution: 1024x1024
 
 # lighthouse-keeper-base.png
 
@@ -19,7 +67,7 @@ seed: 42
 model: sd_xl_base_1.0.safetensors
 CFG: 7
 steps: 25
-sampler: DMP++ 2M
+sampler: DPM++ 2M
 scheduler: Karras
 resolution: 768x768
 user description: sharp facial details and hat, slightly out of focus ears and clothing, leaning against a mostly out of frame wooden or metal structure, image looks painted
@@ -32,7 +80,7 @@ seed: 40
 model: epicrealismXL11.0.safetensors
 CFG: 7
 steps: 25
-sampler: DMP++ 2M
+sampler: DPM++ 2M
 scheduler: Karras
 resolution: 768x768
 user description: mostly in focus purple flower on the top left, blurry blue sky in the top background, blurry green field of flowers in the bottom, horizon is rotated abuot 20°
@@ -45,7 +93,7 @@ seed: 35
 model: epicrealismXL11.0.safetensors
 CFG: 7
 steps: 25
-sampler: DMP++ 2M
+sampler: DPM++ 2M
 scheduler: Karras
 resolution: 768x768
 user description: shiny grey fighter jet/spaceship viewed from the front and slightly above, blue beam coming out the back (at the top of the image), orange glowing engines, glass cockpit, mostly black background with a slight gradient in the top left corner, inconsistent lighting with some parts casting shadows to the left, some to the right
