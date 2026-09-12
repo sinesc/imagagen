@@ -1,3 +1,15 @@
+# cute-kitten-dmd2.png
+
+prompt: professional photo of a cute kitten playing with a woolen ball, <lora:DMD2fp32XL1.0:0.7>
+negative:
+seed: 1666281685
+model: epicrealismXL11.0.safetensors
+CFG: 1.5
+steps: 12
+sampler: Euler a
+scheduler: Polyexponential
+resolution: 1024x1024
+
 # lighthouse-keeper.png
 
 prompt: close-up portrait of a weathered lighthouse keeper, detailed face, fine skin texture, deep wrinkles, film photography, 85mm lens, dramatic side lighting
