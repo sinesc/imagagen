@@ -79,6 +79,33 @@ def test_save_updates_existing_and_rejects_collisions(tmp_path):
         s.save(ModelConfig(name="B", model="sdxl/a.safetensors"))
 
 
+def test_save_with_default_id_materializes_it(tmp_path):
+    s = store(tmp_path)
+    # saving with the in-memory default's id turns it into a file config
+    e = s.save(ModelConfig(name="A", model="sdxl/a.safetensors",
+                           t2i=ModeConfig(cfg=6.0)),
+               id_="sdxl/a.safetensors")
+    assert (tmp_path / "model-configs" / "a.json").is_file()
+    by_id = {x.id: x for x in s.entries()}
+    # model A is covered now -> the default entry is gone
+    assert set(by_id) == {"a", "sdxl/b.safetensors"}
+    assert by_id["a"].is_default is False
+    assert by_id["a"].t2i.cfg == 6.0
+    # editing the materialized config again is a plain file update
+    e2 = s.save(ModelConfig(name="A", model="sdxl/a.safetensors",
+                            t2i=ModeConfig(cfg=7.5)), id_="a")
+    assert e2.t2i.cfg == 7.5
+
+
+def test_save_with_default_id_can_rename(tmp_path):
+    s = store(tmp_path)
+    e = s.save(ModelConfig(name="A tuned", model="sdxl/a.safetensors"),
+               id_="sdxl/a.safetensors")
+    assert e.id == "a-tuned"
+    # the old default (name "A") is gone: the model is covered
+    assert {x.name for x in s.entries()} == {"A tuned", "B"}
+
+
 def test_create_from_copies_settings(tmp_path):
     s = store(tmp_path)
     s.save(ModelConfig(name="Base", model="sdxl/a.safetensors",

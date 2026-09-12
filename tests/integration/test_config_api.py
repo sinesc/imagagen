@@ -113,6 +113,29 @@ def test_model_config_crud(client):
     assert [e["id"] for e in body["models"]] == [MOCK_ID]
 
 
+def test_editing_default_config_materializes_it(client):
+    client, tmp_path = client
+    # the default entry's id is the model path (with slashes)
+    r = client.post("/api/model-configs", json={
+        "id": MOCK_ID,
+        "name": "Mock Model",
+        "model": MOCK_ID,
+        "t2i": {"sampler": None, "scheduler": None, "cfg": 6.5, "loras": []},
+        "i2i": {"sampler": None, "scheduler": None, "cfg": None, "loras": []},
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == "mock-model"
+    assert body["is_default"] is False
+    assert (tmp_path / "model-configs" / "mock-model.json").is_file()
+    # the selector now lists the file config instead of the in-memory
+    # default (same name, model covered)
+    models = client.get("/api/models").json()
+    assert [(e["id"], e["name"], e["is_default"]) for e in models["models"]] == [
+        ("mock-model", "Mock Model", False)]
+    assert models["current"] == "mock-model"
+
+
 def test_delete_default_config_rejected(client):
     client, _ = client
     # the default entry id is the model path (with slashes) -> body, not URL

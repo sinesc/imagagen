@@ -314,12 +314,17 @@ function openConfigDialog(entry) {
     const name = nameIn.value.trim();
     if (!name) { dialogError("name is required"); return false; }
     try {
-      await api("/api/model-configs", {
+      // pass the entry's id: saving the in-memory *default* of a model
+      // materializes it into a file configuration (it gets a new id based
+      // on the name, so follow it below)
+      const r = await api("/api/model-configs", {
+        id: entry.id,
         name,
         model: entry.model_id,
         t2i: readCfgSection(f1),
         i2i: readCfgSection(f2),
       });
+      $("model").value = r.id;
     } catch (e) {
       dialogError(e.message);
       return false;

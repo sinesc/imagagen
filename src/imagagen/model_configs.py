@@ -63,6 +63,13 @@ class ModelConfig(BaseModel):
     i2i: ModeConfig = Field(default_factory=ModeConfig)
 
 
+class ModelConfigUpsert(ModelConfig):
+    """API body for POST /api/model-configs: a ModelConfig plus the optional
+    id of the entry being edited (a default entry's id materializes it)."""
+
+    id: str | None = None
+
+
 @dataclass
 class ConfigEntry:
     """What the model selector lists: file-backed (editable) or the
@@ -164,15 +171,29 @@ class ConfigStore:
     # ----------------------------- write ------------------------------
     def save(self, mc: ModelConfig, id_: str | None = None) -> ConfigEntry:
         """Create or update a file configuration. ``id_`` defaults to the
-        sanitized name; a differing id renames the file (name changed)."""
+        sanitized name; a differing id renames the file (name changed).
+        Saving with the id of an in-memory *default* entry materializes it
+        into a file configuration under the (possibly new) name; the model
+        then becomes covered by the file and the default entry disappears."""
         with self._lock:
+            materialized = None
+            if id_ is not None and not self._path(id_).is_file():
+                e = self.get(id_)
+                if e is not None and e.is_default:
+                    materialized = id_
+                    id_ = None
             id_ = id_ or entry_id(mc.name)
             self.config.model_configs_dir.mkdir(parents=True, exist_ok=True)
             target = self._path(id_)
             if not target.is_file() and self.get(id_) is not None:
                 raise ConfigError(f"configuration id already in use: {id_!r}")
             for e in self.entries():
-                if e.id == id_:
+                # on a plain update, skip the entry being updated; on a
+                # materialization the target (if a file exists) must still
+                # take part in the collision check
+                if e.id == id_ and materialized is None:
+                    continue
+                if e.id == materialized:
                     continue
                 if e.name.lower() == mc.name.lower() or e.id == entry_id(mc.name):
                     raise ConfigError(f"configuration name already in use: {mc.name!r}")

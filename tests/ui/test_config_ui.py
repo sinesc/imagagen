@@ -83,6 +83,28 @@ def test_create_and_edit_model_config(page, server):
     wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
 
 
+def test_edit_default_model_config_materializes_it(page, server):
+    base, root = server
+    _open(page, base)
+    # the edit dialog also works on the in-memory default; saving
+    # materializes it into a file configuration (the reported bug)
+    page.click("#cfg-edit")
+    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
+    page.locator(".cfg-mode").first.locator(".cfg-cfg").fill("4.5")
+    page.click("#dialog-ok")
+    wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+    wait_until(lambda: (root / "model-configs" / "mock-model.json").exists())
+    import json
+
+    on_disk = json.loads((root / "model-configs" / "mock-model.json").read_text())
+    assert on_disk["t2i"]["cfg"] == 4.5
+    # the default entry is replaced by the file configuration (same name,
+    # no more "(default)" suffix) and the selector follows the new id
+    texts = page.eval_on_selector_all("#model option", "els => els.map(e => e.textContent)")
+    assert texts == ["Mock Model"]
+    assert page.evaluate("document.getElementById('model').value") == "mock-model"
+
+
 def test_delete_model_config(page, server):
     base, root = server
     _open(page, base)

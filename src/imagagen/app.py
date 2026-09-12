@@ -16,7 +16,7 @@ from .backends import DEFAULT_CFG, GenerateRequest, ModelBackend
 from .canvas import Canvas
 from .config import Config, ensure_dirs, load_config
 from .generation import GenerationError, with_inpaint
-from .model_configs import ConfigError, ConfigStore, ModelConfig, resolve_settings
+from .model_configs import ConfigError, ConfigStore, ModelConfig, ModelConfigUpsert, resolve_settings
 from .models import ModelRegistry, list_loras
 from .paths import next_output_path
 from .presets import Preset, PresetError, PresetStore
@@ -246,11 +246,18 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
         return {"current": entry.id, "model_id": entry.model_id}
 
     @app.post("/api/model-configs")
-    def upsert_model_config(mc: ModelConfig) -> dict:
+    def upsert_model_config(body: ModelConfigUpsert) -> dict:
+        # optional id in the JSON body: the entry being edited. Saving with
+        # a *default* entry's id materializes it into a file config
+        # (defaults are editable by turning them into real configurations)
         try:
-            entry = app.state.config_store.save(mc)
+            mc = ModelConfig.model_validate(body.model_dump(exclude={"id"}))
+            entry = app.state.config_store.save(mc, id_=body.id)
         except (ConfigError, ValidationError) as e:
             return JSONResponse({"error": str(e)}, status_code=400)
+        if body.id is not None and entry.id != body.id:
+            # materialized (or renamed) entry: keep the selection on it
+            app.state.last_config_id = entry.id
         return entry.to_dict()
 
     @app.post("/api/model-configs/create")
