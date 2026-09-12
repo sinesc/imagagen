@@ -18,8 +18,10 @@ SDXL specifics (matching the k-diffusion / A1111 contract):
   EulerDiscreteScheduler.scale_model_input does)
 - the UNet predicts EPSILON; the sampler wants an x0 estimate, so the model
   wrap returns x0 = x - sigma * eps (the exact inverse of diffusers' Euler)
-- initial noise is randn * sigma_max (the state x is the noisy sample, not
-  the unit-variance prior)
+- txt2img initial noise is randn * sigma_max (the solver state x is the
+  noisy sample, not the unit-variance prior); img2img/inpaint instead build
+  a noise-scaled state blended from the init latent at the truncated start
+  sigma (A1111 noise_scaling)
 - sampling runs in the VAE-scaled latent space; divide by
   vae.config.scaling_factor (0.13025 for SDXL) before decode
 
@@ -464,9 +466,10 @@ class SdxlBackend(ModelBackend):
                 request.steps, model_wrap.min_sigma, model_wrap.max_sigma, device=device
             )
             # seeded initial noise: same seed -> same image (A1111-compatible).
-            # k-diffusion's state is the noisy sample itself, so scale the
-            # unit prior to the max noise level. fp32: the solver state
-            # must not quantize (Forge's path promotes to fp32 at step 1).
+            # fp32 unit prior: the solver state must not quantize (Forge's path
+            # promotes to fp32 at step 1). For txt2img it is scaled up to the max
+            # noise level right before sampling (the solver state is the noisy
+            # sample itself); img2img/inpaint build their own noise-scaled state.
             gen = torch.Generator(device=device).manual_seed(request.seed)
             noise = torch.randn((1, 4, lh, lw), device=device, dtype=torch.float32,
                                 generator=gen)
@@ -509,6 +512,16 @@ class SdxlBackend(ModelBackend):
                     # init latent (it is locked there at every step anyway)
                     noise = noise * (1.0 - mask_t) + init_latent * mask_t
             self._steps_total = max(1, len(sigma_sched) - 1)
+            # txt2img: the solver state is the noisy sample itself, so scale the
+            # unit prior to the max noise level. The UNet divides by sqrt(sigma^2+1)
+            # to reach the unit-variance input it was trained on; if the state stays
+            # at unit scale that input is off-distribution (far too small) at every
+            # step and the pure-ODE samplers collapse to a flat image (regression
+            # from 719d341, which dropped this scaling when adding img2img). The
+            # img2img/inpaint path already produced a noise-scaled state (blended at
+            # the truncated start sigma), so it is left untouched.
+            if request.init_image is None:
+                noise = noise * model_wrap.max_sigma
             # the seed is threaded into the sampler so SDE/ancestral samplers
             # derive their per-step noise deterministically from it
             samples = sampler_fn(model_wrap, noise, sigma_sched,
