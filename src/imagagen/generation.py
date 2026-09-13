@@ -4,7 +4,8 @@ Three modes (concept.md):
 
 - "generate" (text to image): create a new image at the requested size.
 - "inpaint masked": operate on the *aspect-preserving bounding box* of the
-  mask plus context padding (``INPAINT_PADDING`` px each side, the A1111/
+  mask plus context padding (the UI's "Mask padding" setting, defaulting to
+  ``INPAINT_PADDING`` px each side, the A1111/
   Forge convention) -- the box has (approximately) the requested
   width:height ratio and encloses the mask region (it may extend beyond the
   canvas). The padding is there so the model *sees* the real surroundings
@@ -44,8 +45,9 @@ class GenerationError(Exception):
 # ---------------------------------------------------------------- geometry --
 
 
-#: context padding (canvas px, each side) added to the inpaint box so the
-#: model sees and matches the surroundings (A1111/Forge default is 256).
+#: default context padding (canvas px, each side) added to the inpaint box
+#: so the model sees and matches the surroundings (the A1111/Forge default
+#: is 256; the UI's "Mask padding" field overrides it per request).
 #: ``with_inpaint`` caps it at the mask's largest extent so tiny masks on
 #: small canvases do not get a degenerate box several times the canvas.
 INPAINT_PADDING = 256

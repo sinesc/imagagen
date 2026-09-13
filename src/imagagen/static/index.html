@@ -35,8 +35,8 @@
         <label title="-1 = use the model configuration's steps">Steps <input id="steps" type="number" value="25" min="-1" max="150"></label>
       </div>
       <div class="row">
-        <label>Sampler <select id="sampler"><option value="">Use model default</option></select></label>
-        <label>Scheduler <select id="scheduler"><option value="">Use model default</option></select></label>
+        <label>Sampler <select id="sampler"><option value="">Model default</option></select></label>
+        <label>Scheduler <select id="scheduler"><option value="">Model default</option></select></label>
       </div>
       <div class="row">
         <label title="LoRAs (loras/<model-type>/) are used in addition to the model configuration's LoRAs, which are always prepended">LoRAs
@@ -47,13 +47,16 @@
         </label>
       </div>
       <div class="row">
-        <label title="generate: new image — inpaint masked: regenerate the masked area — inpaint not masked: regenerate the whole image (img2img / outpaint), masked content protected">
+        <label class="mode-label" title="Generate: new image — Inpaint: regenerate the masked area — Outpaint: regenerate the whole image (img2img/outpaint), masked content protected">
           Mode
           <select id="mode">
-            <option value="generate">generate</option>
-            <option value="inpaint_masked">inpaint masked</option>
-            <option value="inpaint_not_masked">inpaint not masked</option>
+            <option value="generate">Generate</option>
+            <option value="inpaint_masked">Inpaint</option>
+            <option value="inpaint_not_masked">Outpaint</option>
           </select>
+        </label>
+        <label title="context padding around the masked area, canvas px per side (Inpaint only)">Mask pad
+          <input id="mask-padding" type="number" value="256" min="0" max="2048" step="8" disabled>
         </label>
         <label title="denoising strength (inpaint modes only)">Denoise
           <input id="denoise" type="number" value="1" min="0" max="1" step="0.01" disabled>

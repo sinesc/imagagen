@@ -380,21 +380,30 @@ def test_generation_mode_denoise_ui(page, server):
     base, root = server
     _open(page, base)
 
-    # denoise is only for the inpaint modes
+    # denoise is only for the inpaint modes; mask padding only for
+    # "inpaint masked" (it is the context ring around the mask)
     assert page.locator("#denoise").is_disabled()
+    assert page.locator("#mask-padding").is_disabled()
     page.select_option("#mode", "inpaint_masked")
     assert not page.locator("#denoise").is_disabled()
+    assert not page.locator("#mask-padding").is_disabled()
     set_input(page, "#denoise", "0.42")
+    set_input(page, "#mask-padding", "64")
+    page.select_option("#mode", "inpaint_not_masked")
+    assert page.locator("#denoise").is_disabled() is False
+    assert page.locator("#mask-padding").is_disabled()
 
-    # denoise is persisted across a reload; the mode is not and always
-    # comes back as "generate" (nothing to inpaint until the user has
-    # generated an image first)
+    # denoise/mask-padding are persisted across a reload; the mode is not
+    # and always comes back as "generate" (nothing to inpaint until the
+    # user has generated an image first)
     page.evaluate("saveUiState()")
     page.reload()
     page.wait_for_function("brushNames.length >= 1")
     assert page.locator("#mode").input_value() == "generate"
     assert page.locator("#denoise").input_value() == "0.42"
+    assert page.locator("#mask-padding").input_value() == "64"
     assert page.locator("#denoise").is_disabled()
+    assert page.locator("#mask-padding").is_disabled()
 
 
 def test_inpaint_source_thumbnail(page, server):

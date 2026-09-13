@@ -41,6 +41,9 @@ class UiState(BaseModel):
     sampler: str | None = None  # null = "use model default"
     scheduler: str | None = None  # null = "use model default"
     denoise: float = Field(1.0, ge=0.0, le=1.0)
+    # context padding around the masked area (canvas px per side),
+    # "inpaint masked" only; same limits as the HTML input
+    mask_padding: int = Field(default=256, ge=0, le=2048)
     # user-selected LoRAs, [[name, weight], ...] (model-config LoRAs are
     # prepended server-side at generation time)
     loras: list[tuple[str, float]] = Field(default_factory=list)

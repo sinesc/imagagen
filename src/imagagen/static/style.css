@@ -45,10 +45,16 @@ body {
 }
 .row { display: flex; gap: 0.5rem; }
 .row > label { flex: 1; min-width: 0; }
+/* the mode/denoise row: mode keeps its original half width, the new
+   "mask pad" field and denoise share the other half */
+.row > label.mode-label { flex: 2; }
 /* selects have an intrinsic min-width and won't shrink in flex by
    default (rows would overflow the 300px pane); force them to their
    slot width instead */
 #controls .row > label select { width: 100%; min-width: 0; }
+/* the empty-value options ("Model default", "—") render italic in the
+   dropdown; the closed control reflects it only where browsers allow */
+select option[value=""] { font-style: italic; }
 .actions { margin-top: 0.3rem; }
 .actions button { flex: 1; }
 

@@ -38,9 +38,9 @@ def test_model_selector_lists_default_entry(page, server):
     _open(page, base)
     texts = page.eval_on_selector_all("#model option", "els => els.map(e => e.textContent)")
     assert texts == ["Mock Model (default)"]
-    # sampler/scheduler offer "Use model default" first
+    # sampler/scheduler offer "Model default" first
     first = page.eval_on_selector_all("#sampler option", "els => els.map(e => e.textContent)")
-    assert first[0] == "Use model default"
+    assert first[0] == "Model default"
     assert "Euler a" in first
 
 
@@ -244,17 +244,17 @@ def test_preset_dialog_sampler_use_model_default(page, server):
     base, _ = server
     _open(page, base)
 
-    # the dialog's sampler/scheduler offer the same "Use model default"
+    # the dialog's sampler/scheduler offer the same "Model default"
     # option as the main UI, and saving it stores "" (not null)
     page.click("#preset-manage")
     page.click("text=+ New preset")
     box = page.locator(".preset-dialog")
     box.locator("label input").first.fill("Reset sampler")
     srow = box.locator(".preset-row", has_text="sampler").first
-    assert srow.locator(".preset-val option").first.text_content() == "Use model default"
+    assert srow.locator(".preset-val option").first.text_content() == "Model default"
     srow.locator(".preset-cb").check()
     srow.locator(".preset-val").select_option("Euler a")
-    # scheduler stays at "Use model default" (index 0), checked as well
+    # scheduler stays at "Model default" (index 0), checked as well
     hrow = box.locator(".preset-row", has_text="scheduler").first
     hrow.locator(".preset-cb").check()
     page.click("#dialog-ok")
@@ -264,11 +264,11 @@ def test_preset_dialog_sampler_use_model_default(page, server):
     assert p["sampler"] == "Euler a"
     assert p["scheduler"] == ""
 
-    # applying resets a concrete scheduler to "use model default"
+    # applying resets a concrete scheduler to "Model default"
     page.select_option("#scheduler", "Karras")
     page.select_option("#preset", "Reset sampler")
     wait_until(lambda: page.input_value("#scheduler") == "")
-    assert page.locator("#scheduler option:checked").text_content() == "Use model default"
+    assert page.locator("#scheduler option:checked").text_content() == "Model default"
     assert page.input_value("#sampler") == "Euler a"
 
 

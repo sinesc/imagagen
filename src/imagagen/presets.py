@@ -11,7 +11,7 @@ File layout (one JSON per preset, filename = sanitized name):
      "width": 1024, "height": 1024,
      "steps": null, "cfg": null, "seed": null, "batch": null,
      "sampler": null, "scheduler": null, "mode": null, "denoise": null,
-     "loras": null,
+     "mask_padding": null, "loras": null,
      "controls": {"width": true, "height": true}}
 """
 
@@ -37,6 +37,7 @@ PRESET_FIELDS = (
     "scheduler",
     "mode",
     "denoise",
+    "mask_padding",
     "loras",
 )
 
@@ -58,6 +59,7 @@ class Preset(BaseModel):
     scheduler: str | None = None
     mode: str | None = Field(default=None, pattern="^(generate|inpaint_masked|inpaint_not_masked)$")
     denoise: float | None = Field(default=None, ge=0.0, le=1.0)
+    mask_padding: int | None = Field(default=None, ge=0, le=2048)
     loras: list[tuple[str, float]] | None = None
     controls: dict[str, bool] = Field(default_factory=dict)
 

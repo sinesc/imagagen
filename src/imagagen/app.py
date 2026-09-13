@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .backends import DEFAULT_CFG, GenerateRequest, ModelBackend
 from .canvas import Canvas
 from .config import Config, ensure_dirs, load_config
-from .generation import GenerationError, with_inpaint
+from .generation import INPAINT_PADDING, GenerationError, with_inpaint
 from .model_configs import ConfigError, ConfigStore, ModelConfig, ModelConfigUpsert, resolve_settings
 from . import metadata
 from .models import ModelRegistry, list_loras
@@ -126,6 +126,9 @@ class GenerateBody(BaseModel):
     model_id: str | None = None
     mode: str = "generate"  # "generate" | "inpaint_masked" | "inpaint_not_masked"
     denoise: float = Field(1.0, ge=0.0, le=1.0)  # denoising strength, inpaint only
+    # context padding around the masked area (canvas px per side);
+    # "inpaint_masked" only, capped at the mask's largest extent
+    mask_padding: int = Field(default=INPAINT_PADDING, ge=0, le=2048)
 
 
 class ThumbBody(BaseModel):
@@ -399,7 +402,8 @@ def create_app(
         try:
             # inpaint modes snapshot the canvas and populate init image/mask;
             # "generate" leaves the request untouched
-            plan = with_inpaint(req, body.mode, canvas, body.denoise)
+            plan = with_inpaint(req, body.mode, canvas, body.denoise,
+                                padding=body.mask_padding)
         except GenerationError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         job = queue.submit(model_id, req, body.batch_size, plan=plan)

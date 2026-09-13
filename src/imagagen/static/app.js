@@ -219,6 +219,7 @@ async function generate() {
     model_id: $("model").value || null,
     mode: $("mode").value,
     denoise: parseFloat($("denoise").value),
+    mask_padding: parseInt($("mask-padding").value, 10) || 0,
   };
   clearThumbs();
   setStatus("queued…");
@@ -272,11 +273,11 @@ function modeFieldset(title, section) {
   // section: {sampler, scheduler, cfg, loras: [{name, weight}]}
   const fs = el("fieldset", { class: "cfg-mode" }, el("legend", {}, title));
   const s = el("select", { class: "cfg-sampler" });
-  s.append(opt("", "Use model default"));
+  s.append(opt("", "Model default"));
   state.samplers.forEach((n) => s.append(opt(n, n)));
   s.value = section.sampler || "";
   const sc = el("select", { class: "cfg-scheduler" });
-  sc.append(opt("", "Use model default"));
+  sc.append(opt("", "Model default"));
   state.schedulers.forEach((n) => sc.append(opt(n, n)));
   sc.value = section.scheduler || "";
   const steps = el("input", {
@@ -396,7 +397,7 @@ async function deleteConfig() {
 
 // ---------------- presets (Phase 4) ----------------
 const PRESET_KEYS = ["width", "height", "steps", "cfg", "seed", "batch",
-  "sampler", "scheduler", "mode", "denoise", "loras"];
+  "sampler", "scheduler", "mode", "denoise", "mask_padding", "loras"];
 
 async function applyPreset(name) {
   if (!name) return false;
@@ -412,7 +413,7 @@ async function applyPreset(name) {
   const controls = p.controls || {};
   for (const key of PRESET_KEYS) {
     if (!controls[key] || p[key] === null || p[key] === undefined) continue;
-    // "" resets sampler/scheduler to "use model default" (the main UI's
+    // "" resets sampler/scheduler to "Model default" (the main UI's
     // empty option); mode has no empty state
     if (p[key] === "" && key !== "sampler" && key !== "scheduler") continue;
     if (key === "loras") renderMainLoras(p[key]);
@@ -448,7 +449,7 @@ function presetValueInput(kind, value, emptyLabel = "—") {
   }
   if (kind === "select") {
     const input = el("select", { class: "preset-val" });
-    // sampler/scheduler: "" = reset the form to "use model default" (same
+    // sampler/scheduler: "" = reset the form to "Model default" (same
     // option as the main UI); mode has no such state, so plain "—"
     input.append(opt("", emptyLabel));
     return input;
@@ -474,6 +475,7 @@ function openPresetDialog(existing) {
     ["scheduler", "scheduler", "select", p.scheduler],
     ["mode", "mode", "select", p.mode],
     ["denoise", "denoise strength", "number", p.denoise],
+    ["mask_padding", "mask padding", "number", p.mask_padding],
     ["loras", "LORAs", "loras", p.loras],
   ];
   const rows = el("div", { class: "preset-rows" });
@@ -484,15 +486,15 @@ function openPresetDialog(existing) {
     if (kind === "number" || kind === "loras") {
       input = presetValueInput(kind, value);
     } else {
-      // sampler/scheduler: "" means "use model default" (applied on select);
+      // sampler/scheduler: "" means "Model default" (applied on select);
       // mode has no such state
-      input = presetValueInput(kind, value, key === "mode" ? "—" : "Use model default");
+      input = presetValueInput(kind, value, key === "mode" ? "—" : "Model default");
       if (key === "sampler") state.samplers.forEach((n) => input.append(opt(n, n)));
       if (key === "scheduler") state.schedulers.forEach((n) => input.append(opt(n, n)));
       if (key === "mode") [
-        ["generate", "generate"],
-        ["inpaint_masked", "inpaint masked"],
-        ["inpaint_not_masked", "inpaint not masked"],
+        ["generate", "Generate"],
+        ["inpaint_masked", "Inpaint"],
+        ["inpaint_not_masked", "Outpaint"],
       ].forEach(([v, t]) => input.append(opt(v, t)));
       input.value = value || "";
     }
@@ -514,7 +516,7 @@ function openPresetDialog(existing) {
       body.controls[key] = row.querySelector(".preset-cb").checked;
       if (input.dataset.presetKind === "loras") body[key] = readLoraList(input);
       else if (input.dataset.presetKind === "select") {
-        // sampler/scheduler: "" is a real value ("use model default", the
+        // sampler/scheduler: "" is a real value ("Model default", the
         // main UI's empty option); mode has no empty state, so "" -> null
         body[key] = input.value === ""
           ? (key === "sampler" || key === "scheduler" ? "" : null)
@@ -686,9 +688,10 @@ function zoomCenter(f) {
 }
 
 // denoising strength only applies to the inpaint modes (concept.md: "disabled
-// when not inpainting")
+// when not inpainting"); mask padding only to "inpaint masked"
 function syncMode() {
   $("denoise").disabled = $("mode").value === "generate";
+  $("mask-padding").disabled = $("mode").value !== "inpaint_masked";
 }
 
 function wireToolbar() {
@@ -880,6 +883,7 @@ function readUiState() {
     // mode is intentionally not persisted: the UI always opens in
     // "generate" mode since there is nothing to inpaint yet
     denoise: parseFloat($("denoise").value),
+    mask_padding: parseInt($("mask-padding").value, 10) || 0,
     loras: getLoras(),
     // preset is not persisted either: the dropdown always starts at "—"
     seg_model: $("seg-model").value || null,
@@ -901,6 +905,7 @@ function applyUiState(st) {
     ["sampler", "sampler"],
     ["scheduler", "scheduler"],
     ["denoise", "denoise"],
+    ["mask-padding", "mask_padding"],
   ];
   for (const [elm, key] of fields) {
     if (st[key] !== undefined && st[key] !== null) $(elm).value = st[key];
@@ -964,7 +969,7 @@ async function init() {
   for (const id of ["sampler", "scheduler"]) {
     const s2 = $(id);
     s2.innerHTML = "";
-    s2.append(opt("", "Use model default"));
+    s2.append(opt("", "Model default"));
     (id === "sampler" ? s.samplers : s.schedulers).forEach((n) => s2.append(opt(n, n)));
   }
   const pres = $("preset");
@@ -1089,7 +1094,7 @@ setupCanvasInput();
 window.addEventListener("resize", viewResize);
 connectWS();
 
-["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch", "denoise"].forEach((id) => {
+["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch", "denoise", "mask-padding"].forEach((id) => {
   $(id).addEventListener("input", () => scheduleSaveUiState());
 });
 ["sampler", "scheduler"].forEach((id) => {
