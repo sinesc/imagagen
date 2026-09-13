@@ -125,14 +125,20 @@ class SaveBody(BaseModel):
     prompt: str
 
 
-# Maximum brush size in px. Keep in sync with BRUSH_SIZE_MAX in static/app.js
-# (covered by test_stroke_bad_values_422).
+# Max brush slider value in px. Keep in sync with BRUSH_SIZE_MAX in
+# static/app.js (covered by test_stroke_bad_values_422).
 MAX_BRUSH_SIZE = 300.0
+# The client zoom range is 1/512..64 (see viewZoomAt in static/canvas.js).
+# In "screen" mode the slider value is in screen px and is sent as
+# size / zoom, so canvas-px stamps span 1/64 .. 300*64 px.
+MAX_ZOOM = 64.0
+MIN_BRUSH_SIZE = 1.0 / MAX_ZOOM
+MAX_BRUSH_SIZE_ZOOMED = MAX_BRUSH_SIZE * MAX_ZOOM
 
 
 class StrokeBody(BaseModel):
     points: list[list[float]] = Field(..., min_length=1)  # canvas-pixel coords
-    size: float = Field(10.0, ge=1.0, le=MAX_BRUSH_SIZE)
+    size: float = Field(10.0, ge=MIN_BRUSH_SIZE, le=MAX_BRUSH_SIZE_ZOOMED)
     opacity: float = Field(1.0, ge=0.0, le=1.0)
     brush: str = "circle"
     erase: bool = False  # mask tool: shift-draw

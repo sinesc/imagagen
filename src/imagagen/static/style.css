@@ -243,6 +243,11 @@ button.danger:hover { background: #a33; }
   font-size: 0.75rem;
   color: #aaa;
 }
+/* .tight: half the inner gap and half the toolbar gap to the neighbour */
+#toolbar .slab.tight {
+  gap: 0.15rem;
+  margin-left: -0.2rem;
+}
 #toolbar .slab input[type="range"] {
   width: 90px;
 }

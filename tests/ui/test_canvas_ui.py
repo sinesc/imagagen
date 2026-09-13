@@ -270,6 +270,61 @@ def test_cursor_moves_do_not_redraw_during_commit(page, server):
     ), "cursor outline should be tracked again once the commit finishes"
 
 
+def test_brush_screen_size_mode(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150
+    page.keyboard.press("m")  # mask tool: default 30 px
+    # zoom 2x (relative to the fit scale) anchored at the holder centre,
+    # so the image centre stays put
+    s0 = page.evaluate("view.scale")
+    page.evaluate("viewZoomAt(2, holderBox().w / 2, holderBox().h / 2)")
+    scale = page.evaluate("view.scale")
+    assert scale == pytest.approx(2 * s0)
+
+    def stamp_radius():
+        ys, xs = np.nonzero(mask_arr(base) > 200)
+        return (xs.max() - xs.min()) / 2
+
+    # default: size in canvas px -> full 30 px stamp despite the zoom
+    dot(page, 100, 75)
+    assert wait_until(
+        lambda: mask_arr(base) is not None and int((mask_arr(base) > 200).sum()) > 100)
+    assert stamp_radius() == pytest.approx(15, rel=0.1)
+
+    page.click("#mask-clear")
+    assert wait_until(lambda: bool((mask_arr(base) == 0).all()))
+
+    # screen mode: the 30 px slider value means 30 SCREEN px -> the canvas
+    # footprint shrinks to size/scale
+    page.check("#brush-screen")
+    assert page.evaluate("brushSizeCanvas()") == pytest.approx(30 / scale)
+    dot(page, 100, 75)
+    assert wait_until(lambda: int((mask_arr(base) > 200).sum()) > 5)
+    assert stamp_radius() == pytest.approx(15 / scale, rel=0.25, abs=1)
+
+    # outline: the ring sits at slider/2 SCREEN px, not canvas px
+    box = page.locator("#canvas").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    bright = page.evaluate(
+        """() => {
+          const ctx = document.getElementById('canvas').getContext('2d');
+          const dpr = view.dpr;
+          const [mx, my] = view.cursor;
+          const r = (Tools.get().size / 2) * dpr; // screen px
+          let best = 0;
+          for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) {
+            const d = ctx.getImageData(
+              Math.round(mx * dpr + r + dx), Math.round(my * dpr + dy), 1, 1
+            ).data;
+            best = Math.max(best, d[0] + d[1] + d[2]);
+          }
+          return best;
+        }"""
+    )
+    assert bright > 300  # white ring pixel; BG sums to 90
+
+
 # ---------------- state persistence ----------------
 
 

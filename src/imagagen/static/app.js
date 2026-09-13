@@ -605,6 +605,7 @@ function syncToolbar() {
   if (brushNames.includes(st.brush)) $("brush").value = st.brush;
   $("brush-size").value = sliderFromSize(st.size);
   $("brush-size-val").textContent = Math.round(st.size);
+  $("brush-screen").checked = !!st.screen;
   $("brush-opacity").value = st.opacity;
   $("brush-opacity-val").textContent = st.opacity.toFixed(2);
 }
@@ -653,6 +654,11 @@ function wireToolbar() {
     Tools.get().size = Math.round(sizeFromSlider(parseFloat(e.target.value)));
     Tools.save();
     syncToolbar();
+  };
+  $("brush-screen").onchange = (e) => {
+    Tools.get().screen = e.target.checked;
+    Tools.save();
+    if (view.has) viewRedraw(); // cursor outline changes footprint
   };
   $("brush-opacity").oninput = (e) => {
     Tools.get().opacity = parseFloat(e.target.value);

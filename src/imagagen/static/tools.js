@@ -8,9 +8,10 @@ const TOOLS = ["brush", "mask"];
 const Tools = {
   current: "brush",
   // spec default brush: circle, 10 px diameter, full opacity
+  // screen: size in screen px (constant while zooming) instead of canvas px
   state: {
-    brush: { size: 10, opacity: 1, brush: "circle", color: "#ffffff" },
-    mask: { size: 30, opacity: 1, brush: "circle" },
+    brush: { size: 10, opacity: 1, brush: "circle", color: "#ffffff", screen: false },
+    mask: { size: 30, opacity: 1, brush: "circle", screen: false },
   },
   load() {
     try {

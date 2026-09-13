@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 from starlette.testclient import TestClient
 
-from imagagen.app import MAX_BRUSH_SIZE, create_app
+from imagagen.app import MAX_BRUSH_SIZE, MAX_BRUSH_SIZE_ZOOMED, create_app
 from imagagen.backends import MockBackend
 from imagagen.config import Config
 
@@ -74,11 +74,16 @@ def test_stroke_bad_values_422(tmp_path):
             "points": [[1.0, 1.0]], "opacity": 2.0}).status_code == 422
         assert c.post("/api/canvas/stroke", json={
             "points": [[1.0, 1.0]], "color": "#zzz"}).status_code == 422
-        # size boundary (must stay in sync with the frontend slider, app.js)
+        # size boundary (must stay in sync with the frontend slider, app.js;
+        # zoomed bounds cover "screen" mode: size/zoom, see MAX_ZOOM in app.py)
         assert c.post("/api/canvas/stroke", json={
             "points": [[1.0, 1.0]], "size": MAX_BRUSH_SIZE}).status_code == 200
         assert c.post("/api/canvas/stroke", json={
-            "points": [[1.0, 1.0]], "size": MAX_BRUSH_SIZE + 1}).status_code == 422
+            "points": [[1.0, 1.0]],
+            "size": MAX_BRUSH_SIZE_ZOOMED}).status_code == 200
+        assert c.post("/api/canvas/stroke", json={
+            "points": [[1.0, 1.0]],
+            "size": MAX_BRUSH_SIZE_ZOOMED + 1}).status_code == 422
 
 
 def test_stroke_unknown_brush_400(tmp_path):

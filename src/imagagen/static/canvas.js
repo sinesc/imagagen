@@ -173,10 +173,17 @@ function stampPositions(points, spacing) {
   return out;
 }
 
+// footprint of the current brush in canvas px: in screen mode the slider
+// value is screen px (constant while zooming), so divide by the zoom
+function brushSizeCanvas() {
+  const st = Tools.get();
+  return st.screen ? st.size / view.scale : st.size;
+}
+
 // outline of the brush footprint at the cursor (pre-draw preview)
 function drawCursor(ctx) {
   if (!view.has || !view.cursor) return;
-  const r = Tools.get().size / 2;
+  const r = brushSizeCanvas() / 2;
   if (r < 0.5) return;
   const x = (view.cursor[0] - view.ox) / view.scale;
   const y = (view.cursor[1] - view.oy) / view.scale;
@@ -199,8 +206,8 @@ function drawPreview(ctx) {
   const st = Tools.get();
   const s = view.stroke;
   if (s.tool === "mask" && s.erase) return; // erasing: committed state is truth
-  const pts = stampPositions(s.points, Math.max(1, st.size / 12));
-  const r = Math.max(st.size / 2, 0.5);
+  const pts = stampPositions(s.points, Math.max(1, s.size / 12));
+  const r = Math.max(s.size / 2, 0.5);
   ctx.globalAlpha = st.opacity;
   ctx.fillStyle = s.tool === "mask" ? "rgba(128,128,128,0.9)" : st.color;
   for (const [x, y] of pts) {
@@ -239,6 +246,9 @@ function setupCanvasInput() {
     view.stroke = {
       tool,
       points: [p],
+      // freeze the canvas-px footprint at stroke start (the server stamps
+      // with a single size, so a mid-stroke zoom can't change it)
+      size: brushSizeCanvas(),
       erase: tool === "mask" && e.shiftKey, // shift = mask eraser
     };
     c.setPointerCapture(e.pointerId);
@@ -295,7 +305,7 @@ function setupCanvasInput() {
     try {
       await api("/api/canvas/stroke", {
         points: s.points,
-        size: st.size,
+        size: s.size, // canvas px (screen mode already divided by zoom)
         opacity: st.opacity,
         brush: st.brush,
         color: st.color || "#ffffff",
