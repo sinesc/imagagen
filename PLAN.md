@@ -299,16 +299,30 @@ Implementation notes:
 ### Phase 5 — Plugin system hardening
 - Formalize `SamplerPlugin`/`SchedulerPlugin` interfaces; move Euler a,
   DPM++ 2M, DPM++ 2M SDE + Karras, Polyexponential in; dropdowns populated from
-  the registry (with "Use model default" first).
+  the registry (with "Use model default" first). (deferred)
 - `ToolPlugin` interface; move **clone** (shift-click source, offset = current −
   start; implemented server-side on stroke) and **smudge** (weighted average drag)
-  into plugins.
-- **Segmentation**: port `a-person-mask-generator` (yolov8n-cls / person model +
-  face-landmark refinement) into `plugins/segmentation/`; button + model dropdown
-  over `models/segmentation/`; result written to the mask buffer (undoable).
-- Deliverable: registry-driven UI; new sampler/scheduler/tool addable by dropping
-  a module; person-mask generation working (CPU fallback OK for testing the
-  plumbing with the mock image).
+  into plugins. (deferred)
+- ✅ **Segmentation**: port of `a-person-mask-generator` in `segmentation.py`
+  (single module — the plan's `plugins/` package was deferred with the plugin
+  interfaces). The reference extension turned out to be *MediaPipe*-based (not
+  yolov8/insightface as the plan assumed): `SegmentationService` loads every
+  `*.tflite` in `models/segmentation/` via `ImageSegmenter` (lazily; mediapipe
+  imported on first use), exposes the model's own class labels, and unions the
+  selected classes' confidence masks (element-wise max) into a 0..255 alpha:
+  pixels below the 0.25 confidence threshold (the model's ~0.017 baseline on
+  every pixel) are zeroed, above it the raw confidence is kept as the mask
+  alpha (soft edges; the reference binarized instead). API: `GET
+  /api/segmentation/models` (id/name/labels) + `POST /api/segmentation/mask`
+  `{model, classes}` → `Canvas.set_mask` (new; one undo step). UI: model
+  dropdown + **segment** button in the mask toolbar section → dialog with a
+  checkbox per class (background excluded, default: all others); model +
+  classes persisted in ui-state. `mediapipe` added to the deps (needs the
+  libEGL/libGLES system libs); a fake segmenter factory is injected in unit /
+  integration tests, the real model is covered by `devtools/segmentation_check.py`
+  and a Playwright test (skips without the tflite file).
+- Deliverable (deferred parts): registry-driven UI; new sampler/scheduler/tool
+  addable by dropping a module.
 
 ### Phase 6 — GPU/memory management & import
 - Model residency: LRU-1-in-RAM — switching model unloads active to RAM (keep
@@ -370,7 +384,7 @@ workflow here, not something deferred to "a GPU machine".
 | Mask dilate/erode | scipy.ndimage vs cv2 | **scipy** (smaller dependency than OpenCV; binary_dilation with disk SE is enough). |
 | Metadata format | PNG `parameters` text chunk (A1111/Forge) | Use Forge's exact `parameters` chunk layout + standard fields (`Prompt`, `Negative prompt`, `Seed`, `Size`, `Steps`, `Sampler`, `Scheduler`, `CFG scale`, `Model`, `Lora`), so Forge can import our outputs; verified with a roundtrip test. |
 | Multi-GPU | thread-per-GPU with `torch.cuda.set_device` per worker | **Thread-per-GPU** (diffusers models aren't shared; each worker owns its device). One model in VRAM total → model switching serializes via a lock; the queue naturally queues behind it. |
-| Segmentation model source | the extension uses `ultralytics` YOLO-cls + insightface | Port as-is (`ultralytics` + `insightface` as optional deps); it's self-contained in the extension folder. |
+| Segmentation model source | the extension uses `ultralytics` YOLO-cls + insightface | **Changed on inspection** (Phase 5): the reference extension is *MediaPipe*-based (`selfie_multiclass_256x256.tflite` image segmenter, per-class confidence masks). Ported with `mediapipe` as a hard dep (imported lazily); models are any `.tflite` in `models/segmentation/`, class names read from the model itself. |
 | Canvas sync protocol | stroke-based (chosen) vs pixel-diff vs full-canvas | **Stroke-based** (see Architecture). Brush PNGs sent as data to server on load. |
 
 ## Risks / watch-outs

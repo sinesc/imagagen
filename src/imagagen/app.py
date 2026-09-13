@@ -8,6 +8,7 @@ import threading
 from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -25,9 +26,20 @@ from .models import ModelRegistry, list_loras
 from .paths import next_output_path
 from .presets import Preset, PresetError, PresetStore
 from .queue import GenerationQueue
+from .segmentation import SegmentationError, SegmentationService
 from .uistate import UiState, UiStateStore
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _lifespan(segmentation: SegmentationService):
+    async def lifespan(app: FastAPI):
+        yield
+        # close the cached MediaPipe segmenters before the process exits
+        # (otherwise their C dispatcher teardown prints GC noise)
+        segmentation.close()
+
+    return lifespan
 
 
 class EventHub:
@@ -159,12 +171,25 @@ class MaskOpBody(BaseModel):
     px: int = Field(4, ge=0, le=100)
 
 
-def create_app(config: Config | None = None, backend: ModelBackend | None = None) -> FastAPI:
+class SegmentationMaskBody(BaseModel):
+    model: str  # file name in models/segmentation/
+    classes: list[str] = Field(default_factory=list)  # class labels to union
+
+
+def create_app(
+    config: Config | None = None,
+    backend: ModelBackend | None = None,
+    segmentation: SegmentationService | None = None,
+) -> FastAPI:
     config = config or load_config()
     ensure_dirs(config)
 
     hub = EventHub()
     canvas = Canvas(brushes_dir=config.brushes_dir)
+    if segmentation is None:
+        # models/segmentation/ may be empty; mediapipe itself is imported
+        # lazily on first use (see segmentation.py)
+        segmentation = SegmentationService(config.segmentation_models_dir)
 
     if backend is not None:  # test injection (e.g. MockBackend)
         registry = _MockRegistry(backend)
@@ -179,7 +204,7 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
     queue = GenerationQueue(registry=registry, canvas=canvas, emit=hub.emit)
     queue.start()
 
-    app = FastAPI(title="imagagen")
+    app = FastAPI(title="imagagen", lifespan=_lifespan(segmentation))
     app.state.config = config
     app.state.hub = hub
     app.state.canvas = canvas
@@ -190,6 +215,7 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
     # for unconfigured models (Phase 4)
     app.state.config_store = ConfigStore(config, lambda: registry.list())
     app.state.preset_store = PresetStore(config.presets_dir)
+    app.state.segmentation = segmentation
     app.state.last_config_id: str | None = None
 
     # --- cache policy ---
@@ -530,6 +556,46 @@ def create_app(config: Config | None = None, backend: ModelBackend | None = None
         }[body.op]()
         return {"ok": True, "changed": changed,
                 "undo": canvas.can_undo(), "redo": canvas.can_redo()}
+
+    # --- person mask generation (Phase 5) ---
+    # Segmentation models are .tflite files in models/segmentation/; the
+    # class names come from the model itself, so the UI can offer a
+    # per-class checkbox list for any multiclass segmenter.
+    @app.get("/api/segmentation/models")
+    def segmentation_models() -> dict:
+        try:
+            models = app.state.segmentation.list_models()
+        except Exception as e:  # e.g. mediapipe import failure
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {
+            "models": [
+                {"id": m.id, "name": m.name, "labels": list(m.labels)}
+                for m in models
+            ]
+        }
+
+    @app.post("/api/segmentation/mask")
+    def segmentation_mask(body: SegmentationMaskBody) -> dict:
+        if not canvas.has_image():
+            return JSONResponse({"error": "canvas is empty"}, status_code=400)
+        image = canvas.image
+        assert image is not None
+        try:
+            seg = app.state.segmentation.generate(body.model, body.classes, image)
+        except SegmentationError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        # union with the existing mask (element-wise max of the alpha);
+        # a user who wants a fresh mask clears it first
+        existing = canvas.mask
+        merged = seg if existing is None else np.maximum(existing, seg)
+        changed = canvas.set_mask(merged)
+        return {
+            "ok": True,
+            "changed": changed,
+            "pixels": int((merged > 0).sum()),
+            "undo": canvas.can_undo(),
+            "redo": canvas.can_redo(),
+        }
 
     # --- save ---
     @app.post("/api/save")

@@ -47,7 +47,14 @@ printf '../../../../src\n' > .venv3.13/lib/python3.13/site-packages/_editable_im
 ```
 
 Place SDXL weights in `models/sdxl/`, LoRAs in `loras/sdxl/`, greyscale brush
-PNGs in `brushes/`. Outputs land in `output/`. Named model configurations
+PNGs in `brushes/`. Outputs land in `output/`.
+
+**Person mask generation**: drop a MediaPipe image-segmenter `.tflite` into
+`models/segmentation/` (e.g. the selfie multiclass model, 16 MB, from
+`https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite`).
+The toolbar's model dropdown + *segment* button then generate a person-part
+mask into the mask buffer (undoable). MediaPipe needs the `libEGL`/`libGLES`
+system libraries (Debian/Ubuntu: `apt install libegl1 libgles2`). Named model configurations
 live in `model-configs/`, generation-setting presets in `presets/` (both
 plain JSON, created/edited from the UI, both safe to edit by hand).
 

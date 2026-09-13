@@ -15,6 +15,8 @@ const state = {
   schedulers: [],
   loras: [], // lora names from /api/loras
   presets: [], // preset names
+  segModels: [], // segmentation models from /api/segmentation/models
+  segClasses: [], // last-used person-mask class selection ([] = default)
 };
 
 function setStatus(text) {
@@ -627,6 +629,57 @@ async function maskOp(op) {
   }
 }
 
+// ---------------- person mask generation (Phase 5 segmentation) ----------------
+// models/segmentation/*.tflite -> /api/segmentation/models; the class
+// checkboxes come from the model's own labels (background excluded). The
+// result replaces the mask buffer (one undo step).
+function openSegDialog() {
+  const model =
+    state.segModels.find((m) => m.id === $("seg-model").value) || null;
+  if (!model) {
+    openDialog(
+      "Generate person mask",
+      el(
+        "div",
+        { class: "muted" },
+        "no segmentation model selected — put a .tflite (e.g. " +
+          "selfie_multiclass_256x256.tflite) into models/segmentation/ and reload"
+      ),
+      null,
+      "Close"
+    );
+    return;
+  }
+  const defaults = model.labels.filter((l) => l !== "background");
+  const prev = state.segClasses.length ? state.segClasses : defaults;
+  const rows = defaults.map((label) => {
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = prev.includes(label);
+    return el("label", { class: "seg-class" }, cb, label);
+  });
+  const body = el("div", {},
+    el("div", { class: "muted" },
+      `classes to add to the mask (union with the current mask, undoable — clear it first to replace):`),
+    el("div", { class: "seg-classes" }, ...rows),
+  );
+  openDialog("Generate person mask", body, async () => {
+    const classes = rows.filter((r) => r.querySelector("input").checked)
+      .map((r) => r.textContent.trim());
+    if (!classes.length) return false; // keep the dialog open
+    try {
+      const r = await api("/api/segmentation/mask", { model: model.id, classes });
+      state.segClasses = classes;
+      scheduleSaveUiState(0);
+      setStatus(`mask generated: ${r.pixels.toLocaleString()} px (undo to revert)`);
+      viewRefresh();
+    } catch (e) {
+      statusIsError = true;
+      setStatus(`segmentation failed: ${e.message}`);
+      return false; // keep the dialog open so the class set can be fixed
+    }
+  }, "Generate");
+}
+
 function zoomCenter(f) {
   const r = cv().getBoundingClientRect();
   viewZoomAt(f, r.width / 2, r.height / 2);
@@ -669,6 +722,8 @@ function wireToolbar() {
   $("mask-dilate").onclick = () => maskOp("dilate");
   $("mask-erode").onclick = () => maskOp("erode");
   $("mask-clear").onclick = () => maskOp("clear");
+  $("seg-model").onchange = () => scheduleSaveUiState(0);
+  $("seg-run").onclick = () => openSegDialog();
   $("zoom-in").onclick = () => zoomCenter(1.25);
   $("zoom-out").onclick = () => zoomCenter(0.8);
   $("zoom-fit").onclick = () => viewFit();
@@ -827,6 +882,8 @@ function readUiState() {
     denoise: parseFloat($("denoise").value),
     loras: getLoras(),
     // preset is not persisted either: the dropdown always starts at "—"
+    seg_model: $("seg-model").value || null,
+    seg_classes: state.segClasses,
   };
 }
 
@@ -852,6 +909,10 @@ function applyUiState(st) {
   // display-only restore: the model itself is NOT preloaded (it loads
   // lazily on the next generation, matching the registry design)
   if (st.model) $("model").value = st.model;
+  // person mask generation: class selection lives in JS state, the model
+  // select is restored here (after loadSegModels populated the dropdown)
+  if (Array.isArray(st.seg_classes)) state.segClasses = st.seg_classes;
+  if (st.seg_model && $("seg-model").options.length) $("seg-model").value = st.seg_model;
 }
 
 let saveTimer = null;
@@ -870,18 +931,25 @@ async function init() {
   let u = null;
   let pr = { presets: [] };
   let lr = { loras: [] };
+  let sm = { models: [] };
   try {
-    [m, s, u, pr, lr] = await Promise.all([
+    [m, s, u, pr, lr, sm] = await Promise.all([
       fetch("/api/models").then((r) => r.json()),
       fetch("/api/samplers").then((r) => r.json()),
       fetch("/api/ui-state").then((r) => (r.ok ? r.json() : null)),
       fetch("/api/presets").then((r) => r.json()),
       fetch("/api/loras").then((r) => r.json()),
+      fetch("/api/segmentation/models").then((r) => (r.ok ? r.json() : { models: [] })),
     ]);
   } catch (e) {
     console.error("init:", e);
     return;
   }
+  state.segModels = sm.models;
+  const segSel = $("seg-model");
+  segSel.innerHTML = "";
+  if (!state.segModels.length) segSel.append(opt("", "no models"));
+  state.segModels.forEach((x) => segSel.append(opt(x.id, x.name)));
   state.entries = m.models;
   state.samplers = s.samplers;
   state.schedulers = s.schedulers;

@@ -365,6 +365,18 @@ button.danger:hover { background: #a33; }
 
 /* preset management list */
 .preset-manage { display: flex; flex-direction: column; gap: 0.35rem; }
+
+/* person mask generation dialog: one checkbox per body-part class.
+   #dialog-body label is flex-column (label-over-control for the config
+   dialogs), so the checkbox rows must opt back into a row layout. */
+.seg-classes { display: flex; flex-direction: column; gap: 0.25rem; margin-top: 0.5rem; }
+#dialog-body .seg-class {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+}
 .preset-manage-row {
   display: flex;
   align-items: center;

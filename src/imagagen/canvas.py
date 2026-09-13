@@ -365,6 +365,21 @@ class Canvas:
                 self._image, np.zeros_like(self._mask)
             )
 
+    def set_mask(self, mask: np.ndarray) -> bool:
+        """Replace the whole mask (e.g. a segmentation result).
+
+        Records one undo step, like every other mask change. Raises
+        ValueError when the canvas is empty or the mask size does not
+        match the image.
+        """
+        mask = np.ascontiguousarray(mask)
+        with self._lock:
+            if self._image is None:
+                raise ValueError("cannot set a mask on an empty canvas")
+            if mask.shape != self._image.shape[:2]:
+                raise ValueError("mask size does not match the canvas")
+            return self._commit_locked(self._image, mask)
+
     # --- (de)serialization ---
     def to_png_bytes(self) -> bytes | None:
         with self._lock:

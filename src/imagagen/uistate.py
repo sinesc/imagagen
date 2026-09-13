@@ -44,6 +44,11 @@ class UiState(BaseModel):
     # user-selected LoRAs, [[name, weight], ...] (model-config LoRAs are
     # prepended server-side at generation time)
     loras: list[tuple[str, float]] = Field(default_factory=list)
+    # person mask generation (Phase 5): the selected segmentation model
+    # (file name in models/segmentation/) and the last-used class
+    # selection (empty = "all classes except background")
+    seg_model: str | None = None
+    seg_classes: list[str] = Field(default_factory=list)
 
     # The generation mode and the selected preset are deliberately NOT
     # persisted: the UI always starts in "generate" mode (there is nothing

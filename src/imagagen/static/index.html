@@ -107,6 +107,9 @@
         <button id="mask-erode" title="shrink the mask by the given pixels">shrink</button>
         <button id="mask-clear" title="clear the whole mask">clear mask</button>
         <span class="sep"></span>
+        <select id="seg-model" title="segmentation model (tflite file from models/segmentation/)"></select>
+        <button id="seg-run" title="generate a person mask (selected body-part classes) from the current image, added to the mask buffer (union, undoable)">segment</button>
+        <span class="sep"></span>
         <button id="zoom-in" title="zoom in (also: mouse wheel)">+</button>
         <button id="zoom-out" title="zoom out">−</button>
         <button id="zoom-fit" title="fit image to window (also: double-click)">fit</button>
