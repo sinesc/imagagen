@@ -13,10 +13,45 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+_MODEL_SUFFIXES = (".safetensors", ".ckpt")
+
+
+def _walk_files(base: Path) -> list[Path]:
+    """All ``*.safetensors``/``*.ckpt`` under ``base``, recursive.
+
+    An explicit scandir-style walk instead of ``rglob``: since Python 3.13,
+    ``**`` does NOT descend into symlinked directories (it used to), so a
+    symlinked folder full of checkpoints would silently go undetected.
+    Cycles via symlink chains are broken by tracking resolved dirs.
+    """
+    out: list[Path] = []
+    seen: set[Path] = {base.resolve()}
+
+    def walk(d: Path) -> None:
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            return  # vanished/unreadable dir: skip
+        for e in entries:
+            try:
+                if e.is_dir():
+                    real = e.resolve()
+                    if real not in seen:
+                        seen.add(real)
+                        walk(e)
+                elif e.suffix in _MODEL_SUFFIXES:
+                    out.append(e)
+            except OSError:
+                continue  # broken symlink etc.
+
+    walk(base)
+    return out
+
+
 def list_loras(config) -> list[str]:
-    """All LoRAs under ``loras/<model-type>/`` (subdirectories included),
-    as names relative to the model-type directory, without extension
-    (e.g. ``"dmd2"``, ``"test-dir/FuturisticXL"``)."""
+    """All LoRAs under ``loras/<model-type>/`` (subdirectories included,
+    symlinked dirs followed), as names relative to the model-type directory,
+    without extension (e.g. ``"dmd2"``, ``"test-dir/FuturisticXL"``)."""
     out: list[str] = []
     loras_dir = config.loras_dir
     if not loras_dir.is_dir():
@@ -24,7 +59,9 @@ def list_loras(config) -> list[str]:
     for sub in sorted(loras_dir.iterdir()):
         if not sub.is_dir():
             continue
-        files = sorted(sub.rglob("*.safetensors")) + sorted(sub.rglob("*.ckpt"))
+        files = _walk_files(sub)
+        files = sorted(f for f in files if f.suffix == ".safetensors") + \
+            sorted(f for f in files if f.suffix == ".ckpt")
         for f in files:
             out.append(f.relative_to(sub).with_suffix("").as_posix())
     return out
@@ -54,7 +91,9 @@ class ModelRegistry:
         models = []
         sdxl_dir = self.config.models_dir / "sdxl"
         if sdxl_dir.is_dir():
-            for f in sorted(sdxl_dir.rglob("*.safetensors")):
+            files = sorted(f for f in _walk_files(sdxl_dir)
+                           if f.suffix == ".safetensors")
+            for f in files:
                 rel = f.relative_to(sdxl_dir).with_suffix("").as_posix()
                 models.append(ModelInfo(id=rel, name=rel, path=f))
         return models
