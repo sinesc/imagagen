@@ -1097,6 +1097,12 @@ connectWS();
 ["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch", "denoise", "mask-padding"].forEach((id) => {
   $(id).addEventListener("input", () => scheduleSaveUiState());
 });
+$("swap-dims").onclick = () => {
+  const w = $("width").value;
+  $("width").value = $("height").value;
+  $("height").value = w;
+  scheduleSaveUiState();
+};
 ["sampler", "scheduler"].forEach((id) => {
   $(id).onchange = () => scheduleSaveUiState(0);
 });
