@@ -1,3 +1,7 @@
+# woman-with-dog-mask-generator-testing.png
+
+for mask generation testing only, not reproducible
+
 # cute-kitten-dmd2.png
 
 prompt: professional photo of a cute kitten playing with a woolen ball, <lora:DMD2fp32XL1.0:0.7>
