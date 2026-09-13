@@ -23,7 +23,7 @@ import numpy as np
 from PIL import Image, ImageOps, PngImagePlugin
 
 MAX_HISTORY = 200  # ~200 full-res 1024x1024 snapshots (image+mask) in RAM
-STAMP_SPACING_FRACTION = 1 / 4  # stamps at least size/4 px apart (>= 1 px)
+STAMP_SPACING_FRACTION = 1 / 12  # stamps at least size/12 px apart (>= 1 px)
 
 
 class Canvas:

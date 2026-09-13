@@ -125,9 +125,14 @@ class SaveBody(BaseModel):
     prompt: str
 
 
+# Maximum brush size in px. Keep in sync with BRUSH_SIZE_MAX in static/app.js
+# (covered by test_stroke_bad_values_422).
+MAX_BRUSH_SIZE = 300.0
+
+
 class StrokeBody(BaseModel):
     points: list[list[float]] = Field(..., min_length=1)  # canvas-pixel coords
-    size: float = Field(10.0, gt=0.05, le=200)
+    size: float = Field(10.0, ge=1.0, le=MAX_BRUSH_SIZE)
     opacity: float = Field(1.0, ge=0.0, le=1.0)
     brush: str = "circle"
     erase: bool = False  # mask tool: shift-draw

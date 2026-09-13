@@ -588,9 +588,12 @@ async function loadBrushes() {
   syncToolbar();
 }
 
-// log-scale size: slider 0..1 maps to 0.1..100 px (x1000 across the range)
-const sizeFromSlider = (v) => 0.1 * Math.pow(1000, v);
-const sliderFromSize = (s) => Math.log(Math.max(s, 0.1) / 0.1) / Math.log(1000);
+// Brush size bounds; keep BRUSH_SIZE_MAX in sync with MAX_BRUSH_SIZE in app.py
+const BRUSH_SIZE_MIN = 1;
+const BRUSH_SIZE_MAX = 300;
+// log-scale size: slider 0..1 maps to BRUSH_SIZE_MIN..BRUSH_SIZE_MAX px
+const sizeFromSlider = (v) => BRUSH_SIZE_MIN * Math.pow(BRUSH_SIZE_MAX / BRUSH_SIZE_MIN, v);
+const sliderFromSize = (s) => Math.log(Math.max(s, BRUSH_SIZE_MIN) / BRUSH_SIZE_MIN) / Math.log(BRUSH_SIZE_MAX / BRUSH_SIZE_MIN);
 
 function syncToolbar() {
   const st = Tools.get();
@@ -601,8 +604,7 @@ function syncToolbar() {
   $("brush-color").value = Tools.state.brush.color || "#ffffff";
   if (brushNames.includes(st.brush)) $("brush").value = st.brush;
   $("brush-size").value = sliderFromSize(st.size);
-  $("brush-size-val").textContent =
-    st.size < 1 ? st.size.toFixed(2) : st.size.toFixed(1);
+  $("brush-size-val").textContent = Math.round(st.size);
   $("brush-opacity").value = st.opacity;
   $("brush-opacity-val").textContent = st.opacity.toFixed(2);
 }
@@ -647,8 +649,8 @@ function wireToolbar() {
     Tools.save();
   };
   $("brush-size").oninput = (e) => {
-    // round to 0.1 px so the readout and the server request agree
-    Tools.get().size = Math.round(sizeFromSlider(parseFloat(e.target.value)) * 10) / 10;
+    // round to whole px: size is an absolute pixel size
+    Tools.get().size = Math.round(sizeFromSlider(parseFloat(e.target.value)));
     Tools.save();
     syncToolbar();
   };

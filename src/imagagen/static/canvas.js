@@ -21,6 +21,8 @@ const view = {
   dpr: 1,
   stroke: null, // {tool, points: [[x,y]...], erase}
   pan: null,
+  cursor: null, // [mx,my] in CSS px relative to the canvas element
+  refreshing: false, // stroke commit in flight: don't clobber the preview
 };
 
 const cv = () => $("canvas");
@@ -82,6 +84,7 @@ function viewRedraw() {
   if (view.img) ctx.drawImage(view.img, 0, 0);
   if (view.mask) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
   if (view.stroke) drawPreview(ctx);
+  drawCursor(ctx);
   $("zoom-label").textContent = `${Math.round(view.scale * 100)}%`;
 }
 
@@ -170,11 +173,33 @@ function stampPositions(points, spacing) {
   return out;
 }
 
+// outline of the brush footprint at the cursor (pre-draw preview)
+function drawCursor(ctx) {
+  if (!view.has || !view.cursor) return;
+  const r = Tools.get().size / 2;
+  if (r < 0.5) return;
+  const x = (view.cursor[0] - view.ox) / view.scale;
+  const y = (view.cursor[1] - view.oy) / view.scale;
+  // dark halo + thin white ring: visible on any background, 1-screen-px wide
+  ctx.save();
+  ctx.lineWidth = 3 / view.scale;
+  ctx.strokeStyle = "rgba(0,0,0,0.7)";
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.lineWidth = 1 / view.scale;
+  ctx.strokeStyle = "rgba(255,255,255,0.9)";
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawPreview(ctx) {
   const st = Tools.get();
   const s = view.stroke;
   if (s.tool === "mask" && s.erase) return; // erasing: committed state is truth
-  const pts = stampPositions(s.points, Math.max(1, st.size / 4));
+  const pts = stampPositions(s.points, Math.max(1, st.size / 12));
   const r = Math.max(st.size / 2, 0.5);
   ctx.globalAlpha = st.opacity;
   ctx.fillStyle = s.tool === "mask" ? "rgba(128,128,128,0.9)" : st.color;
@@ -190,10 +215,10 @@ function drawPreview(ctx) {
 
 function canvasPoint(e) {
   const r = cv().getBoundingClientRect();
-  return [
-    (e.clientX - r.left - view.ox) / view.scale,
-    (e.clientY - r.top - view.oy) / view.scale,
-  ];
+  const mx = e.clientX - r.left;
+  const my = e.clientY - r.top;
+  view.cursor = [mx, my]; // screen px: the brush outline stays under the mouse
+  return [(mx - view.ox) / view.scale, (my - view.oy) / view.scale];
 }
 
 function setupCanvasInput() {
@@ -201,6 +226,7 @@ function setupCanvasInput() {
 
   c.addEventListener("pointerdown", (e) => {
     if (!view.has) return;
+    canvasPoint(e); // record the cursor for the brush outline
     if (e.button === 1) {
       e.preventDefault(); // middle: pan (also kills autoscroll)
       view.pan = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy };
@@ -226,14 +252,36 @@ function setupCanvasInput() {
       viewRedraw();
       return;
     }
-    if (!view.stroke) return;
-    const p = canvasPoint(e);
-    const n = view.stroke.points.length;
-    const [lx, ly] = view.stroke.points[n - 1];
-    // ignore sub-pixel jitter: at least 1 screen px between recorded points
-    if (Math.hypot(p[0] - lx, p[1] - ly) * view.scale < 1) return;
-    view.stroke.points.push(p);
-    viewRedraw();
+    if (!view.has) return;
+    const oldCursor = view.cursor;
+    const p = canvasPoint(e); // also updates view.cursor
+    let redraw = false;
+    if (view.stroke) {
+      const n = view.stroke.points.length;
+      const [lx, ly] = view.stroke.points[n - 1];
+      // ignore sub-pixel jitter: at least 1 screen px between recorded points
+      if (Math.hypot(p[0] - lx, p[1] - ly) * view.scale >= 1) {
+        view.stroke.points.push(p);
+        redraw = true;
+      }
+    } else if (
+      // while the commit round-trip is in flight the last frame (with the
+      // optimistic preview) must be kept on screen -- redrawing for the
+      // cursor outline would flash the un-stroked image (see endStroke)
+      !view.refreshing &&
+      (!oldCursor ||
+        Math.hypot(
+          p[0] - (oldCursor[0] - view.ox) / view.scale,
+          p[1] - (oldCursor[1] - view.oy) / view.scale
+        ) * view.scale >= 1)
+    ) {
+      redraw = true; // cursor outline moved at least 1 screen px
+    }
+    if (redraw) viewRedraw();
+  });
+  c.addEventListener("pointerleave", () => {
+    view.cursor = null;
+    if (!view.refreshing) viewRedraw();
   });
 
   const endStroke = async () => {
@@ -266,7 +314,12 @@ function setupCanvasInput() {
     // has fetched and drawn the committed pixels, so the stroke never
     // vanishes during the request round trip (no flicker on release).
     view.stroke = null;
-    await viewRefresh();
+    view.refreshing = true;
+    try {
+      await viewRefresh();
+    } finally {
+      view.refreshing = false;
+    }
   };
   c.addEventListener("pointerup", endStroke);
   c.addEventListener("pointercancel", endStroke);

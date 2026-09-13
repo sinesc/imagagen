@@ -113,7 +113,7 @@ def test_mask_tool_shift_erase_and_morph(page, server):
 
     # shift = erase: punch a hole in the centre (leaves a ring). The eraser
     # must fully cover the pixel (alpha ~1) for destination-out to zero it.
-    set_input(page, "#brush-size", "0.6")  # ~6.3 px -> radius ~3.1
+    set_input(page, "#brush-size", "0.323")  # 6 px -> radius 3
     dot(page, 50, 40, shift=True)
     assert wait_until(lambda: mask_arr(base)[40, 50] == 0)
     ring = int((mask_arr(base) > 0).sum())
@@ -207,6 +207,69 @@ def test_zoom_wheel_fit_pan(page, server):
     assert new_oy - oy == pytest.approx(40, abs=2)
 
 
+def test_brush_outline_follows_cursor(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150, uniform BG = (20,30,40)
+    assert page.evaluate("view.cursor") is None
+    box = page.locator("#canvas").bounding_box()
+    cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(cx, cy)
+    assert page.evaluate("view.cursor !== null")
+
+    # brightest pixel in a small box around the right edge of the brush ring
+    def ring_bright():
+        return page.evaluate(
+            """() => {
+              const ctx = document.getElementById('canvas').getContext('2d');
+              const dpr = view.dpr;
+              const [mx, my] = view.cursor;
+              const r = (Tools.get().size / 2) * view.scale * dpr;
+              let best = 0;
+              for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) {
+                const d = ctx.getImageData(
+                  Math.round(mx * dpr + r + dx), Math.round(my * dpr + dy), 1, 1
+                ).data;
+                best = Math.max(best, d[0] + d[1] + d[2]);
+              }
+              return best;
+            }"""
+        )
+
+    assert ring_bright() > 300  # white ring pixel; BG sums to 90
+
+    page.mouse.move(box["x"] + 10, box["y"] + 10)  # follows the cursor
+    assert page.evaluate("view.cursor !== null")
+    assert ring_bright() > 300
+
+    page.mouse.move(box["x"] - 40, box["y"] - 40)  # off the canvas: hidden
+    assert page.evaluate("view.cursor") is None
+
+
+def test_cursor_moves_do_not_redraw_during_commit(page, server):
+    """The no-flicker-on-release fix (endStroke) relies on no redraw while the
+    stroke commit is in flight; cursor tracking must not break that."""
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    box = page.locator("#canvas").bounding_box()
+    cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(cx, cy)  # outline rendered
+    frame = "document.getElementById('canvas').toDataURL()"
+    before = page.evaluate(frame)
+
+    page.evaluate("view.refreshing = true")
+    page.mouse.move(cx + 30, cy + 30, steps=3)
+    # the frame must be UNCHANGED: no redraw while the commit is in flight
+    assert page.evaluate(frame) == before
+
+    page.evaluate("view.refreshing = false")
+    page.mouse.move(cx + 50, cy + 50, steps=3)
+    assert (
+        page.evaluate(frame) != before
+    ), "cursor outline should be tracked again once the commit finishes"
+
+
 # ---------------- state persistence ----------------
 
 
@@ -216,13 +279,13 @@ def test_tool_state_persists_across_reload(page, server):
     _show(page, base)
 
     page.keyboard.press("m")  # mask tool
-    set_input(page, "#brush-size", "0.833")  # ~31.6 px (log scale)
+    set_input(page, "#brush-size", "0.608")  # 32 px (log scale)
     set_input(page, "#brush-opacity", "0.4")
 
     page.reload()
     page.wait_for_function(
         "document.getElementById('tool-mask').classList.contains('active')")
-    assert page.evaluate("Tools.get().size") == pytest.approx(31.6, abs=0.6)
+    assert page.evaluate("Tools.get().size") == 32
     assert page.evaluate("Tools.get().opacity") == pytest.approx(0.4, abs=0.01)
     # per-tool memory: switching back to brush restores its own settings
     page.keyboard.press("b")
@@ -245,7 +308,7 @@ def test_custom_brush_listed_and_used(page, server):
     page.wait_for_function("brushNames.includes('soft24')")
     page.select_option("#brush", "soft24")
     set_input(page, "#brush-color", "#00ff00")
-    set_input(page, "#brush-size", "0.867")  # = 40 px
+    set_input(page, "#brush-size", "0.647")  # = 40 px
 
     # single stamp at the centre: strong in the middle, soft near the rim
     dot(page, 100, 75)
