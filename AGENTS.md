@@ -20,4 +20,4 @@ This environment has access to two GPUs that will be largely occupied by running
 
 ## Process monitoring
 
-When monitoring a process be sure your monitoring script doesn't match itself (finds the monitoring string in its own process string).
+When monitoring a process (e.g. `pgrep`/`pkill`) be sure your monitoring script doesn't match itself (finds the monitoring string in its own process string).
