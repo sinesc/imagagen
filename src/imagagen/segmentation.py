@@ -9,7 +9,10 @@ classes are unioned (element-wise maximum) into the canvas mask buffer
 as 0..255 alpha. Unlike the reference implementation (which thresholds
 confidence at 0.25 into a binary mask) we keep the confidence as the
 alpha, so the mask gets soft edges and the inpaint mask-blending uses
-them.
+them. The union is then peak-normalized per run (highest confidence ->
+full opacity), because the models' confidences are not calibrated to
+1.0 — a "solid" region typically only reaches ~0.7–0.9, which would
+render the mask core as semi-transparent.
 
 Every ``*.tflite`` file in ``models/segmentation/`` is offered to the UI;
 the class names come from the model itself (``ImageSegmenter.labels``),
@@ -151,7 +154,11 @@ class SegmentationService:
         self, model_id: str, classes: list[str], rgb: np.ndarray
     ) -> np.ndarray:
         """Segment ``rgb`` (HxWx3 uint8) and return the union mask of the
-        selected classes as HxW uint8 alpha (confidence * 255).
+        selected classes as HxW uint8 alpha.
+
+        Alpha = confidence * 255, peak-normalized per run so the highest
+        confidence of the union maps to full opacity (the models' raw
+        confidences top out well below 1.0).
 
         Raises :class:`SegmentationError` for unknown models, unknown
         classes, or an empty selection.
@@ -185,4 +192,11 @@ class SegmentationService:
             mask = a if mask is None else np.maximum(mask, a)
         assert mask is not None
         mask = np.where(mask > CONFIDENCE_THRESHOLD, mask, 0.0)
+        # Peak-normalize: the models' confidences are not calibrated to
+        # 1.0 (solid regions top out ~0.7-0.9), so scale the union so its
+        # highest confidence is fully opaque. (Monotone, so the threshold
+        # cut above is unaffected.)
+        peak = float(mask.max())
+        if peak > 0.0:
+            mask = mask / peak
         return (mask * 255.0).astype(np.uint8)

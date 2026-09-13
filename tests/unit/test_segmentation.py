@@ -114,10 +114,27 @@ def test_generate_unions_classes_by_max_confidence(tmp_path):
     rgb = np.zeros((H, W, 3), np.uint8)
     mask = svc.generate("m.tflite", ["hair", "face"], rgb)
     assert mask.shape == (H, W) and mask.dtype == np.uint8
-    expected = np.maximum(hair, face) * 255
-    assert np.array_equal(mask, expected.astype(np.uint8))
-    # the overlap pixel keeps the higher confidence (0.9 -> 229), not 0.5
-    assert mask[0, 2] == 229
+    expected = (np.maximum(hair, face) / 0.9 * 255).astype(np.uint8)
+    assert np.array_equal(mask, expected)
+    # the overlap pixel keeps the higher confidence (0.9, the peak -> 255)
+    assert mask[0, 2] == 255
+    # and the peak normalizes the rest proportionally (0.5 -> 0.5/0.9)
+    assert mask[0, 0] == 141
+
+
+def test_generate_peak_normalized_to_full_opacity(tmp_path):
+    # the models' confidences are not calibrated to 1.0 (solid regions
+    # top out ~0.7-0.9): the highest confidence of the run must map to
+    # a fully opaque mask
+    conf = np.zeros((2, 3), np.float32)
+    conf[0, :] = [0.2, 0.8, 0.4]
+    svc = make_service(tmp_path, {"m.tflite": (["background", "hair"], [[0.0], conf])})
+    mask = svc.generate("m.tflite", ["hair"], np.zeros((2, 3, 3), np.uint8))
+    assert mask.max() == 255  # 0.8 -> 1.0
+    assert mask[0, 1] == 255  # the peak pixel is fully opaque
+    assert mask[0, 2] == 127  # 0.4 / 0.8 * 255 = 127.5, truncated on cast
+    assert mask[0, 0] == 0    # 0.2 is below the 0.25 threshold
+    assert mask[1].tolist() == [0, 0, 0]
 
 
 def test_generate_single_class_is_confidence_alpha(tmp_path):
@@ -129,7 +146,9 @@ def test_generate_single_class_is_confidence_alpha(tmp_path):
 
 def test_generate_sub_threshold_confidence_is_zero(tmp_path):
     # the real model scores ~0.017 (baseline) on every pixel for every
-    # class: below CONFIDENCE_THRESHOLD a class is "not there"
+    # class: below CONFIDENCE_THRESHOLD a class is "not there". An all-
+    # sub-threshold run stays all zero (peak-normalization must not
+    # divide by zero / rescale noise).
     conf = np.full((2, 2), 0.1, np.float32)
     svc = make_service(tmp_path, {"m.tflite": (["background", "hair"], [[0.0], conf])})
     mask = svc.generate("m.tflite", ["hair"], np.zeros((2, 2, 3), np.uint8))
