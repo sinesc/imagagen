@@ -19,9 +19,9 @@ File layout (one JSON per configuration, filename = sanitized name):
 
     {
       "name": "My SDXL Model + DMD2 Lora",
-      "model": "sdxl/whatever.safetensors",
+      "model": "whatever",  # model id: path within models/sdxl, no extension
       "t2i": {"sampler": null, "scheduler": null, "cfg": null,
-              "loras": [{"name": "sdxl/dmd2", "weight": 0.8}]},
+              "loras": [{"name": "dmd2", "weight": 0.8}]},  # rel. to loras/<type>/
       "i2i": {"sampler": null, "scheduler": null, "cfg": null, "loras": []}
     }
 """
@@ -60,7 +60,7 @@ class ModeConfig(BaseModel):
 
 class ModelConfig(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    model: str = Field(min_length=1)  # model id, e.g. "sdxl/foo.safetensors"
+    model: str = Field(min_length=1)  # model id, e.g. "test-dir/JuggernautXL9.0"
     t2i: ModeConfig = Field(default_factory=ModeConfig)
     i2i: ModeConfig = Field(default_factory=ModeConfig)
 

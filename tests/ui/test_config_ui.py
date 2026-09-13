@@ -138,9 +138,9 @@ def test_lora_rows(page, server):
 
     # add a row, pick the discovered LoRA, set a weight
     page.click("#lora-add")
-    page.locator("#loras .lora-row").locator(".lora-name").select_option("sdxl/dmd2")
+    page.locator("#loras .lora-row").locator(".lora-name").select_option("dmd2")
     page.locator("#loras .lora-row").locator(".lora-weight").fill("0.8")
-    assert page.evaluate("getLoras()") == [["sdxl/dmd2", 0.8]]
+    assert page.evaluate("getLoras()") == [["dmd2", 0.8]]
 
     # the choice persists in ui-state (debounced saves: wait for the final
     # one, since an earlier save may still carry an empty lora list)
@@ -151,7 +151,7 @@ def test_lora_rows(page, server):
         if not f.is_file():
             return False
         try:
-            return json.loads(f.read_text())["loras"] == [["sdxl/dmd2", 0.8]]
+            return json.loads(f.read_text())["loras"] == [["dmd2", 0.8]]
         except (json.JSONDecodeError, KeyError):
             return False
 

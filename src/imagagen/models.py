@@ -1,6 +1,7 @@
 """Model registry: discovery, loading, single-model VRAM residency.
 
-Phase 1: one SDXL checkpoint family (models/sdxl/*.safetensors). Only one
+Phase 1: one SDXL checkpoint family (models/sdxl/, subdirectories are
+scanned recursively). Only one
 model is in VRAM at a time; switching unloads the previous one (Phase 6
 adds RAM residency for the last-unloaded model).
 """
@@ -13,8 +14,9 @@ from pathlib import Path
 
 
 def list_loras(config) -> list[str]:
-    """All LoRAs under ``loras/<model-type>/*.safetensors|ckpt``, as names
-    relative to loras/ without extension (e.g. ``"sdxl/dmd2"``)."""
+    """All LoRAs under ``loras/<model-type>/`` (subdirectories included),
+    as names relative to the model-type directory, without extension
+    (e.g. ``"dmd2"``, ``"test-dir/FuturisticXL"``)."""
     out: list[str] = []
     loras_dir = config.loras_dir
     if not loras_dir.is_dir():
@@ -22,16 +24,16 @@ def list_loras(config) -> list[str]:
     for sub in sorted(loras_dir.iterdir()):
         if not sub.is_dir():
             continue
-        files = sorted(sub.glob("*.safetensors")) + sorted(sub.glob("*.ckpt"))
+        files = sorted(sub.rglob("*.safetensors")) + sorted(sub.rglob("*.ckpt"))
         for f in files:
-            out.append(f.relative_to(loras_dir).with_suffix("").as_posix())
+            out.append(f.relative_to(sub).with_suffix("").as_posix())
     return out
 
 
 @dataclass
 class ModelInfo:
-    id: str  # relative path, e.g. "sdxl/sd_xl_base_1.0.safetensors"
-    name: str
+    id: str  # relative path within models/sdxl, no extension, e.g. "test-dir/JuggernautXL9.0"
+    name: str  # same as id (the path makes nested models distinguishable in the UI)
     path: Path
 
     def to_dict(self) -> dict:
@@ -52,9 +54,9 @@ class ModelRegistry:
         models = []
         sdxl_dir = self.config.models_dir / "sdxl"
         if sdxl_dir.is_dir():
-            for f in sorted(sdxl_dir.glob("*.safetensors")):
-                rel = f.relative_to(self.config.root).as_posix()
-                models.append(ModelInfo(id=rel, name=f.stem, path=f))
+            for f in sorted(sdxl_dir.rglob("*.safetensors")):
+                rel = f.relative_to(sdxl_dir).with_suffix("").as_posix()
+                models.append(ModelInfo(id=rel, name=rel, path=f))
         return models
 
     def list(self) -> list[dict]:

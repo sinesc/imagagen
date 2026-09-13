@@ -1,6 +1,6 @@
 """Verify the model + improved VAE load and generate with the network OFF.
 
-Proves the project-local HF cache (models/hf_cache) is complete: a fresh
+Proves the project-local HF cache (cache/) is complete: a fresh
 process with HF_HUB_OFFLINE=1 must load the pipeline and produce a real
 image (structure check: a real image's 16x16-downscale std is far below its
 pixel std; pure noise / failed decode is not).

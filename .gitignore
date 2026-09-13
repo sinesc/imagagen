@@ -14,10 +14,12 @@ loras/*
 brushes/*
 presets/*
 model-configs/*
+cache/*
 output/*
 !models/.gitkeep
 !loras/.gitkeep
 !brushes/.gitkeep
 !presets/.gitkeep
 !model-configs/.gitkeep
+!cache/.gitkeep
 !output/.gitkeep

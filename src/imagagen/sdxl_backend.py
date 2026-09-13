@@ -235,7 +235,8 @@ class SdxlBackend(ModelBackend):
 
         # Backstop in case load_config() was not used: keep any hub files
         # from_single_file fetches in the persistent project-local cache.
-        os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(info.path.parent.parent / "hf_cache"))
+        if config is not None:
+            os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(config.hf_cache_dir))
 
         self.model_id = info.id
         self.name = info.name
@@ -308,18 +309,22 @@ class SdxlBackend(ModelBackend):
             return self._generate_impl(request, progress)
 
     def _lora_path(self, name: str) -> str | None:
-        """LoRA name (relative to loras/, no extension) -> checkpoint path.
+        """LoRA name (relative to loras/<model-type>/, no extension) -> path.
 
         The suffix is *appended*, never `Path.with_suffix`: names may
-        themselves contain dots ("sdxl/EnvyZoomSliderXL1.0"), and
-        with_suffix would replace the ".0" instead of adding ".safetensors".
+        themselves contain dots ("EnvyZoomSliderXL1.0"), and with_suffix
+        would replace the ".0" instead of adding ".safetensors".
         """
         if self.config is None:
             return None
-        for suffix in (".safetensors", ".ckpt"):
-            p = self.config.loras_dir / (name + suffix)
-            if p.is_file():
-                return str(p)
+        loras_dir = self.config.loras_dir
+        if not loras_dir.is_dir():
+            return None
+        for family in sorted(d for d in loras_dir.iterdir() if d.is_dir()):
+            for suffix in (".safetensors", ".ckpt"):
+                p = family / (name + suffix)
+                if p.is_file():
+                    return str(p)
         return None
 
     def _lora_state_dict(self, path: str) -> dict:

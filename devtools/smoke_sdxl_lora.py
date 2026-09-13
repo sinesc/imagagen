@@ -99,7 +99,7 @@ def main(gpu: int | None) -> None:
     print(f"loaded in {time.time() - t0:.1f}s", flush=True)
 
     fabricate_lora(backend.pipe.unet, 11, cfg.loras_dir / "sdxl" / "beta.safetensors")
-    lora_a = "sdxl/FuturisticXL"
+    lora_a = "FuturisticXL"
 
     def gen(loras):
         req = GenerateRequest(prompt="a blue cube on a table", width=512,
@@ -131,7 +131,7 @@ def main(gpu: int | None) -> None:
     assert d == 0, f"zero-weight LoRA should not change the image (diff={d:.2f})"
     print("\n[5] FuturisticXL @ 1.0 + beta @ 1.0 (expect different from both)",
           flush=True)
-    ab = gen([(lora_a, 1.0), ("sdxl/beta", 1.0)])
+    ab = gen([(lora_a, 1.0), ("beta", 1.0)])
     d1, d2 = diff(ab, a1), diff(ab, base)
     print(f"  mean abs diff vs [2]: {d1:.2f}, vs baseline: {d2:.2f}")
     assert d1 > 5 and d2 > 5, "merged LoRA set indistinguishable from singles"

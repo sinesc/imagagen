@@ -246,7 +246,7 @@ def test_lora_discovery(client, tmp_path):
     (tmp_path / "loras" / "sdxl" / "dmd2.safetensors").write_bytes(b"")
     (tmp_path / "loras" / "sd15").mkdir()
     (tmp_path / "loras" / "sd15" / "x.ckpt").write_bytes(b"")
-    assert client.get("/api/loras").json() == {"loras": ["sd15/x", "sdxl/dmd2"]}
+    assert client.get("/api/loras").json() == {"loras": ["x", "dmd2"]}
 
 
 # ---------------------------------------------------------------- presets --

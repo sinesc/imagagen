@@ -58,7 +58,7 @@ ProgressCallback = Callable[[float, str], None]  # fraction 0..1, message
 class ModelBackend(ABC):
     """A loadable, generatable model (e.g. one SDXL checkpoint)."""
 
-    #: unique id, e.g. the relative path "sdxl/foo.safetensors"
+    #: unique id, e.g. the relative path "test-dir/JuggernautXL9.0"
     model_id: str
     #: display name in the UI
     name: str

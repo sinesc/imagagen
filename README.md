@@ -46,7 +46,10 @@ sed -i 's|^home = .*|home = ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bi
 printf '../../../../src\n' > .venv3.13/lib/python3.13/site-packages/_editable_impl_imagagen.pth
 ```
 
-Place SDXL weights in `models/sdxl/`, LoRAs in `loras/sdxl/`, greyscale brush
+Place SDXL weights in `models/sdxl/` and LoRAs in `loras/sdxl/` (subdirectories
+are scanned recursively, models/LoRAs are addressed by their relative path
+without extension, e.g. `test-dir/JuggernautXL9.0`). Small HuggingFace hub
+files fetched on first load are cached in `cache/`. Greyscale brush
 PNGs in `brushes/`. Outputs land in `output/`.
 
 **Person mask generation**: drop a MediaPipe image-segmenter `.tflite` into

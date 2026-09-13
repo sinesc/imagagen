@@ -61,11 +61,12 @@ class Config:
     def hf_cache_dir(self) -> Path:
         """Persistent HuggingFace hub cache (tokenizers, configs, ...).
 
-        Kept inside the project so the ~2 MB of hub files a pipeline's
-        `from_single_file` still fetches are downloaded once and survive
-        container rebuilds (the container's ~/.cache is ephemeral).
+        Kept in the project-local ``cache/`` directory so the ~2 MB of hub
+        files a pipeline's `from_single_file` still fetches are downloaded
+        once and survive container rebuilds (the container's ~/.cache is
+        ephemeral).
         """
-        return self.models_dir / "hf_cache"
+        return self.root / "cache"
 
 
 def load_config(root: Path | str | None = None) -> Config:

@@ -17,13 +17,13 @@ CASES = {
         prompt="professional photo of a cute kitten playing with a woolen ball",
         width=1024, height=1024, steps=12, cfg=1.5, seed=1666281685,
         sampler="Euler a", scheduler="Polyexponential",
-        loras=[("sdxl/DMD2fp32XL1.0", 0.7)],
+        loras=[("DMD2fp32XL1.0", 0.7)],
     ),
     "zoom3": dict(
         prompt="a cute white bunny in a field of green grass, sniffing a yellow flower",
         width=1024, height=1024, steps=20, cfg=6, seed=4,
         sampler="DPM++ 2M", scheduler="Karras",
-        loras=[("sdxl/EnvyZoomSliderXL1.0", -3.0)],
+        loras=[("EnvyZoomSliderXL1.0", -3.0)],
     ),
 }
 
