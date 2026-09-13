@@ -10,9 +10,13 @@ SDXL specifics (matching the k-diffusion / A1111 contract):
   range (SDXL: ~[0.03, ~14.6]), not the clamped k-diffusion [0.1, 10] --
   this is the A1111/Forge "rescaled betas" behavior and is what gives the
   characteristic look (the [0.1, 10] clamp renders flatter and grainier)
-- the UNet expects *training* timesteps (0..999), so each k-diffusion sigma
-  is mapped to the nearest timestep of the model's beta schedule
-  (t = argmin |log(sigma) - log_sigmas|), as diffusers' _sigma_to_t does
+- the UNet expects *training* timesteps (0..999); each k-diffusion sigma is
+  mapped to the nearest beta-schedule index in log space
+  (argmin |log sigma - log beta_sigma_i|) -- A1111/Forge's k-diffusion
+  ModelSamplingDiscrete.timestep, and the same as diffusers' _sigma_to_t.
+  The ComfyUI-style formula t = sigma/sqrt(sigma^2+1)*999 was tested and
+  found to break few-step distilled LoRAs (e.g. DMD2): it shifts the t
+  values in the mid-noise range away from the training schedule
 - the UNet expects a *unit-variance* input at every noise level, so the
   model input is scaled by 1/sqrt(sigma^2 + 1) (exactly what diffusers'
   EulerDiscreteScheduler.scale_model_input does)
@@ -112,6 +116,50 @@ SCHEDULERS = {
     "Exponential": kdiff.get_sigmas_exponential,
     "Polyexponential": kdiff.get_sigmas_polyexponential,
 }
+
+
+def sigma_to_timestep(sigma, log_sigmas):
+    """k-diffusion sigma -> nearest beta-schedule training timestep (0..999).
+
+    A1111/Forge k-diffusion ``ModelSamplingDiscrete.timestep`` maps each
+    sigma to the index of the closest noise level of the model's beta
+    schedule in log space (identical to diffusers' ``_sigma_to_t``). This
+    mapping is load-bearing for few-step distilled LoRAs such as DMD2,
+    which were trained against these exact timesteps; the ComfyUI-style
+    formula ``sigma / sqrt(sigma^2 + 1) * 999`` shifts mid-range t values
+    and turns them into mosaic garbage.
+    """
+    log_sigma = sigma.float().log().unsqueeze(-1)
+    dists = (log_sigma - log_sigmas).abs()
+    return dists.argmin(-1).float().clamp(0.0, 999.0)
+
+
+def scale_lora_alphas(sd: dict, alphas: dict | None) -> dict:
+    """Pre-scale every LoRA ``down`` weight by ``alpha / rank`` in place.
+
+    diffusers' dict-input ``load_lora_weights`` path drops alpha metadata
+    (already-converted keys skip the conversion that extracts alphas), so
+    without this the injected adapters default to alpha == rank (scaling
+    1.0) and run ``rank / alpha`` times too strong vs the A1111/Forge
+    slider convention (``delta = slider * (alpha/rank) * B@A``).
+
+    Handles the key namings produced by the conversion:
+    ``....lora_A.weight`` / ``....lora.down.weight`` for regular layers, and
+    the attention-processor naming diffusers 0.40 uses for transformer-block
+    attention LoRAs, where the alpha key is ``<down_key>.alpha`` and the
+    state-dict key *is* the down weight (no extra suffix). Without matching
+    those, the layers silently keep unscaled weights and run ``rank / alpha``
+    times too strong (DMD2: 8x).
+    """
+    for key, alpha in (alphas or {}).items():
+        base = key[: -len(".alpha")]
+        for down_key in (base + ".lora_A.weight", base + ".lora.down.weight", base):
+            w = sd.get(down_key)
+            if w is None or not w.shape[0]:
+                continue
+            sd[down_key] = w * (float(alpha) / w.shape[0])
+            break
+    return sd
 
 
 def _quantize_unet_nf4(unet, device) -> int:
@@ -284,12 +332,23 @@ class SdxlBackend(ModelBackend):
         finds nothing and loading crashes with an empty rank dict. Re-prefix
         the te keys against the actual model layout, then hand the dict to
         ``load_lora_weights`` (a dict is taken as already-converted).
+
+        Also pre-scales ``lora_down`` by ``alpha / rank``: the dict-input load
+        path drops the alpha metadata (already-converted keys skip the
+        conversion that extracts alphas), so without this the injected
+        adapters would default to alpha == rank (scaling 1.0) and run
+        ``rank / alpha`` times too strong vs the A1111/Forge slider
+        convention (``delta = slider * (alpha/rank) * B@A``).
         """
-        sd, _alphas, _meta = self.pipe.lora_state_dict(
+        sd, alphas, _meta = self.pipe.lora_state_dict(
             str(path),
             unet_config=self.pipe.unet.config,
             return_lora_metadata=True,
         )
+
+        # Must run before the text-encoder rename below: alphas and weights
+        # share the same (possibly transformers-4) naming at this point.
+        scale_lora_alphas(sd, alphas)
 
         def has_prefix(te, prefix: str) -> bool:
             return any(n.startswith(prefix) for n, _ in te.named_modules())
@@ -333,12 +392,17 @@ class SdxlBackend(ModelBackend):
         tags, weights = [], []
         for i, (name, weight) in enumerate(key):
             tag = f"imagagen_{i}"
+            # diffusers 0.40 returns None on success (older versions returned
+            # a (failed, succeeded) tuple); keep the check for both shapes.
             res = self.pipe.load_lora_weights(
                 self._lora_state_dict(paths[i]), adapter_name=tag
             )
-            failed = res[0] if isinstance(res, tuple) else res
-            if failed:
-                raise ValueError(f"failed to load LoRA {name!r}: {failed}")
+            if res is None:
+                pass
+            elif isinstance(res, tuple) and res[0]:
+                raise ValueError(f"failed to load LoRA {name!r}: {res[0]}")
+            elif res:
+                raise ValueError(f"failed to load LoRA {name!r}: {res}")
             tags.append(tag)
             weights.append(weight)
         if weights:
@@ -399,14 +463,16 @@ class SdxlBackend(ModelBackend):
 
             time_ids = torch.tensor([h, w, 0, 0, h, w], device=device).unsqueeze(0)
             unet = pipe.unet
-            # training sigmas of the model's beta schedule (from its scheduler
-            # config) -- used to map a k-diffusion sigma to the nearest
-            # training timestep (0..999), exactly like diffusers' _sigma_to_t
+            # the model's beta schedule (from its scheduler config) -- the
+            # sigma range is its [first, last] sigma (A1111/Forge
+            # "rescaled betas")
             ac = pipe.scheduler.alphas_cumprod.to(device=device, dtype=torch.float32)
             log_sigmas = torch.log(torch.sqrt((1.0 - ac) / ac))
 
-            def sigma_to_t(sigma):
-                return (torch.log(sigma.float()) - log_sigmas).abs().argmin(-1)
+            # A1111/Forge k-diffusion ModelSamplingDiscrete.timestep: the
+            # *nearest* beta-schedule sigma index in log space (see
+            # sigma_to_timestep for the full rationale).
+            sigma_to_t = lambda sigma: sigma_to_timestep(sigma, log_sigmas)
 
             def unet_forward(emb, pool, x, t):
                 added = {"time_ids": time_ids, "text_embeds": pool}
