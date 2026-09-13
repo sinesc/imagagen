@@ -18,6 +18,34 @@ bash scripts/smoke.sh        # start mock server + hit endpoints
 # --mock forces the CPU mock backend (automatic fallback when no CUDA/models)
 ```
 
+### Running on the host system
+
+The container's Python lives at container-only paths, so the host uses a
+self-contained venv: `.venv3.13` (venv) backed by a full CPython 3.13 install
+in `.python313/` (both in the shared workspace, both gitignored). From the
+host, run:
+
+```bash
+.venv3.13/bin/python -m imagagen --root <project-root> --port 8080
+```
+
+Rebuild after dependency changes (from the container):
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv3.13 uv sync \
+  --python .python313/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13
+```
+
+The rebuild rewrites two files with absolute container paths that only
+resolve inside the container. Re-make them relative afterwards (the same
+commands originally used to create the venv):
+
+```bash
+ln -sfn ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13 .venv3.13/bin/python
+sed -i 's|^home = .*|home = ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bin|' .venv3.13/pyvenv.cfg
+printf '../../../../src\n' > .venv3.13/lib/python3.13/site-packages/_editable_impl_imagagen.pth
+```
+
 Place SDXL weights in `models/sdxl/`, LoRAs in `loras/sdxl/`, greyscale brush
 PNGs in `brushes/`. Outputs land in `output/`. Named model configurations
 live in `model-configs/`, generation-setting presets in `presets/` (both
