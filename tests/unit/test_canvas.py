@@ -166,7 +166,32 @@ def test_mask_dilate_keeps_soft_alpha_inside():
     centre = c.mask[24, 32]
     c.mask_dilate(10)
     assert c.mask[24, 32] == centre  # original soft value preserved
-    assert c.mask[24, 50] == 255  # grown ring filled solid
+    # the grown ring takes the alpha of the nearest original pixel (the
+    # feather shifts outward) instead of being filled solid
+    assert c.mask[24, 50] == centre
+
+
+def test_mask_dilate_closes_feather_dip():
+    # 5x5 solid core, 1 px feather ring at 50, rest 0. The old
+    # binary-dilate + solid-fill left the feather as a low-opacity band
+    # between the core and the new solid ring.
+    c = blank_canvas(9, 9)
+    m = np.zeros((9, 9), dtype=np.uint8)
+    m[2:7, 2:7] = 255
+    m[1:8, 1:8] = np.where(m[1:8, 1:8] == 0, 50, m[1:8, 1:8])
+    c._mask = m.copy()
+
+    assert c.mask_dilate(1)
+    # the 255 contour grew 1 px (7x7 solid), the 50 feather shifted out
+    # to the outer edge; no low-opacity band inside the mask
+    dilated = c.mask.copy()
+    assert list(dilated[4]) == [50, 255, 255, 255, 255, 255, 255, 255, 50]
+    assert (dilated >= m).all()  # dilate never lowers a pixel
+
+    # symmetric: erode never raises a pixel and shrinks the solid core
+    assert c.mask_erode(1)
+    assert list(c.mask[4]) == [50, 50, 255, 255, 255, 255, 255, 50, 50]
+    assert (c.mask <= dilated).all()
 
 
 def test_mask_clear():

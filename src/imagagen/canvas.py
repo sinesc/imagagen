@@ -344,17 +344,18 @@ class Canvas:
             se = self._disk(px)
             if se is None:
                 return False
-            support = self._mask > 0
+            # grow/shrink the *grayscale* alpha (max/min over the disk
+            # neighbourhood) instead of its binary support: the whole mask —
+            # feather included — moves as one, so a dilated soft mask has no
+            # low-opacity band between the solid core and the grown ring
+            # (the feather just shifts to the outer edge). For a binary mask
+            # this equals binary dilation/erosion.
             out = (
-                ndimage.binary_dilation(support, se)
+                ndimage.maximum_filter(self._mask, footprint=se)
                 if dilate
-                else ndimage.binary_erosion(support, se)
+                else ndimage.minimum_filter(self._mask, footprint=se)
             )
-            # original (possibly soft) alpha survives where it does; support
-            # grown by the dilation is filled solid, as in A1111/Forge, whose
-            # masks are binary
-            filled = np.where(support, self._mask, np.uint8(255))
-            changed = self._commit_locked(self._image, (filled * out).astype(np.uint8))
+            changed = self._commit_locked(self._image, out)
         return changed
 
     def mask_clear(self) -> bool:
