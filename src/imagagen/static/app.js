@@ -108,7 +108,7 @@ function loraRow(name, weight, onChange) {
     class: "lora-weight", type: "number", min: "-10", max: "10", step: "0.05",
   });
   wt.value = weight;
-  const rm = el("button", { type: "button", class: "mini lora-rm", title: "remove" }, "−");
+  const rm = el("button", { type: "button", class: "mini icon lora-rm", title: "remove" }, "−");
   rm.onclick = () => { rm.closest(".lora-row").remove(); onChange && onChange(); };
   sel.onchange = () => onChange && onChange();
   wt.oninput = () => onChange && onChange();
@@ -173,7 +173,7 @@ function fillStyleOptions(sel, selected) {
 function styleRow(name, onChange) {
   const sel = el("select", { class: "style-name" });
   fillStyleOptions(sel, name);
-  const rm = el("button", { type: "button", class: "mini style-rm", title: "remove" }, "−");
+  const rm = el("button", { type: "button", class: "mini icon style-rm", title: "remove" }, "−");
   rm.onclick = () => { rm.closest(".style-row").remove(); onChange && onChange(); };
   sel.onchange = () => onChange && onChange();
   return el("div", { class: "style-row" }, sel, rm);
@@ -238,8 +238,8 @@ function openStyleManage() {
     state.styles.forEach((s) => {
       const nameEl = el("span", { class: "preset-manage-name" },
         s.name + (s.optgroup ? ` — ${s.optgroup}` : "") + (s.temporary ? " (temporary)" : ""));
-      const edit = el("button", { class: "mini", type: "button", title: s.temporary ? "copy to styles.csv" : "edit" }, "✎");
-      const del = el("button", { class: "mini", type: "button", title: s.temporary ? "drop (temporary styles are not in styles.csv)" : "delete" }, "✗");
+      const edit = el("button", { class: "mini icon", type: "button", title: s.temporary ? "copy to styles.csv" : "edit" }, "✎");
+      const del = el("button", { class: "mini icon", type: "button", title: s.temporary ? "drop (temporary styles are not in styles.csv)" : "delete" }, "✗");
       edit.onclick = () => { closeDialog(); openStyleDialog(s); };
       del.onclick = async () => {
         if (!confirm(`Delete style "${s.name}"?`)) return;
@@ -672,8 +672,8 @@ function openPresetManage() {
     if (!state.presets.length) list.append(el("div", { class: "muted" }, "no presets yet"));
     state.presets.forEach((name) => {
       const nameEl = el("span", { class: "preset-manage-name" }, name);
-      const edit = el("button", { class: "mini", type: "button", title: "edit" }, "✎");
-      const del = el("button", { class: "mini", type: "button", title: "delete" }, "✗");
+      const edit = el("button", { class: "mini icon", type: "button", title: "edit" }, "✎");
+      const del = el("button", { class: "mini icon", type: "button", title: "delete" }, "✗");
       edit.onclick = async () => {
         closeDialog();
         let p;

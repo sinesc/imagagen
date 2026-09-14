@@ -42,6 +42,8 @@ body {
   padding: 0.3rem 0.4rem;
   font-size: 0.85rem;
   resize: vertical;
+  /* one effective height (border to border) for every sidebar field */
+  height: 1.75rem;
 }
 /* disabled fields stay recognisable but visibly dimmed */
 #controls input:disabled,
@@ -50,6 +52,16 @@ body {
   opacity: 0.5;
   cursor: default;
 }
+/* focus: a slightly brighter border than the usual #444 (instead of the
+   browser's default focus ring); scoped so it wins over the per-area rules
+   (e.g. #controls select) that set the normal border colour */
+#controls :is(input, select, textarea):focus,
+#prompts textarea:focus,
+#toolbar :is(input, select):focus,
+#dialog-body :is(input, select, textarea):focus {
+  border-color: #777;
+  outline: none;
+}
 .row { display: flex; gap: 0.5rem; }
 .row > label { flex: 1; min-width: 0; }
 /* width/height row: the swap button takes its space from the width/height
@@ -57,14 +69,9 @@ body {
    the width input's left edge and the height input's right edge stay put
    and batch (flex: 1) keeps its old width */
 .row > label.dims { flex: 0 0 68px; }
-#swap-dims {
-  flex: none;
-  align-self: flex-end;
-  width: 1.7rem;
-  padding: 0.2rem 0 0.4rem 0;
-  display: flex;
-  justify-content: center;
-}
+/* flex-end (not center): the row's height includes the Width/Height label
+   captions, so bottom align is what puts the button in line with the inputs */
+#swap-dims { align-self: flex-end; }
 /* the mode/denoise row: mode keeps its original half width, the new
    "mask pad" field and denoise share the other half */
 .row > label.mode-label { flex: 2; }
@@ -83,14 +90,6 @@ select option[value=""] { font-style: italic; }
 .bottom-row { align-items: flex-end; }
 .mini-btns { display: flex; gap: 0.25rem; }
 
-/* small icon buttons next to the model/preset selectors, all the same size */
-button.icon {
-  width: 1.7rem;
-  padding: 0.3rem 0;
-  font-size: 0.85rem;
-  flex: none;
-}
-
 /* small buttons (LoRA rows, preset management, config buttons) */
 button.mini {
   padding: 0.15rem 0.45rem;
@@ -99,11 +98,25 @@ button.mini {
   flex: none;
 }
 button.mini:hover { background: #383838; }
+/* single-glyph mini buttons (+/✎/✗/⚙/↔/−): one fixed size for all of them
+   (model config, preset/style manage, swap dims, row removes) */
+button.mini.icon {
+  width: 1.65rem;
+  padding-inline: 0;
+}
+/* in the sidebar the small buttons share the fields' effective height */
+#controls button.mini {
+  height: 1.75rem;
+  padding-block: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
 /* LoRA list: dropdown + weight + remove, one per row */
 .loras { display: flex; flex-direction: column; gap: 0.25rem; }
 .lora-list { display: flex; flex-direction: column; gap: 0.2rem; }
-.lora-row { display: flex; gap: 0.25rem; }
+.lora-row { display: flex; gap: 0.25rem; align-items: center; }
 .lora-row select { flex: 1; min-width: 0; }
 .lora-row input { width: 4.2em; }
 .lora-row select, .lora-row input {
@@ -115,9 +128,9 @@ button.mini:hover { background: #383838; }
    plus the "+ Style" / gear buttons */
 .styles { display: flex; flex-direction: column; gap: 0.25rem; }
 .style-list { display: flex; flex-direction: column; gap: 0.2rem; }
-.style-row { display: flex; gap: 0.25rem; }
-.style-row select { flex: 1; min-width: 0; }
-.style-row select, .style-row button {
+.style-row { display: flex; gap: 0.25rem; align-items: center; }
+.style-row select {
+  flex: 1; min-width: 0;
   background: #222; color: #eee; border: 1px solid #444;
   border-radius: 4px; padding: 0.2rem 0.3rem; font-size: 0.8rem;
 }

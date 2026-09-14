@@ -13,22 +13,16 @@
           <select id="model"></select>
         </label>
         <span class="mini-btns" title="model configurations">
-          <button id="cfg-create" class="icon" title="create a new model configuration (copy of the selected one)">+</button>
-          <button id="cfg-edit" class="icon" title="edit the selected model configuration">✎</button>
-          <button id="cfg-delete" class="icon" title="delete the selected model configuration (in-memory defaults cannot be deleted)">✗</button>
+          <button id="cfg-create" class="mini icon" title="create a new model configuration (copy of the selected one)">+</button>
+          <button id="cfg-edit" class="mini icon" title="edit the selected model configuration">✎</button>
+          <button id="cfg-delete" class="mini icon" title="delete the selected model configuration (in-memory defaults cannot be deleted)">✗</button>
         </span>
       </div>
       <div class="row bottom-row">
         <label title="preset: applies the checked settings of the selected preset on select">Preset
           <select id="preset"><option value="">—</option></select>
         </label>
-        <button id="preset-manage" class="icon" title="create/edit/delete setting presets">⚙</button>
-      </div>
-      <div class="row">
-        <label class="dims">Width <input id="width" type="number" value="1024" min="64" max="2048" step="8"></label>
-        <button id="swap-dims" type="button" title="swap width and height">↔</button>
-        <label class="dims">Height <input id="height" type="number" value="1024" min="64" max="2048" step="8"></label>
-        <label>Batch <input id="batch" type="number" value="1" min="1" max="32"></label>
+        <button id="preset-manage" class="mini icon" title="create/edit/delete setting presets">⚙</button>
       </div>
       <div class="row">
         <label title="-1 = use the model configuration's CFG">CFG <input id="cfg" type="number" value="7" min="-1" step="0.1"></label>
@@ -53,10 +47,16 @@
             <span id="styles" class="style-list"></span>
             <span class="mini-btns">
               <button id="style-add" type="button" class="mini" title="add a style">+ Style</button>
-              <button id="style-manage" class="icon" title="style configuration (create / edit / delete styles in styles.csv)">⚙</button>
+              <button id="style-manage" class="mini icon" title="style configuration (create / edit / delete styles in styles.csv)">⚙</button>
             </span>
           </span>
         </label>
+      </div>
+      <div class="row">
+        <label class="dims">Width <input id="width" type="number" value="1024" min="64" max="2048" step="8"></label>
+        <button id="swap-dims" type="button" class="mini icon" title="swap width and height">↔</button>
+        <label class="dims">Height <input id="height" type="number" value="1024" min="64" max="2048" step="8"></label>
+        <label>Batch <input id="batch" type="number" value="1" min="1" max="32"></label>
       </div>
       <div class="row">
         <label class="mode-label" title="Generate: new image — Inpaint: regenerate the masked area — Outpaint: regenerate the whole image (img2img/outpaint), masked content protected">
