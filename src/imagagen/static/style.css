@@ -104,8 +104,9 @@ button.mini.icon {
   width: 1.65rem;
   padding-inline: 0;
 }
-/* in the sidebar and toolbar the small buttons share the fields' effective height */
-#controls button.mini, #toolbar button.mini {
+/* in the sidebar, toolbar and dialogs the small buttons share the fields'
+   effective height */
+#controls button.mini, #toolbar button.mini, #dialog-body button.mini {
   height: 1.75rem;
   padding-block: 0;
   display: flex;
@@ -376,6 +377,9 @@ button.danger:hover { background: #a33; }
   background: #222; color: #eee; border: 1px solid #444;
   border-radius: 4px; padding: 0.3rem 0.4rem; font-size: 0.85rem;
 }
+/* same effective height as the sidebar/toolbar fields (textareas keep their
+   auto height so the style prompt fields stay resizable) */
+#dialog-body input, #dialog-body select { height: 1.75rem; }
 /* style dialog: prompt / negative prompt textareas */
 #dialog-body textarea.style-prompt {
   width: 100%; box-sizing: border-box; resize: vertical;
@@ -388,8 +392,20 @@ button.danger:hover { background: #a33; }
   white-space: pre-wrap;
 }
 
+/* model configuration dialog: name/model labels + per-mode fieldsets */
+.cfg-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+/* a few extra px between the model input and the mode fieldsets */
+.cfg-dialog .cfg-mode:first-of-type { margin-top: 0.35rem; }
+
 /* model configuration dialog: per-mode fieldsets */
 .cfg-mode {
+  /* UA fieldset margins made the box narrower than (and offset from) the
+     inputs above it; reset so it spans the full dialog width */
+  margin: 0;
   border: 1px solid #3a3a3a;
   border-radius: 5px;
   padding: 0.4rem 0.6rem 0.6rem;
