@@ -93,8 +93,8 @@
         <textarea id="negative" placeholder="Negative prompt"></textarea>
       </div>
       <div id="toolbar">
-        <button id="tool-brush" class="tool active" title="brush tool (B)">brush</button>
-        <button id="tool-mask" class="tool" title="mask tool (M); draw with shift held to erase">mask</button>
+        <button id="tool-brush" class="tool active mini" title="brush tool (B)">brush</button>
+        <button id="tool-mask" class="tool mini" title="mask tool (M); draw with shift held to erase">mask</button>
         <select id="brush" title="brush shape (greyscale png from brushes/)"></select>
         <label class="slab" title="brush colour (mask strokes ignore it)">
           <span>colour</span>
@@ -118,20 +118,20 @@
         <label class="slab num">mask px
           <input id="mask-px" type="number" value="4" min="0" max="100">
         </label>
-        <button id="mask-dilate" title="expand the mask by the given pixels">expand</button>
-        <button id="mask-erode" title="shrink the mask by the given pixels">shrink</button>
-        <button id="mask-clear" title="clear the whole mask">clear mask</button>
+        <button id="mask-dilate" class="mini" title="expand the mask by the given pixels">expand</button>
+        <button id="mask-erode" class="mini" title="shrink the mask by the given pixels">shrink</button>
+        <button id="mask-clear" class="mini" title="clear the whole mask">clear mask</button>
         <span class="sep"></span>
         <select id="seg-model" title="segmentation model (tflite file from models/segmentation/)"></select>
-        <button id="seg-run" title="generate a person mask (selected body-part classes) from the current image, added to the mask buffer (union, undoable)">segment</button>
+        <button id="seg-run" class="mini" title="generate a person mask (selected body-part classes) from the current image, added to the mask buffer (union, undoable)">segment</button>
         <span class="sep"></span>
-        <button id="zoom-in" title="zoom in (also: mouse wheel)">+</button>
-        <button id="zoom-out" title="zoom out">−</button>
-        <button id="zoom-fit" title="fit image to window (also: double-click)">fit</button>
+        <button id="zoom-in" class="mini icon" title="zoom in (also: mouse wheel)">+</button>
+        <button id="zoom-out" class="mini icon" title="zoom out">−</button>
+        <button id="zoom-fit" class="mini" title="fit image to window (also: double-click)">fit</button>
         <span id="zoom-label" class="muted"></span>
         <span id="status-line" class="muted"></span>
-        <button id="btn-undo" title="undo (canvas changes)">↩ undo</button>
-        <button id="btn-redo" title="redo">↪ redo</button>
+        <button id="btn-undo" class="mini" title="undo (canvas changes)">↩ undo</button>
+        <button id="btn-redo" class="mini" title="redo">↪ redo</button>
       </div>
       <div id="canvas-holder">
         <canvas id="canvas" hidden></canvas>

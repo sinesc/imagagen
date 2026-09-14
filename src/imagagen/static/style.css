@@ -104,8 +104,8 @@ button.mini.icon {
   width: 1.65rem;
   padding-inline: 0;
 }
-/* in the sidebar the small buttons share the fields' effective height */
-#controls button.mini {
+/* in the sidebar and toolbar the small buttons share the fields' effective height */
+#controls button.mini, #toolbar button.mini {
   height: 1.75rem;
   padding-block: 0;
   display: flex;
@@ -275,10 +275,12 @@ button.danger:hover { background: #a33; }
   border-radius: 4px;
   padding: 0.25rem 0.35rem;
   font-size: 0.8rem;
+  /* same effective height as the sidebar fields and the toolbar buttons */
+  height: 1.75rem;
 }
 #toolbar input[type="color"] {
   width: 28px;
-  height: 24px;
+  height: 1.75rem;
   padding: 0;
   border: 1px solid #444;
   border-radius: 4px;
