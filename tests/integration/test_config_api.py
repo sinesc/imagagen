@@ -50,7 +50,7 @@ def _thumb_meta(client, job_id: int, index: int = 0) -> dict:
 
 
 def _generate(client, ws, **kw) -> int:
-    body = {"prompt": "p", "width": 16, "height": 16, "steps": 2,
+    body = {"prompt": "p", "width": 64, "height": 64, "steps": 2,
             "seed": 5, "cfg": 7.0}
     body.update(kw)
     r = client.post("/api/generate", json=body)

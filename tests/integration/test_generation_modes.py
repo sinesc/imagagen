@@ -72,7 +72,7 @@ def _mask(c) -> np.ndarray | None:
 
 
 def _generate(c, ws, **kw) -> dict:
-    body = {"prompt": "test", "width": 16, "height": 16, "batch_size": 1}
+    body = {"prompt": "test", "width": 64, "height": 64, "batch_size": 1}
     body.update(kw)
     r = c.post("/api/generate", json=body)
     assert r.status_code == 200, r.text
@@ -97,15 +97,16 @@ def test_generate_mode_retains_canvas_until_thumb_selected(client):
     """Generate on a non-empty canvas does NOT auto-replace it: the
     displayed image is retained (and published as the green-bordered
     source thumbnail) until the user selects a result thumbnail."""
-    _set_canvas(client, 16, 16, 7)
-    _mask_dot(client, 8, 8, 4)
+    # same size as the generation, so the (retained) mask stays unchanged
+    _set_canvas(client, 64, 64, 7)
+    _mask_dot(client, 32, 32, 4)
     m0 = _mask(client)
 
     with client.websocket_connect("/api/ws") as ws:
         job = _generate(client, ws, mode="generate")
 
     img = _img(client)
-    assert img.shape == (16, 16, 3)
+    assert img.shape == (64, 64, 3)
     # the old flat fill is retained, mask untouched
     assert (img == 7).all()
     np.testing.assert_array_equal(_mask(client), m0)
@@ -121,9 +122,9 @@ def test_generate_mode_retains_canvas_until_thumb_selected(client):
 def test_generate_mode_empty_canvas_auto_sets(client):
     # generate on an EMPTY canvas still auto-sets the first result
     with client.websocket_connect("/api/ws") as ws:
-        _generate(client, ws, width=16, height=16)
+        _generate(client, ws, width=64, height=64)
     img = _img(client)
-    assert img.shape == (16, 16, 3)
+    assert img.shape == (64, 64, 3)
     assert _r_spread(img, np.ones(img.shape[:2], bool)) > 150
 
 
@@ -154,13 +155,13 @@ def test_inpaint_masked_empty_canvas_rejected(client):
 def test_inpaint_masked_replaces_only_mask_region(client):
     """The canvas is retained until a result thumbnail is selected; then
     only the masked region is replaced."""
-    _set_canvas(client, 32, 32, 99)
-    _mask_dot(client, 16, 16, 12)
+    _set_canvas(client, 64, 64, 99)
+    _mask_dot(client, 32, 32, 12)
     m0 = _mask(client)
     assert m0 is not None and m0.any()
 
     with client.websocket_connect("/api/ws") as ws:
-        job = _generate(client, ws, width=32, height=32,
+        job = _generate(client, ws, width=64, height=64,
                         mode="inpaint_masked", denoise=0.75)
 
     # no auto-set: the canvas keeps the original image and mask
@@ -171,7 +172,7 @@ def test_inpaint_masked_replaces_only_mask_region(client):
                     json={"job": job["job_id"], "index": 0})
     assert r.status_code == 200
     img = _img(client)
-    assert img.shape == (32, 32, 3)
+    assert img.shape == (64, 64, 3)
     # inside the (fully masked) region: freshly generated gradient
     full = m0 == 255
     assert _r_spread(img, full) > 40
@@ -184,10 +185,10 @@ def test_inpaint_masked_replaces_only_mask_region(client):
 def test_inpaint_masked_thumbnail_is_blended_canvas(client):
     """Thumbnails show the post-processed canvas state (blended), not the
     raw generation: selecting one puts exactly that state on the canvas."""
-    _set_canvas(client, 32, 32, 99)
-    _mask_dot(client, 16, 16, 12)
+    _set_canvas(client, 64, 64, 99)
+    _mask_dot(client, 32, 32, 12)
     with client.websocket_connect("/api/ws") as ws:
-        job = _generate(client, ws, width=32, height=32, mode="inpaint_masked")
+        job = _generate(client, ws, width=64, height=64, mode="inpaint_masked")
 
     thumb = client.get(f"/api/thumb/{job['job_id']}/0.png")
     assert thumb.status_code == 200
@@ -204,7 +205,7 @@ def test_inpaint_source_thumbnail(client):
     _mask_dot(client, 8, 8, 6)
     with client.websocket_connect("/api/ws") as ws:
         r = client.post("/api/generate", json={
-            "prompt": "x", "width": 16, "height": 16,
+            "prompt": "x", "width": 64, "height": 64,
             "mode": "inpaint_masked", "batch_size": 1})
         job = r.json()["job_id"]
         src = _wait_for(ws, "source_image")
@@ -225,7 +226,7 @@ def test_generate_source_thumbnail_with_canvas(client):
     _set_canvas(client, 16, 16, 55)
     with client.websocket_connect("/api/ws") as ws:
         r = client.post("/api/generate", json={
-            "prompt": "x", "width": 16, "height": 16, "batch_size": 1})
+            "prompt": "x", "width": 64, "height": 64, "batch_size": 1})
         job = r.json()["job_id"]
         src = _wait_for(ws, "source_image")
         assert src["job"] == job
@@ -255,9 +256,9 @@ def test_inpaint_not_masked_empty_canvas_rejected(client):
 
 
 def test_inpaint_not_masked_same_size_replaces_canvas(client):
-    _set_canvas(client, 16, 16, 7)
+    _set_canvas(client, 64, 64, 7)
     with client.websocket_connect("/api/ws") as ws:
-        job = _generate(client, ws, width=16, height=16, mode="inpaint_not_masked")
+        job = _generate(client, ws, width=64, height=64, mode="inpaint_not_masked")
 
     # no auto-set: the canvas keeps the original image
     assert (np.asarray(_img(client)) == 7).all()
@@ -266,7 +267,7 @@ def test_inpaint_not_masked_same_size_replaces_canvas(client):
                     json={"job": job["job_id"], "index": 0})
     assert r.status_code == 200
     img = _img(client)
-    assert img.shape == (16, 16, 3)
+    assert img.shape == (64, 64, 3)
     # the whole canvas is the fresh gradient
     assert _r_spread(img, np.ones(img.shape[:2], bool)) > 150
     # no mask existed -> the result canvas has an empty mask
@@ -275,13 +276,13 @@ def test_inpaint_not_masked_same_size_replaces_canvas(client):
 
 
 def test_inpaint_not_masked_outpaint_resizes_canvas_and_mask(client):
-    _set_canvas(client, 20, 20, 7)
-    _mask_dot(client, 10, 10, 8)
+    _set_canvas(client, 32, 32, 7)
+    _mask_dot(client, 16, 16, 8)
     m0 = _mask(client)
 
-    # 2x: the 20x20 canvas is scaled and centered on a 40x40 canvas
+    # 2x: the 32x32 canvas is scaled and centered on a 64x64 canvas
     with client.websocket_connect("/api/ws") as ws:
-        job = _generate(client, ws, width=40, height=40, mode="inpaint_not_masked")
+        job = _generate(client, ws, width=64, height=64, mode="inpaint_not_masked")
 
     # no auto-set: the canvas (and its size) are unchanged
     assert (np.asarray(_img(client)) == 7).all()
@@ -290,13 +291,13 @@ def test_inpaint_not_masked_outpaint_resizes_canvas_and_mask(client):
                     json={"job": job["job_id"], "index": 0})
     assert r.status_code == 200
     img = _img(client)
-    assert img.shape == (40, 40, 3)
+    assert img.shape == (64, 64, 3)
     # the canvas is the fresh generation at the new size (wide ramp)
     assert _r_spread(img, np.ones(img.shape[:2], bool)) > 150
     # the mask was scaled 2x along with the image
     m = _mask(client)
-    assert m is not None and m.shape == (40, 40)
-    assert m[20, 20] > 0  # the original mask center doubled
+    assert m is not None and m.shape == (64, 64)
+    assert m[32, 32] > 0  # the original mask center doubled
     # LANCZOS may soften edges, but the support area clearly grew
     assert (m > 128).sum() >= (m0 > 128).sum()
 

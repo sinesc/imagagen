@@ -75,7 +75,7 @@ def test_models_endpoint(client):
 def test_generate_single_and_save(client, tmp_path):
     with client.websocket_connect("/api/ws") as ws:
         r = client.post("/api/generate", json={
-            "prompt": "Photo of a turtle", "width": 32, "height": 32,
+            "prompt": "Photo of a turtle", "width": 64, "height": 64,
             "steps": 4, "seed": 123,
         })
         job_id = r.json()["job_id"]
@@ -103,7 +103,7 @@ def test_generate_single_and_save(client, tmp_path):
 def test_generate_batch_seeds_and_completion_order(client, tmp_path):
     with client.websocket_connect("/api/ws") as ws:
         r = client.post("/api/generate", json={
-            "prompt": "batch", "width": 16, "height": 16, "steps": 2,
+            "prompt": "batch", "width": 64, "height": 64, "steps": 2,
             "seed": 100, "batch_size": 3,
         })
         job_id = r.json()["job_id"]
@@ -124,7 +124,7 @@ def test_generate_batch_seeds_and_completion_order(client, tmp_path):
 def test_interrupt_drops_partial(client, tmp_path):
     with client.websocket_connect("/api/ws") as ws:
         r = client.post("/api/generate", json={
-            "prompt": "slow", "width": 16, "height": 16, "steps": 300, "seed": 1,
+            "prompt": "slow", "width": 64, "height": 64, "steps": 300, "seed": 1,
             "batch_size": 1,
         })
         job_id = r.json()["job_id"]
