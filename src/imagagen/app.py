@@ -350,7 +350,10 @@ def create_app(
     # --- presets (Phase 4) ---
     @app.get("/api/presets")
     def presets_list() -> dict:
-        return {"presets": app.state.preset_store.names()}
+        return {"presets": [
+            {"name": p.name, "group": p.group}
+            for p in app.state.preset_store.all()
+        ]}
 
     @app.get("/api/presets/{name}")
     def preset_get(name: str) -> dict:

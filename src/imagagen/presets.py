@@ -8,6 +8,7 @@ is left untouched (concept.md).
 File layout (one JSON per preset, filename = sanitized name):
 
     {"name": "Big square",
+     "group": null,  # optional group label for the dropdown's optgroups
      "width": 1024, "height": 1024,
      "steps": null, "cfg": null, "seed": null, "batch": null,
      "sampler": null, "scheduler": null, "mode": null, "denoise": null,
@@ -21,7 +22,7 @@ import json
 import threading
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .paths import sanitize_prompt
 
@@ -48,6 +49,9 @@ class PresetError(Exception):
 
 class Preset(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    # optional group label (the main UI's preset dropdown renders one
+    # optgroup per group; empty-group presets are plain options)
+    group: str | None = Field(default=None, max_length=120)
     width: int | None = Field(default=None, ge=64, le=4096)
     height: int | None = Field(default=None, ge=64, le=4096)
     # steps/cfg: -1 = the "use model default" sentinel (same as the form)
@@ -62,6 +66,14 @@ class Preset(BaseModel):
     mask_padding: int | None = Field(default=None, ge=0, le=2048)
     loras: list[tuple[str, float]] | None = None
     controls: dict[str, bool] = Field(default_factory=dict)
+
+    @field_validator("group", mode="before")
+    @classmethod
+    def _group_empty_to_none(cls, v):
+        """The UI sends null for an empty group; be lenient about ""."""
+        if v is not None and str(v).strip() == "":
+            return None
+        return v
 
     def to_dict(self) -> dict:
         d = self.model_dump()
@@ -89,15 +101,19 @@ class PresetStore:
     def _path(self, name: str) -> Path:
         return self.dir / f"{sanitize_prompt(name, max_len=120)}.json"
 
-    def names(self) -> list[str]:
+    def all(self) -> list[Preset]:
+        """Every loadable preset, in filename (name) order."""
         with self._lock:
             out = []
             if self.dir.is_dir():
                 for f in sorted(self.dir.glob("*.json")):
                     p = self.get(f.stem)
                     if p is not None:
-                        out.append(p.name)
+                        out.append(p)
             return out
+
+    def names(self) -> list[str]:
+        return [p.name for p in self.all()]
 
     def get(self, id_: str) -> Preset | None:
         """Look up by sanitized id or by display name (both map to the

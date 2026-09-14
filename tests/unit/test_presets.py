@@ -71,6 +71,23 @@ def test_controlled_returns_only_checked_settings(tmp_path):
     assert got.controlled() == {"width": 512, "height": 768}
 
 
+def test_group_field(tmp_path):
+    s = PresetStore(tmp_path / "presets")
+    s.save(Preset(name="A", group="Touchup"))
+    s.save(Preset(name="B"))  # ungrouped
+    # the list API payload: names keep file order, group null when unset
+    assert [(p.name, p.group) for p in s.all()] == [("A", "Touchup"), ("B", None)]
+    got = s.get("a")
+    assert got.group == "Touchup"
+    on_disk = json.loads((tmp_path / "presets" / "a.json").read_text())
+    assert on_disk["group"] == "Touchup"
+    # "" is normalized to None (the UI sends null, be lenient)
+    assert Preset(name="x", group="").group is None
+    assert Preset(name="x", group=None).group is None
+    with pytest.raises(ValueError):
+        Preset(name="x", group="y" * 121)
+
+
 def test_validation(tmp_path):
     s = PresetStore(tmp_path / "presets")
     # pydantic ValidationError is a ValueError subclass

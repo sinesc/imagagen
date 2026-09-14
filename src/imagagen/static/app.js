@@ -553,15 +553,30 @@ async function applyPreset(name) {
   return true;
 }
 
+// state.presets: [{name, group|null}] (name-sorted, from /api/presets)
+function fillPresetSelect(sel) {
+  sel.innerHTML = "";
+  sel.append(opt("", "—"));
+  // ungrouped presets first as plain options, then one optgroup per group
+  // (first-appearance order; within a group the name order is kept)
+  state.presets.filter((p) => !p.group)
+    .forEach((p) => sel.append(opt(p.name, p.name)));
+  const groups = [...new Set(state.presets.map((p) => p.group).filter(Boolean))];
+  for (const g of groups) {
+    const og = el("optgroup", { label: g });
+    state.presets.filter((p) => p.group === g)
+      .forEach((p) => og.append(opt(p.name, p.name)));
+    sel.append(og);
+  }
+}
+
 async function loadPresets() {
   const r = await (await fetch("/api/presets")).json();
   state.presets = r.presets || [];
   const sel = $("preset");
   const cur = sel.value;
-  sel.innerHTML = "";
-  sel.append(opt("", "—"));
-  state.presets.forEach((n) => sel.append(opt(n, n)));
-  if (state.presets.includes(cur)) sel.value = cur;
+  fillPresetSelect(sel);
+  if (state.presets.some((p) => p.name === cur)) sel.value = cur;
 }
 
 function presetValueInput(kind, value, emptyLabel = "—") {
@@ -589,6 +604,9 @@ function openPresetDialog(existing) {
   const controls = p.controls || {};
   const nameIn = el("input", { type: "text", maxlength: "120" });
   nameIn.value = p.name || "";
+  const groupIn = el("input", { type: "text", maxlength: "120",
+    placeholder: "optional — presets in the same group are listed together" });
+  groupIn.value = p.group || "";
   const defs = [
     ["width", "width", "number", p.width],
     ["height", "height", "number", p.height],
@@ -629,12 +647,13 @@ function openPresetDialog(existing) {
   }
   const box = el("div", { class: "preset-dialog" },
     el("label", {}, "name", nameIn),
+    el("label", {}, "group", groupIn),
     el("div", { class: "muted" }, "checked settings are applied when the preset is selected"),
     rows);
   openDialog(existing ? "Edit preset" : "New preset", box, async () => {
     const name = nameIn.value.trim();
     if (!name) { dialogError("name is required"); return false; }
-    const body = { name, controls: {} };
+    const body = { name, group: groupIn.value.trim() || null, controls: {} };
     for (const row of rows.children) {
       const input = row.querySelector("[data-preset-key]");
       const key = input.dataset.presetKey;
@@ -666,17 +685,18 @@ function openPresetManage() {
   const render = () => {
     list.querySelectorAll(".preset-manage-row").forEach((r) => r.remove());
     if (!state.presets.length) list.append(el("div", { class: "muted" }, "no presets yet"));
-    state.presets.forEach((name) => {
+    state.presets.forEach((p) => {
+      const name = p.name;
       const nameEl = el("span", { class: "preset-manage-name" }, name);
       const edit = el("button", { class: "mini icon", type: "button", title: "edit" }, "✎");
       const del = el("button", { class: "mini icon", type: "button", title: "delete" }, "✗");
       edit.onclick = async () => {
         closeDialog();
-        let p;
+        let preset;
         try {
-          p = (await (await fetch(`/api/presets/${encodeURIComponent(name)}`)).json()).preset;
+          preset = (await (await fetch(`/api/presets/${encodeURIComponent(name)}`)).json()).preset;
         } catch (e) { setStatus(e.message); return; }
-        openPresetDialog(p);
+        openPresetDialog(preset);
       };
       del.onclick = async () => {
         if (!confirm(`Delete preset "${name}"?`)) return;
@@ -1145,7 +1165,7 @@ async function init() {
   state.samplers = s.samplers;
   state.schedulers = s.schedulers;
   state.presets = pr.presets;
-  state.loras = lr.loras;
+  state.loras = lr.loras;  // [{name, group|null}]
   state.styles = sy.styles;
   const sel = $("model");
   sel.innerHTML = "";
@@ -1159,10 +1179,7 @@ async function init() {
     s2.append(opt("", "Model default"));
     (id === "sampler" ? s.samplers : s.schedulers).forEach((n) => s2.append(opt(n, n)));
   }
-  const pres = $("preset");
-  pres.innerHTML = "";
-  pres.append(opt("", "—"));
-  state.presets.forEach((n) => pres.append(opt(n, n)));
+  fillPresetSelect($("preset"));
   applyUiState(u && u.state);
   syncMode();
 }

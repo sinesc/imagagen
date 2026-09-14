@@ -293,3 +293,49 @@ def test_preset_multiword_name_select(page, server):
     time.sleep(0.3)
     # the fetch no longer 404s and applyPreset no longer throws
     assert console_errors == []
+
+
+def test_preset_groups_in_dropdown_and_dialog(page, server):
+    # the main UI's preset dropdown renders one optgroup per group;
+    # ungrouped presets are plain options. The edit dialog has a "group"
+    # field under the name.
+    base, _ = server
+    with httpx.Client(base_url=base, timeout=10) as c:
+        for name, group in [("Outpaint A", "Outpaint 1440p"),
+                            ("Outpaint B", "Outpaint 1440p"),
+                            ("Loose", None)]:
+            r = c.post("/api/presets", json={
+                "name": name, "group": group,
+                "width": 512, "controls": {"width": True},
+            })
+            assert r.status_code == 200, r.text
+    _open(page, base, "state.presets.length >= 3")
+
+    # "Loose" is a plain option (not in an optgroup); the group's presets
+    # sit under the optgroup in name order
+    loose = page.locator("#preset > option", has_text="Loose")
+    assert loose.count() == 1
+    og = page.locator('#preset optgroup[label="Outpaint 1440p"]')
+    assert og.count() == 1
+    assert og.locator("option").count() == 2
+    assert og.locator("option").all_inner_texts() == ["Outpaint A", "Outpaint B"]
+
+    # the dialog offers the group field under the name; saving stores it
+    page.click("#preset-manage")
+    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
+    page.click("text=+ New preset")
+    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
+    box = page.locator(".preset-dialog")
+    labels = box.locator("label").all_inner_texts()
+    assert labels[0].strip().startswith("name")
+    assert labels[1].strip().startswith("group")
+    box.locator("label").nth(0).locator("input").fill("New grouped")
+    box.locator("label").nth(1).locator("input").fill("Outpaint 1440p")
+    page.click("#dialog-ok")
+    wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+    with httpx.Client(base_url=base, timeout=10) as c:
+        p = c.get("/api/presets/new-grouped").json()["preset"]
+    assert p["group"] == "Outpaint 1440p"
+    # it now shows up in the existing optgroup
+    wait_until(lambda: page.locator(
+        '#preset optgroup[label="Outpaint 1440p"] option').count() == 3)

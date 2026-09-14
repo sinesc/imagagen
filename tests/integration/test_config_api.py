@@ -262,7 +262,17 @@ def test_preset_crud_and_apply_payload(client, tmp_path):
     })
     assert r.status_code == 200, r.text
     assert (tmp_path / "presets" / "big-square.json").is_file()
-    assert client.get("/api/presets").json() == {"presets": ["Big square"]}
+    assert client.get("/api/presets").json() == {
+        "presets": [{"name": "Big square", "group": None}]}
+
+    # group is an optional label (null/absent = ungrouped); "" normalizes
+    # to null
+    r = client.post("/api/presets", json={"name": "Grouped", "group": "Touchup"})
+    assert r.status_code == 200, r.text
+    assert client.get("/api/presets/grouped").json()["preset"]["group"] == "Touchup"
+    r = client.post("/api/presets", json={"name": "Blank group", "group": ""})
+    assert r.status_code == 200
+    assert client.get("/api/presets/blank-group").json()["preset"]["group"] is None
 
     body = client.get("/api/presets/big-square").json()
     p = body["preset"]
@@ -283,8 +293,9 @@ def test_preset_crud_and_apply_payload(client, tmp_path):
     })
     assert r.status_code == 200
     assert client.get("/api/presets/big-square").json()["preset"]["width"] == 512
-    r = client.post("/api/presets/delete", json={"name": "Big square"})
-    assert r.json() == {"ok": True}
+    for name in ("Big square", "Grouped", "Blank group"):
+        r = client.post("/api/presets/delete", json={"name": name})
+        assert r.json() == {"ok": True}
     assert client.get("/api/presets").json() == {"presets": []}
     assert client.get("/api/presets/big-square").status_code == 404
 
