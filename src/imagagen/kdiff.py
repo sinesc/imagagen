@@ -90,6 +90,11 @@ def default_noise_sampler(x: torch.Tensor):
     return noise_sampler
 
 
+# per-step SDE/ancestral noise seeds must not collide with the initial-noise
+# seed (same seed + shape + device + dtype -> identical randn draw)
+_STEP_SEED_OFFSET = 1_000_000
+
+
 # ---------------------------------------------------------------- euler ----
 
 
@@ -116,16 +121,39 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, eta
     return x
 
 
+# ------------------------------------------------------------------- lcm ----
+
+
+@torch.no_grad()
+def sample_lcm(model, x, sigmas, extra_args=None, callback=None, noise_sampler=None):
+    """LCM (A1111/Forge's `sample_lcm`): pure ancestral sampling. Every step
+    jumps straight to the model's x0 estimate and re-noises to the next
+    sigma (no ODE derivative, no eta/s_noise). The paired model wrap
+    (sdxl_backend's LCM path) quantizes each sigma to one of the 50
+    original LCM timesteps (19, 39, ..., 999) and applies the CompVis x0
+    rescaling, so the distilled model only ever sees noise levels it was
+    trained on."""
+    extra_args = {} if extra_args is None else extra_args
+    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    seed = extra_args.get("seed", 0)
+    s_in = x.new_ones([x.shape[0]])
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback({"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i],
+                      "denoised": denoised})
+        x = denoised
+        if sigmas[i + 1] > 0:
+            noise = noise_sampler(x.shape, _STEP_SEED_OFFSET + seed + i * x.shape[0],
+                                  offset=x.shape[0])
+            x = x + noise * sigmas[i + 1]
+    return x
+
+
 # ---------------------------------------------------------------- dpm++ ----
 # DPM-Solver++(2M) as used by A1111/Forge (verified: its first step is
 # exactly the simple Euler step, so it is consistent with the verified
 # Euler-a path in this codebase).
-
-
-# per-step SDE noise seeds must not collide with the initial-noise seed
-# (same seed + shape + device + dtype -> identical randn draw); see
-# default_noise_sampler._STEP_SEED_OFFSET
-_STEP_SEED_OFFSET = 1_000_000
 
 
 def _dpmpp_2m_denoised(denoised, old_denoised, t, t_prev, t_next) -> torch.Tensor:

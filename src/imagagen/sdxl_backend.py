@@ -1,9 +1,12 @@
 """SDXL backend: diffusers pipeline + vendored k-diffusion sampling loop.
 
-Phase 1 ships three samplers (Euler a, DPM++ 2M, DPM++ 2M SDE) and three
-sigma schedules (Karras, Exponential, Polyexponential); both are chosen
-from small registries so Phase 5's plugin system can grow them without
-touching this file.
+Ships four samplers (Euler a, DPM++ 2M, DPM++ 2M SDE, LCM) and three sigma
+schedules (Karras, Exponential, Polyexponential); both are chosen from small
+registries so Phase 5's plugin system can grow them without touching this
+file. LCM follows Forge's LCMCompVisDenoiser: the sigma range is limited to
+the 50 original LCM timesteps (19, 39, ..., 999) of the beta schedule, every
+sigma is quantized to that grid before reaching the UNet, and the x0 estimate
+gets the CompVis rescaling (see _LcmSchedule).
 
 SDXL specifics (matching the k-diffusion / A1111 contract):
 - sigma_data = 1.0; the sigma range is the model's actual beta-schedule
@@ -110,12 +113,60 @@ SAMPLERS = {
     "Euler a": kdiff.sample_euler_ancestral,
     "DPM++ 2M": kdiff.sample_dpmpp_2m,
     "DPM++ 2M SDE": kdiff.sample_dpmpp_2m_sde,
+    "LCM": kdiff.sample_lcm,
 }
 SCHEDULERS = {
     "Karras": kdiff.get_sigmas_karras,
     "Exponential": kdiff.get_sigmas_exponential,
     "Polyexponential": kdiff.get_sigmas_polyexponential,
 }
+
+
+class _LcmSchedule:
+    """Forge's LCMCompVisDenoiser schedule for the LCM sampler.
+
+    LCM-distilled models (e.g. gonzalomoPhotoDMD2XL6.0) are trained on only
+    the 50 *original* timesteps of the 1000-step beta schedule (t = 19,
+    39, ..., 999), so Forge's LCM path:
+    - samples over that 50-slot sigma range [sigma(t=19), sigma(t=999)]
+      instead of the full beta-schedule range;
+    - maps every sigma to the nearest 50-slot timestep in log space and
+      feeds that quantized t to the UNet (the model never sees the other
+      950 noise levels);
+    - rescales the x0 estimate with CompVis c_skip/c_out coefficients
+      (sigma_data = 0.5, scaled timestep t*10 -- a no-op close to identity
+      at the LCM timestep magnitudes, replicated for Forge parity).
+    """
+
+    N_ORIG = 50          # LCM original timestep count
+    SKIP = 1000 // N_ORIG  # index stride between original timesteps
+
+    def __init__(self, alphas_cumprod) -> None:
+        # the 50 slots (schedule indices 19, 39, ..., 999); the first
+        # (smallest t) carries the smallest sigma, so the order is ascending
+        ac = alphas_cumprod[self.SKIP - 1::self.SKIP]
+        self.sigmas = ((1.0 - ac) / ac).sqrt()
+        self.log_sigmas = self.sigmas.log()
+        self.min_sigma = float(self.sigmas[0])
+        self.max_sigma = float(self.sigmas[-1])
+
+    def timestep(self, sigma):
+        """sigma -> its nearest 50-slot LCM timestep (t = idx * 20 + 19)."""
+        log_sigma = sigma.float().log().unsqueeze(-1)
+        idx = (log_sigma - self.log_sigmas.unsqueeze(0)).abs().argmin(-1)
+        return (idx * self.SKIP + (self.SKIP - 1)).float()
+
+    def x0_scaled(self, x, sigma, eps):
+        """Forge LCMCompVisDenoiser.get_scaled_out on the standard x0.
+
+        c_out * (x - sigma * eps) + c_skip * x with
+        c_out = t' / sqrt(t'^2 + sd^2), c_skip = sd^2 / (t'^2 + sd^2),
+        t' = 10 * quantized_t, sd = 0.5.
+        """
+        t_s = self.timestep(sigma) * 10.0
+        c_out = t_s / (t_s ** 2 + 0.25).sqrt()
+        c_skip = 0.25 / (t_s ** 2 + 0.25)
+        return c_out * (x - sigma * eps) + c_skip * x
 
 
 def sigma_to_timestep(sigma, log_sigmas):
@@ -477,7 +528,21 @@ class SdxlBackend(ModelBackend):
             # A1111/Forge k-diffusion ModelSamplingDiscrete.timestep: the
             # *nearest* beta-schedule sigma index in log space (see
             # sigma_to_timestep for the full rationale).
-            sigma_to_t = lambda sigma: sigma_to_timestep(sigma, log_sigmas)
+            # --- sampler / scheduler registries (Phase 5 grows these into plugins) ---
+            sampler_name = request.sampler or self.default_sampler
+            scheduler_name = request.scheduler or self.default_scheduler
+            if sampler_name not in SAMPLERS:
+                raise ValueError(f"unknown sampler {sampler_name!r}")
+            if scheduler_name not in SCHEDULERS:
+                raise ValueError(f"unknown scheduler {scheduler_name!r}")
+            sampler_fn = SAMPLERS[sampler_name]
+            sigmas_fn = SCHEDULERS[scheduler_name]
+            # LCM models are trained on only 50 of the 1000 schedule
+            # timesteps; the sigma range and the UNet t input are
+            # quantized to that 50-slot grid (see _LcmSchedule)
+            lcm = _LcmSchedule(ac) if sampler_name == "LCM" else None
+            sigma_to_t = (lambda sigma: lcm.timestep(sigma)) if lcm is not None \
+                else (lambda sigma: sigma_to_timestep(sigma, log_sigmas))
 
             def unet_forward(emb, pool, x, t):
                 added = {"time_ids": time_ids, "text_embeds": pool}
@@ -509,15 +574,21 @@ class SdxlBackend(ModelBackend):
                 # UNet's fp16 dtype right before the call (like Forge's
                 # calculate_input + .to(computation_dtype))
                 x_in = (xwork / (sigma ** 2 + 1.0).sqrt()).to(torch.float16)
-                c = unet_forward(prompt_embeds, pooled, x_in, t)
-                uc = unet_forward(neg_embeds, neg_pooled, x_in, t)
+                if request.cfg <= 1.0:
+                    # CFG 1 needs no unconditional pass (Forge skips it)
+                    eps = unet_forward(prompt_embeds, pooled, x_in, t)
+                else:
+                    c = unet_forward(prompt_embeds, pooled, x_in, t)
+                    uc = unet_forward(neg_embeds, neg_pooled, x_in, t)
+                    eps = uc + request.cfg * (c - uc)
                 if progress and self._step <= self._steps_total:
                     progress(self._step / self._steps_total,
                              f"step {self._step}/{self._steps_total}")
                 # UNet output is an epsilon prediction -> convert to x0.
                 # x is fp32 (solver state), so x0 stays fp32.
-                eps = uc + request.cfg * (c - uc)
                 x0 = xwork - sigma * eps
+                if lcm is not None:
+                    x0 = lcm.x0_scaled(xwork, sigma, eps)
                 if mask_t is not None:
                     # and the x0 estimate is locked back to the init latent
                     # (protected content decodes exactly)
@@ -526,25 +597,19 @@ class SdxlBackend(ModelBackend):
 
             self._step = 0
 
-            # --- sampler / scheduler registries (Phase 5 grows these into plugins) ---
-            sampler_name = request.sampler or self.default_sampler
-            scheduler_name = request.scheduler or self.default_scheduler
-            if sampler_name not in SAMPLERS:
-                raise ValueError(f"unknown sampler {sampler_name!r}")
-            if scheduler_name not in SCHEDULERS:
-                raise ValueError(f"unknown scheduler {scheduler_name!r}")
-            sampler_fn = SAMPLERS[sampler_name]
-            sigmas_fn = SCHEDULERS[scheduler_name]
-
             # A1111/Forge "rescaled betas" (their default): sample over the
             # model's real beta-schedule range instead of the clamped
             # k-diffusion [0.1, 10]. For SDXL that is ~[0.03, ~14.6]: start
             # from the true terminal noise level and refine down to almost
             # zero residual noise. The [0.1, 10] clamp renders visibly
-            # flatter/grainier (see devtools/softness_check.py).
-            beta_sigmas = torch.exp(log_sigmas)
-            sigma_min = float(beta_sigmas[0])
-            sigma_max = float(beta_sigmas[-1])
+            # flatter/grainier (see devtools/softness_check.py). The LCM
+            # sampler instead uses its 50-slot range (see _LcmSchedule).
+            if lcm is not None:
+                sigma_min, sigma_max = lcm.min_sigma, lcm.max_sigma
+            else:
+                beta_sigmas = torch.exp(log_sigmas)
+                sigma_min = float(beta_sigmas[0])
+                sigma_max = float(beta_sigmas[-1])
             model_wrap = _ModelSamplingDiscrete(model_fn, sigma_min, sigma_max)
             sigmas = sigmas_fn(
                 request.steps, model_wrap.min_sigma, model_wrap.max_sigma, device=device
