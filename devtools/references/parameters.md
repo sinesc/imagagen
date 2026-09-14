@@ -1,3 +1,15 @@
+# fantasy-island-lcm.png
+
+prompt: fairy tale a magical island floating in the sky, an endless ocean below. magical, fantastical, enchanting, storybook style, highly detailed
+negative (ignored due to CFG 1): realistic, modern, ordinary, mundane
+seed: 3353242733
+model: gonzalomoPhotoDMD2XL6.0.safetensors
+CFG: 1
+steps: 12
+sampler: LCM
+scheduler: Polyexponential
+resolution: 1024x1024
+
 # woman-with-dog-mask-generator-testing.png
 
 for mask generation testing only, not reproducible
