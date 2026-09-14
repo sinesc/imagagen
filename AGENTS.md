@@ -8,7 +8,7 @@ This is `imagagen`, an AI image generation tool with a Python backend and Javasc
 
 ## Project status
 
-Early development.
+Early development. No backwards compatibility required.
 
 ## References
 
@@ -16,7 +16,7 @@ The parallel folder `stable-diffusion-webui-forge` contains the branch `referenc
 
 ## Environment
 
-This environment has access to two GPUs that will be largely occupied by running your AI model, but one of them should should have enough VRAM to spare for running stable diffusion. If you do need more VRAM ask the user to temporarily move your model to a cloud GPU.
+This environment has access to two GPUs that will be largely occupied by running you (your LLM model), but one of them should should have enough VRAM to spare for running stable diffusion. If you do need more VRAM let the user know.
 
 ## Process monitoring
 
