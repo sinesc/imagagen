@@ -435,8 +435,10 @@ button.danger:hover { background: #a33; }
   gap: 0.4rem;
 }
 .preset-row .preset-label { font-size: 0.78rem; color: #aaa; }
-.preset-row input[type="number"] { width: 100%; }
-.preset-row select { width: 100%; }
+/* direct children only: unscoped width:100% here used to bleed into the
+   lora rows and squash their selects (cf. the .cfg-mode note) */
+.preset-row > input[type="number"] { width: 100%; }
+.preset-row > select { width: 100%; }
 .preset-loras { width: 100%; }
 
 /* preset management list */

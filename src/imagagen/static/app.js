@@ -571,10 +571,11 @@ async function loadPresets() {
 
 function presetValueInput(kind, value, emptyLabel = "—") {
   if (kind === "loras") {
-    const input = el("div", { class: "lora-list preset-loras" });
-    if (value) value.forEach((x) => input.append(loraRow(x[0], x[1])));
-    input.append(loraAddButton(input));
-    return input;
+    const list = el("div", { class: "lora-list preset-loras" });
+    if (value) value.forEach((x) => list.append(loraRow(x[0], x[1])));
+    // same structure as the sidebar/config dialog: rows first, the "+ LoRA"
+    // button after the list (added rows append to the list, above the button)
+    return el("div", { class: "loras" }, list, loraAddButton(list));
   }
   if (kind === "select") {
     const input = el("select", { class: "preset-val" });
