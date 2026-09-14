@@ -483,9 +483,9 @@ def create_app(
 
     @app.get("/api/thumb/{job_id}/source.png")
     def thumb_source(job_id: int) -> Response:
-        # the inpaint source image (canvas snapshot at submit time);
-        # registered before the {index}.png route so "source" is not
-        # parsed as an index
+        # the source image (canvas snapshot at submit time; inpaint
+        # always, generate on a non-empty canvas); registered before the
+        # {index}.png route so "source" is not parsed as an index
         job = queue.job(job_id)
         data = job.source_png if job else None
         if data is None:
@@ -571,7 +571,11 @@ def create_app(
         data = job.results.get(body.index) if job else None
         if data is None:
             return {"error": "no such thumbnail"}
-        canvas.set_from_png_bytes(data)
+        # "inpaint not masked": the plan's scaled mask is part of the
+        # resulting canvas state (thumbnails show it, so selecting one
+        # restores it)
+        plan_mask = job.plan.new_mask if job.plan is not None else None
+        canvas.set_from_png_bytes(data, mask=plan_mask)
         return {"ok": True}
 
     @app.post("/api/canvas/undo")

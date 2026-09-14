@@ -119,6 +119,10 @@ class GenerationQueue:
             # (green border): lets the user go back to it when none of the
             # results turn out good
             job.source_png = _plain_png(plan.base_image)
+        elif self.canvas.has_image():
+            # generate: the image currently displayed on the canvas, kept
+            # as a source thumbnail (green border) the same way
+            job.source_png = _plain_png(self.canvas.image)
         with self._job_lock:
             self._jobs[self._next_job_id] = job
             self._next_job_id += 1
@@ -130,7 +134,9 @@ class GenerationQueue:
                    "base_seed": base_seed})
         if job.source_png is not None:
             # right after job_started: the UI shows the source before any
-            # result arrives
+            # result arrives. A source thumbnail exists exactly when the
+            # canvas keeps its image (no auto-set); an empty-canvas
+            # generate job has none, so the first result auto-sets.
             self.emit({"type": "source_image", "job": job.id,
                        "url": f"/api/thumb/{job.id}/source.png"})
         return job
@@ -211,7 +217,7 @@ class GenerationQueue:
         # generation; the plan maps it to canvas state (downscale+blend for
         # "inpaint masked", whole-canvas replacement + new mask for
         # "inpaint not masked"). Thumbnails show the resulting canvas state,
-        # so clicking one restores exactly what auto-set would have shown.
+        # so clicking one puts it on the canvas.
         if job.plan is not None:
             out_image, new_mask = job.plan.postprocess(result.image)
         else:
@@ -222,14 +228,20 @@ class GenerationQueue:
                    "seed": result.seed, "url": f"/api/thumb/{job.id}/{task.index}.png"})
         if not job.first_emitted:
             job.first_emitted = True
-            # spec: first completed image is automatically set in the canvas
-            # carry the result's PNG text chunks onto the canvas so a
-            # later save keeps the generation metadata
-            if new_mask is not None:
-                self.canvas.set_image(out_image, mask=new_mask, info=info)
-            else:
-                self.canvas.set_image_keep_mask(out_image, info=info)
-            self.emit({"type": "canvas_set", "job": job.id, "index": task.index})
+            # the first completed image is automatically set in the canvas
+            # only when the canvas has no image to keep: inpaint jobs and
+            # generate jobs on a non-empty canvas retain the displayed
+            # image (selectable via the green-bordered source thumbnail)
+            # until the user picks one of the freshly generated thumbnails.
+            if job.source_png is None:
+                # carry the result's PNG text chunks onto the canvas so a
+                # later save keeps the generation metadata
+                if new_mask is not None:
+                    self.canvas.set_image(out_image, mask=new_mask, info=info)
+                else:
+                    self.canvas.set_image_keep_mask(out_image, info=info)
+                self.emit({"type": "canvas_set", "job": job.id,
+                           "index": task.index})
         self._settle(job, task.index)
 
     def _settle(self, job: Job, index: int) -> None:

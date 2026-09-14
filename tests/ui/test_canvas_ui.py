@@ -406,9 +406,39 @@ def test_generation_mode_denoise_ui(page, server):
     assert page.locator("#mask-padding").is_disabled()
 
 
+def test_generate_source_thumbnail_retains_canvas(page, server):
+    """A generate on a non-empty canvas keeps the displayed image until a
+    result is selected; the source thumbnail (green border, highlighted)
+    is how the user gets back to it."""
+    base, _ = server
+    _open(page, base)
+    _show(page, base, 200, 150)
+
+    page.click("#btn-generate")
+
+    # the source arrives before (or with) the first result
+    page.wait_for_function("state.thumbs.length >= 2")
+    first = page.locator("#thumbs img").first
+    assert "source" in (first.get_attribute("class") or "")
+    assert first.get_attribute("title") == "source image (click to restore)"
+    # the canvas is showing the source, so IT is the selected thumbnail
+    assert "selected" in (first.get_attribute("class") or "")
+    # ...and the canvas was NOT auto-replaced
+    assert canvas_px(base, 100, 75) == BG
+
+    # selecting a result puts it on the canvas
+    page.locator("#thumbs img").nth(1).click()
+    assert wait_until(lambda: canvas_px(base, 100, 75) != BG)
+
+    # clicking the source thumbnail restores the original image
+    first.click()
+    assert wait_until(lambda: canvas_px(base, 100, 75) == BG)
+
+
 def test_inpaint_source_thumbnail(page, server):
     """An inpaint generation immediately shows a source thumbnail (green
-    border); clicking it restores the source image."""
+    border); the canvas is retained until a result is selected, and
+    clicking the source thumbnail restores the source image."""
     base, _ = server
     _open(page, base)
     _show(page, base, 200, 150)
@@ -421,16 +451,20 @@ def test_inpaint_source_thumbnail(page, server):
     set_input(page, "#denoise", "0.6")
     page.click("#btn-generate")
 
-    # the source arrives before (or with) the first result
+    # the source arrives before (or with) the first result, and it is
+    # the selected thumbnail (the canvas shows the source, no auto-set)
     page.wait_for_function("state.thumbs.length >= 2")
     first = page.locator("#thumbs img").first
     assert "source" in (first.get_attribute("class") or "")
-    assert first.get_attribute("title") == "inpaint source (click to restore)"
+    assert "selected" in (first.get_attribute("class") or "")
+    assert first.get_attribute("title") == "source image (click to restore)"
+    assert canvas_px(base, 100, 75) == BG
 
-    # the masked centre got regenerated... clicking the source thumbnail
-    # brings the original image back
+    # selecting a result regenerates the masked centre... clicking the
+    # source thumbnail brings the original image back
+    page.locator("#thumbs img").nth(1).click()
     assert wait_until(lambda: canvas_px(base, 100, 75) != BG), \
-        f"centre after inpaint: {canvas_px(base, 100, 75)}"
+        f"centre after result select: {canvas_px(base, 100, 75)}"
     first.click()
     assert wait_until(lambda: canvas_px(base, 100, 75) == BG), \
         f"centre after source restore: {canvas_px(base, 100, 75)}"

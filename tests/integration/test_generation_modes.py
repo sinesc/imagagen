@@ -93,27 +93,46 @@ def _r_spread(img: np.ndarray, sel: np.ndarray) -> int:
 # ---------------------------------------------------------------- generate --
 
 
-def test_generate_mode_replaces_canvas_and_keeps_mask(client):
+def test_generate_mode_retains_canvas_until_thumb_selected(client):
+    """Generate on a non-empty canvas does NOT auto-replace it: the
+    displayed image is retained (and published as the green-bordered
+    source thumbnail) until the user selects a result thumbnail."""
     _set_canvas(client, 16, 16, 7)
     _mask_dot(client, 8, 8, 4)
     m0 = _mask(client)
 
     with client.websocket_connect("/api/ws") as ws:
-        _generate(client, ws, mode="generate")
+        job = _generate(client, ws, mode="generate")
 
     img = _img(client)
     assert img.shape == (16, 16, 3)
-    # the whole canvas is the fresh mock gradient, not the old flat fill
-    assert _r_spread(img, np.ones(img.shape[:2], bool)) > 150
-    # the mask (same size) is retained
+    # the old flat fill is retained, mask untouched
+    assert (img == 7).all()
     np.testing.assert_array_equal(_mask(client), m0)
+    # selecting a result thumbnail puts it on the canvas (mask retained)
+    r = client.post("/api/canvas/thumb",
+                    json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    img = _img(client)
+    assert _r_spread(img, np.ones(img.shape[:2], bool)) > 150
+    np.testing.assert_array_equal(_mask(client), m0)
+
+
+def test_generate_mode_empty_canvas_auto_sets(client):
+    # generate on an EMPTY canvas still auto-sets the first result
+    with client.websocket_connect("/api/ws") as ws:
+        _generate(client, ws, width=16, height=16)
+    img = _img(client)
+    assert img.shape == (16, 16, 3)
+    assert _r_spread(img, np.ones(img.shape[:2], bool)) > 150
 
 
 def test_generate_mode_default(client):
     _set_canvas(client)
     with client.websocket_connect("/api/ws") as ws:
         _generate(client, ws)  # no mode -> generate
-    assert _img(client).shape == (16, 16, 3)
+    # no mode specified: generate mode, which retains the existing canvas
+    assert _img(client).shape == (24, 32, 3)
 
 
 # ---------------------------------------------------------- inpaint masked --
@@ -133,15 +152,24 @@ def test_inpaint_masked_empty_canvas_rejected(client):
 
 
 def test_inpaint_masked_replaces_only_mask_region(client):
+    """The canvas is retained until a result thumbnail is selected; then
+    only the masked region is replaced."""
     _set_canvas(client, 32, 32, 99)
     _mask_dot(client, 16, 16, 12)
     m0 = _mask(client)
     assert m0 is not None and m0.any()
 
     with client.websocket_connect("/api/ws") as ws:
-        _generate(client, ws, width=32, height=32,
-                  mode="inpaint_masked", denoise=0.75)
+        job = _generate(client, ws, width=32, height=32,
+                        mode="inpaint_masked", denoise=0.75)
 
+    # no auto-set: the canvas keeps the original image and mask
+    assert (np.asarray(_img(client)) == 99).all()
+    np.testing.assert_array_equal(_mask(client), m0)
+    # selecting the result: only the masked region is replaced
+    r = client.post("/api/canvas/thumb",
+                    json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
     img = _img(client)
     assert img.shape == (32, 32, 3)
     # inside the (fully masked) region: freshly generated gradient
@@ -155,7 +183,7 @@ def test_inpaint_masked_replaces_only_mask_region(client):
 
 def test_inpaint_masked_thumbnail_is_blended_canvas(client):
     """Thumbnails show the post-processed canvas state (blended), not the
-    raw generation."""
+    raw generation: selecting one puts exactly that state on the canvas."""
     _set_canvas(client, 32, 32, 99)
     _mask_dot(client, 16, 16, 12)
     with client.websocket_connect("/api/ws") as ws:
@@ -164,7 +192,8 @@ def test_inpaint_masked_thumbnail_is_blended_canvas(client):
     thumb = client.get(f"/api/thumb/{job['job_id']}/0.png")
     assert thumb.status_code == 200
     t = np.asarray(Image.open(io.BytesIO(thumb.content)))
-    # identical to the auto-set canvas
+    client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
+    # identical to the selected canvas
     np.testing.assert_array_equal(t, _img(client))
 
 
@@ -189,8 +218,27 @@ def test_inpaint_source_thumbnail(client):
         np.full((16, 16, 3), 55, dtype=np.uint8))
 
 
-def test_generate_has_no_source_thumbnail(client):
-    _set_canvas(client)
+def test_generate_source_thumbnail_with_canvas(client):
+    """A generate job on a non-empty canvas publishes the canvas image as
+    the source thumbnail (green border in the UI); the canvas is retained
+    until a result is selected."""
+    _set_canvas(client, 16, 16, 55)
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": "x", "width": 16, "height": 16, "batch_size": 1})
+        job = r.json()["job_id"]
+        src = _wait_for(ws, "source_image")
+        assert src["job"] == job
+        assert src["url"] == f"/api/thumb/{job}/source.png"
+        _wait_for(ws, "done")
+    r = client.get(f"/api/thumb/{job}/source.png")
+    assert r.status_code == 200
+    np.testing.assert_array_equal(
+        np.asarray(Image.open(io.BytesIO(r.content))),
+        np.full((16, 16, 3), 55, dtype=np.uint8))
+
+
+def test_generate_empty_canvas_has_no_source_thumbnail(client):
     with client.websocket_connect("/api/ws") as ws:
         job = _generate(client, ws)
     assert client.get(f"/api/thumb/{job['job_id']}/source.png").status_code == 404
@@ -209,8 +257,14 @@ def test_inpaint_not_masked_empty_canvas_rejected(client):
 def test_inpaint_not_masked_same_size_replaces_canvas(client):
     _set_canvas(client, 16, 16, 7)
     with client.websocket_connect("/api/ws") as ws:
-        _generate(client, ws, width=16, height=16, mode="inpaint_not_masked")
+        job = _generate(client, ws, width=16, height=16, mode="inpaint_not_masked")
 
+    # no auto-set: the canvas keeps the original image
+    assert (np.asarray(_img(client)) == 7).all()
+    # selecting the result replaces it
+    r = client.post("/api/canvas/thumb",
+                    json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
     img = _img(client)
     assert img.shape == (16, 16, 3)
     # the whole canvas is the fresh gradient
@@ -227,8 +281,14 @@ def test_inpaint_not_masked_outpaint_resizes_canvas_and_mask(client):
 
     # 2x: the 20x20 canvas is scaled and centered on a 40x40 canvas
     with client.websocket_connect("/api/ws") as ws:
-        _generate(client, ws, width=40, height=40, mode="inpaint_not_masked")
+        job = _generate(client, ws, width=40, height=40, mode="inpaint_not_masked")
 
+    # no auto-set: the canvas (and its size) are unchanged
+    assert (np.asarray(_img(client)) == 7).all()
+    # selecting the result resizes the canvas and the mask along with it
+    r = client.post("/api/canvas/thumb",
+                    json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
     img = _img(client)
     assert img.shape == (40, 40, 3)
     # the canvas is the fresh generation at the new size (wide ramp)
@@ -312,14 +372,18 @@ def test_inpaint_carries_metadata_to_canvas(client):
     _set_canvas(client)
     _mask_dot(client, 8, 8, 4)
     with client.websocket_connect("/api/ws") as ws:
-        _generate(client, ws, prompt="painted over", mode="inpaint_masked")
+        job = _generate(client, ws, prompt="painted over", mode="inpaint_masked")
+    # selecting the result puts its metadata onto the canvas
+    r = client.post("/api/canvas/thumb",
+                    json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
     meta = _canvas_meta(client)
     assert meta is not None
     assert meta["prompt"] == "painted over"
 
 
 def test_strokes_retain_canvas_metadata(client):
-    _set_canvas(client)
+    # empty canvas: the first result is auto-set and carries its metadata
     with client.websocket_connect("/api/ws") as ws:
         _generate(client, ws, prompt="before strokes", mode="generate")
     client.post("/api/canvas/stroke", json={

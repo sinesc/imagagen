@@ -145,19 +145,25 @@ class Canvas:
             )
             self._commit_locked(image, m, info)
 
-    def set_from_png_bytes(self, data: bytes) -> None:
+    def set_from_png_bytes(self, data: bytes, mask: np.ndarray | None = None) -> None:
         img = Image.open(BytesIO(data))
         arr = np.asarray(img.convert("RGB"))
         info = {k: v for k, v in (img.info or {}).items() if isinstance(v, str)}
         with self._lock:
-            # spec: the mask is retained across image generations (e.g. the
-            # first result auto-set into the canvas, or a thumb selection)
-            # unless the user clears it -- but a size change invalidates it
-            m = (
-                self._mask
-                if self._mask is not None and self._mask.shape == arr.shape[:2]
-                else np.zeros(arr.shape[:2], dtype=np.uint8)
-            )
+            # an explicit mask (e.g. the "inpaint not masked" plan's
+            # scaled mask, part of the resulting canvas state) wins; else
+            # spec: the mask is retained across image generations (e.g.
+            # a thumb selection, or the first-result auto-set on an empty
+            # canvas) unless the user clears it -- but a size change
+            # invalidates it
+            if mask is not None:
+                m = mask
+            else:
+                m = (
+                    self._mask
+                    if self._mask is not None and self._mask.shape == arr.shape[:2]
+                    else np.zeros(arr.shape[:2], dtype=np.uint8)
+                )
             self._commit_locked(arr, m, info)
 
     def clear(self) -> None:

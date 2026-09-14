@@ -266,8 +266,9 @@ function openStyleManage() {
 
 // ---------------- thumbnails ----------------
 // put a thumbnail's image onto the canvas. Results come from the job;
-// the inpaint source (green border) is not a job result, so its PNG is
-// fetched and re-uploaded.
+// the source image (green border, canvas snapshot at submit time --
+// inpaint always, generate when the canvas was non-empty) is not a job
+// result, so its PNG is fetched and re-uploaded.
 async function restoreThumb(t) {
   if (t.source) {
     const res = await fetch(t.url);
@@ -288,7 +289,7 @@ function renderThumbs() {
     const image = document.createElement("img");
     image.src = t.url;
     image.title = t.source
-      ? "inpaint source (click to restore)"
+      ? "source image (click to restore)"
       : `#${i} seed ${t.seed}`;
     if (t.source) image.classList.add("source");
     if (i === state.currentThumb) image.classList.add("selected");
@@ -1159,13 +1160,22 @@ function connectWS() {
         $("progress-label").textContent = msg.message;
         break;
       case "source_image":
-        // inpaint source snapshot, shown before any result arrives
+        // canvas snapshot at submit time (inpaint, or generate on a
+        // non-empty canvas), shown before any result arrives
         state.thumbs.unshift({ source: true, url: msg.url });
         renderThumbs();
         break;
       case "image":
         state.thumbs.push({ job: msg.job, index: msg.index, url: msg.url, seed: msg.seed });
-        if (state.currentThumb === -1) state.currentThumb = state.thumbs.length - 1;
+        if (state.currentThumb === -1) {
+          // highlight whatever is currently on the canvas: a source
+          // thumbnail exists exactly when the canvas keeps its image (no
+          // auto-set), otherwise the empty canvas got the first result
+          // auto-set
+          state.currentThumb = state.thumbs[0].source
+            ? 0
+            : state.thumbs.length - 1;
+        }
         renderThumbs();
         break;
       case "canvas_set":

@@ -1,7 +1,10 @@
 import time
 
+import numpy as np
+
 from imagagen.backends import GenerateRequest, MockBackend
 from imagagen.canvas import Canvas
+from imagagen.generation import InpaintPlan
 from imagagen.queue import GenerationQueue
 
 
@@ -70,15 +73,58 @@ def test_seed_minus_one_random():
 
 
 def test_first_image_auto_sets_canvas():
+    # generate on an EMPTY canvas auto-sets the first result (there is
+    # no displayed image to retain)
     backend = MockBackend()
     events = []
     q, canvas = _queue(backend, events)
     job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 2)
     _wait_done(q, job.id)
     assert canvas.has_image()
+    assert not any(e["type"] == "source_image" for e in events)
     assert any(e["type"] == "canvas_set" for e in events)
     # canvas_set emitted exactly once (first image only)
     assert sum(1 for e in events if e["type"] == "canvas_set") == 1
+
+
+def test_generate_retains_nonempty_canvas_as_source_thumbnail():
+    """Generate on a non-empty canvas does NOT auto-set: the displayed
+    image is kept until the user selects a result, and is published as
+    the source thumbnail."""
+    backend = MockBackend()
+    events = []
+    q, canvas = _queue(backend, events)
+    canvas.set_image(np.full((8, 8, 3), 5, dtype=np.uint8))
+    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 2)
+    _wait_done(q, job.id)
+    # canvas untouched (no auto-set, no canvas_set event)
+    np.testing.assert_array_equal(canvas.image, np.full((8, 8, 3), 5, dtype=np.uint8))
+    assert not any(e["type"] == "canvas_set" for e in events)
+    # the canvas snapshot is the job's source image
+    src = [e for e in events if e["type"] == "source_image"]
+    assert len(src) == 1
+    assert job.source_png is not None
+
+
+def test_inpaint_retains_canvas_until_thumb_selected():
+    # inpaint jobs do not auto-set either: the canvas keeps the displayed
+    # image (published as the source thumbnail) until the user selects a
+    # result
+    backend = MockBackend()
+    events = []
+    q, canvas = _queue(backend, events)
+    base = np.full((8, 8, 3), 5, dtype=np.uint8)
+    canvas.set_image(base)
+    mask = np.zeros((8, 8), dtype=np.uint8)
+    mask[3:5, 3:5] = 255
+    plan = InpaintPlan("inpaint_masked", base, mask, bbox=(0, 0, 8, 8))
+    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 1, plan=plan)
+    _wait_done(q, job.id)
+    # canvas untouched, no auto-set
+    np.testing.assert_array_equal(canvas.image, base)
+    assert not any(e["type"] == "canvas_set" for e in events)
+    # the source thumbnail is published, so the user can go back
+    next(e for e in events if e["type"] == "source_image")
 
 
 def test_interrupt_drops_pending_and_inflight():

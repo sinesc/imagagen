@@ -1,9 +1,11 @@
 """E2E: replicate the user's web-UI flow against the real SDXL backend.
 
-1. generate a bird image (canvas auto-set)
+1. generate a bird image (empty canvas: auto-set)
 2. paint a mask blob in the centre
 3. generate again with mode=inpaint_masked, denoise=0.6
-4. assert the masked region changed, the unmasked region was preserved
+4. select the first result thumbnail (inpaint keeps the canvas image
+   until the user selects a result)
+5. assert the masked region changed, the unmasked region was preserved
 """
 import hashlib
 import io
@@ -100,18 +102,22 @@ try:
     job2 = r.json()["job_id"]
     print("  job", job2, flush=True)
 
-    # 4. wait for the canvas to change (first image auto-set)
+    # 4. wait for the first result, then select its thumbnail (inpaint
+    # keeps the displayed canvas image until the user selects a result)
     t0 = time.time()
-    after = None
+    ready = False
     while time.time() - t0 < 420:
         time.sleep(2)
-        cur = c.get("/api/canvas.png").content
-        if hashlib.md5(cur).digest() != hashlib.md5(before).digest():
-            after = cur
+        if c.get(f"/api/thumb/{job2}/0.png").status_code == 200:
+            ready = True
             break
-    if after is None:
-        fail("canvas never changed (job may have errored; see log)")
-    print(f"  canvas updated after {time.time() - t0:.0f}s", flush=True)
+    if not ready:
+        fail("no result thumbnail (job may have errored; see log)")
+    r = c.post("/api/canvas/thumb", json={"job": job2, "index": 0})
+    if r.status_code != 200:
+        fail(f"canvas/thumb -> {r.status_code} {r.text}")
+    after = c.get("/api/canvas.png").content
+    print(f"  result selected after {time.time() - t0:.0f}s", flush=True)
 
     b = np.asarray(Image.open(io.BytesIO(before)).convert("RGB")).astype(int)
     a = np.asarray(Image.open(io.BytesIO(after)).convert("RGB")).astype(int)
