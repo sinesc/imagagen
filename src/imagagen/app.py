@@ -120,8 +120,8 @@ class _MockRegistry:
 class GenerateBody(BaseModel):
     prompt: str
     negative_prompt: str = ""
-    width: int = 1024
-    height: int = 1024
+    width: int = Field(default=1024, ge=64, le=4096)
+    height: int = Field(default=1024, ge=64, le=4096)
     steps: int = 25  # -1 = use the model configuration's steps
     cfg: float = 7.0  # -1 = use the model configuration's CFG
     seed: int = -1
