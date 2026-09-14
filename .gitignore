@@ -8,6 +8,7 @@ __pycache__/
 dist/
 ui-state.json
 imagagen.ini
+styles.csv
 
 # user data directories (created at runtime)
 models/*

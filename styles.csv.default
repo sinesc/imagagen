@@ -1,0 +1,8 @@
+﻿name,prompt,negative_prompt,optgroup
+Realism Negatives,,"digital art, painting, drawing, sketch, cartoon, anime, manga, render, disney, airbrush, illustration, rendered, blender, 3d, video game","Negatives"
+Analog Film,"analog film photo {prompt} . faded film, desaturated, 35mm photo, grainy, vignette, vintage, Kodachrome, Lomography, stained, highly detailed, found footage",,"Photo Styles"
+Cinematic,"cinematic film still {prompt} . shallow depth of field, vignette, highly detailed, high budget Hollywood movie, bokeh, cinemascope, moody, epic, gorgeous, film grain, grainy",,"Photo Styles"
+Photographic,"cinematic photo {prompt} . 35mm photograph, film, bokeh, professional, 4k, highly detailed",,"Photo Styles"
+Dunes,"in the dunes at the beach, dune grass, white sand, the beautiful turquoise ocean in the distance",,"Background"
+Icy Abstract,epic abstract freezing cold snowy icy background,,"Background"
+Space Ship,"{prompt}, in a highly detailed scifi space ship room, glass control panels, neon text, touch screens, white plastic walls, space windows, high tech consoles, reflective surfaces","buttons, knobs, keyboard, mouse, laptop, clutter","Background"
