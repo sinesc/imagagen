@@ -59,7 +59,8 @@ The toolbar's model dropdown + *segment* button then generate a person-part
 mask into the mask buffer (undoable). MediaPipe needs the `libEGL`/`libGLES`
 system libraries (Debian/Ubuntu: `apt install libegl1 libgles2`). Named model configurations
 live in `model-configs/`, generation-setting presets in `presets/` (both
-plain JSON, created/edited from the UI, both safe to edit by hand).
+plain JSON), and prompt styles in `styles.csv` (all created/edited from the
+UI and safe to edit by hand).
 
 Optional: put an improved VAE (`sdxl_vae.safetensors`, e.g. the ft-MSE
 "Improved VAE") in `models/`. The stock SDXL VAE overflows to NaN in fp16 for
@@ -105,10 +106,27 @@ setting is set to "Use model default" (CFG −1 in the form), in which case the
 configuration's value is used, then the backend built-in. The configuration's
 LoRAs are always loaded in front of the LoRAs you pick in the form.
 
+### Prompt styles
+
+Prompt styles live in `styles.csv` in the project root (A1111-style CSV:
+`name,prompt,negative_prompt,optgroup` — created from `styles.csv.default`,
+safe to edit by hand). In the UI, *+ Style* adds a dropdown row (styles are
+grouped by `optgroup`, everything sorted alphabetically); each row has a −
+to remove it, and the ⚙ next to *+ Style* opens the style configuration
+(create/edit/delete). Styles are applied to the prompt in list order before
+generation: a style's `{prompt}` placeholder is replaced with the user's
+prompt plus the styles applied before it, and without a placeholder the
+style text is appended to the end (same for the style's negative prompt).
+Generated images record the *raw* prompt plus the selected styles' names
+and contents in the PNG metadata, so re-importing an image restores the same
+prompt + style list. Imported images that reference styles missing from
+`styles.csv` get those styles added as in-memory temporaries under the
+"Session" optgroup (never written to the CSV).
+
 ### UI state persistence
 
 The web UI's last-used form inputs (model configuration, prompt, negative
-prompt, size, steps, CFG, seed, batch, sampler, scheduler, LoRAs, preset) are
+prompt, size, steps, CFG, seed, batch, sampler, scheduler, LoRAs, styles) are
 saved automatically to `ui-state.json` in the project root as you type and on
 every generation. On server start the UI restores them, so the page picks up
 where you left off. The file is plain JSON and safe to edit by hand;

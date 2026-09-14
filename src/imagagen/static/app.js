@@ -15,6 +15,7 @@ const state = {
   schedulers: [],
   loras: [], // lora names from /api/loras
   presets: [], // preset names
+  styles: [], // styles from /api/styles ({name, prompt, negative_prompt, optgroup, temporary})
   segModels: [], // segmentation models from /api/segmentation/models
   segClasses: [], // last-used person-mask class selection ([] = default)
 };
@@ -137,6 +138,132 @@ function renderMainLoras(items) {
 }
 const getLoras = () => readLoraList($("loras")).filter((x) => x[0]);
 
+// ---------------- style list rows (styles.csv) ----------------
+// One dropdown per selected style (grouped by optgroup, everything sorted
+// alphabetically) + a "-" button, mirroring the LoRA rows. "Session" styles
+// are server-side temporaries (imported from image metadata, not in the CSV).
+function fillStyleOptions(sel, selected) {
+  sel.innerHTML = "";
+  const groups = new Map(); // optgroup ("" = top level) -> [names]
+  for (const s of state.styles) {
+    const g = s.optgroup || "";
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(s.name);
+  }
+  for (const [g, names] of [...groups.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0])
+  )) {
+    names.sort((a, b) => a.localeCompare(b));
+    if (!g) {
+      names.forEach((n) => sel.append(opt(n, n)));
+    } else {
+      const og = el("optgroup", { label: g });
+      names.forEach((n) => og.append(opt(n, n)));
+      sel.append(og);
+    }
+  }
+  sel.value = selected || "";
+  if (selected && sel.value !== selected) {
+    // selected but (temporarily) absent from the list: keep it selectable
+    sel.append(opt(selected, `${selected} (temporary)`));
+    sel.value = selected;
+  }
+}
+
+function styleRow(name, onChange) {
+  const sel = el("select", { class: "style-name" });
+  fillStyleOptions(sel, name);
+  const rm = el("button", { type: "button", class: "mini style-rm", title: "remove" }, "−");
+  rm.onclick = () => { rm.closest(".style-row").remove(); onChange && onChange(); };
+  sel.onchange = () => onChange && onChange();
+  return el("div", { class: "style-row" }, sel, rm);
+}
+
+function renderMainStyles(names) {
+  const c = $("styles");
+  c.innerHTML = "";
+  (names || []).forEach((n) => c.append(styleRow(n, scheduleSaveUiState)));
+}
+const getStyles = () => [...$("styles").querySelectorAll(".style-row")]
+  .map((r) => r.querySelector(".style-name").value)
+  .filter(Boolean);
+
+async function loadStyles() {
+  const r = await (await fetch("/api/styles")).json();
+  state.styles = r.styles || [];
+  // re-render existing rows against the fresh list, keeping the selection
+  renderMainStyles(getStyles());
+}
+
+function openStyleDialog(existing) {
+  const s = existing || {};
+  const nameIn = el("input", { type: "text", maxlength: "120" });
+  nameIn.value = s.name || "";
+  const groupIn = el("input", { type: "text", maxlength: "80" });
+  groupIn.value = s.optgroup || "";
+  const promptIn = el("textarea", { class: "style-prompt", rows: "4" });
+  promptIn.value = s.prompt || "";
+  const negIn = el("textarea", { class: "style-prompt", rows: "3" });
+  negIn.value = s.negative_prompt || "";
+  const box = el("div", { class: "style-dialog" },
+    el("label", {}, "name", nameIn),
+    el("label", { title: "optgroup: groups styles in the UI dropdown (\"Session\" is reserved for imported temporary styles)" }, "group", groupIn),
+    el("label", { title: "{prompt} is replaced with the prompt so far at generation time; without it the text is appended to the prompt" }, "prompt", promptIn),
+    el("label", {}, "negative prompt", negIn));
+  openDialog(existing ? "Edit style" : "New style", box, async () => {
+    const name = nameIn.value.trim();
+    if (!name) { dialogError("name is required"); return false; }
+    try {
+      await api("/api/styles", {
+        name,
+        optgroup: groupIn.value.trim(),
+        prompt: promptIn.value,
+        negative_prompt: negIn.value,
+      });
+      await loadStyles();
+      scheduleSaveUiState(0);
+    } catch (e) {
+      dialogError(e.message);
+      return false;
+    }
+  });
+}
+
+function openStyleManage() {
+  const list = el("div", { class: "preset-manage" });
+  const newBtn = el("button", { class: "mini", type: "button" }, "+ New style");
+  const render = () => {
+    list.querySelectorAll(".preset-manage-row").forEach((r) => r.remove());
+    if (!state.styles.length) list.append(el("div", { class: "muted" }, "no styles yet"));
+    state.styles.forEach((s) => {
+      const nameEl = el("span", { class: "preset-manage-name" },
+        s.name + (s.optgroup ? ` — ${s.optgroup}` : "") + (s.temporary ? " (temporary)" : ""));
+      const edit = el("button", { class: "mini", type: "button", title: s.temporary ? "copy to styles.csv" : "edit" }, "✎");
+      const del = el("button", { class: "mini", type: "button", title: s.temporary ? "drop (temporary styles are not in styles.csv)" : "delete" }, "✗");
+      edit.onclick = () => { closeDialog(); openStyleDialog(s); };
+      del.onclick = async () => {
+        if (!confirm(`Delete style "${s.name}"?`)) return;
+        try {
+          if (s.temporary) {
+            // temporaries are in-memory only: drop the row, keep everything else
+            renderMainStyles(getStyles().filter((n) => n !== s.name));
+          } else {
+            await api("/api/styles/delete", { name: s.name });
+            await loadStyles();
+          }
+          scheduleSaveUiState(0);
+        } catch (e) { setStatus(e.message); return; }
+        render();
+      };
+      list.append(el("div", { class: "preset-manage-row" }, nameEl, edit, del));
+    });
+    list.append(newBtn);
+  };
+  render();
+  newBtn.onclick = () => { closeDialog(); openStyleDialog(null); };
+  openDialog("Style configuration", el("div", { class: "preset-manage-wrap" }, list), null, "Close");
+}
+
 // ---------------- thumbnails ----------------
 // put a thumbnail's image onto the canvas. Results come from the job;
 // the inpaint source (green border) is not a job result, so its PNG is
@@ -216,6 +343,7 @@ async function generate() {
     sampler: $("sampler").value || null, // null = "use model default"
     scheduler: $("scheduler").value || null,
     loras: getLoras(),
+    styles: getStyles(),
     model_id: $("model").value || null,
     mode: $("mode").value,
     denoise: parseFloat($("denoise").value),
@@ -746,6 +874,13 @@ function wireConfig() {
     row.querySelector("select").focus();
   };
   $("preset-manage").onclick = openPresetManage;
+  $("style-add").onclick = () => {
+    const row = styleRow("", scheduleSaveUiState);
+    $("styles").append(row);
+    row.querySelector("select").focus();
+    scheduleSaveUiState();
+  };
+  $("style-manage").onclick = openStyleManage;
   // apply on change, then reset to "—" so the same preset can be
   // re-selected (change only fires on a different selection)
   $("preset").onchange = (e) => {
@@ -768,7 +903,7 @@ async function importPng(file) {
     const { meta, width, height } = await metaRes.json();
     const up = await fetch("/api/canvas/upload", { method: "POST", body: await file.arrayBuffer() });
     if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
-    applyPngMeta(meta, width, height);
+    await applyPngMeta(meta, width, height);
     viewRefresh();
     setStatus(meta ? `imported ${file.name} (metadata applied)` : `loaded ${file.name} onto the canvas (no metadata)`);
   } catch (e) {
@@ -776,7 +911,7 @@ async function importPng(file) {
   }
 }
 
-function applyPngMeta(meta, width, height) {
+async function applyPngMeta(meta, width, height) {
   if (!meta) {
     $("width").value = width;
     $("height").value = height;
@@ -793,6 +928,24 @@ function applyPngMeta(meta, width, height) {
     if (meta[id] && [...sel.options].some((o) => o.value === meta[id])) sel.value = meta[id];
   }
   if (meta.loras?.length) renderMainLoras(parseMetaLoras(meta.loras));
+  // styles travel as name + actual contents; the server registers missing
+  // ones as in-memory "Session" temporaries (not written to styles.csv)
+  if (meta.styles?.length) {
+    renderMainStyles(meta.styles.map((s) => s.name));
+    try {
+      const r = await api("/api/styles/temp", {
+        styles: meta.styles.map((s) => ({
+          name: s.name,
+          prompt: s.prompt || "",
+          negative_prompt: s.negative_prompt || "",
+        })),
+      });
+      state.styles = r.styles;
+      renderMainStyles(getStyles()); // options now include the temporaries
+    } catch (e) {
+      console.error("styles/temp:", e);
+    }
+  }
   // meta "Model" carries the model's display name; match it against the
   // loaded configurations (fall back to id for robustness)
   if (meta.model) {
@@ -885,6 +1038,7 @@ function readUiState() {
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
     loras: getLoras(),
+    styles: getStyles(),
     // preset is not persisted either: the dropdown always starts at "—"
     seg_model: $("seg-model").value || null,
     seg_classes: state.segClasses,
@@ -911,6 +1065,7 @@ function applyUiState(st) {
     if (st[key] !== undefined && st[key] !== null) $(elm).value = st[key];
   }
   renderMainLoras(st.loras || []);
+  renderMainStyles(st.styles || []);
   // display-only restore: the model itself is NOT preloaded (it loads
   // lazily on the next generation, matching the registry design)
   if (st.model) $("model").value = st.model;
@@ -936,14 +1091,16 @@ async function init() {
   let u = null;
   let pr = { presets: [] };
   let lr = { loras: [] };
+  let sy = { styles: [] };
   let sm = { models: [] };
   try {
-    [m, s, u, pr, lr, sm] = await Promise.all([
+    [m, s, u, pr, lr, sy, sm] = await Promise.all([
       fetch("/api/models").then((r) => r.json()),
       fetch("/api/samplers").then((r) => r.json()),
       fetch("/api/ui-state").then((r) => (r.ok ? r.json() : null)),
       fetch("/api/presets").then((r) => r.json()),
       fetch("/api/loras").then((r) => r.json()),
+      fetch("/api/styles").then((r) => (r.ok ? r.json() : { styles: [] })),
       fetch("/api/segmentation/models").then((r) => (r.ok ? r.json() : { models: [] })),
     ]);
   } catch (e) {
@@ -960,6 +1117,7 @@ async function init() {
   state.schedulers = s.schedulers;
   state.presets = pr.presets;
   state.loras = lr.loras;
+  state.styles = sy.styles;
   const sel = $("model");
   sel.innerHTML = "";
   m.models.forEach((x) => {

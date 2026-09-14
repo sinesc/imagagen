@@ -48,6 +48,17 @@
         </label>
       </div>
       <div class="row">
+        <label title="Styles (styles.csv), applied to the prompt in list order before generation: a style's {prompt} placeholder is replaced by the prompt so far, otherwise the style text is appended">Styles
+          <span class="styles">
+            <span id="styles" class="style-list"></span>
+            <span class="mini-btns">
+              <button id="style-add" type="button" class="mini" title="add a style">+ Style</button>
+              <button id="style-manage" class="icon" title="style configuration (create / edit / delete styles in styles.csv)">⚙</button>
+            </span>
+          </span>
+        </label>
+      </div>
+      <div class="row">
         <label class="mode-label" title="Generate: new image — Inpaint: regenerate the masked area — Outpaint: regenerate the whole image (img2img/outpaint), masked content protected">
           Mode
           <select id="mode">

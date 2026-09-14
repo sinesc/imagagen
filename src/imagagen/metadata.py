@@ -3,10 +3,18 @@
 Generated images carry a `parameters` chunk (plus the individual standard
 fields Forge also reads) so Forge can import them and so "Import" in imagagen
 can round-trip settings.
+
+imagagen extension: styles travel on a dedicated `Styles: [json]` line
+AFTER the comma-separated meta line (each entry carries the style's name
+plus its actual prompt / negative-prompt contents). The `parameters` text
+then records the user's raw prompt, not the style-applied one -- re-import
+re-applies the styles exactly like a new generation would. A1111/Forge
+ignore the extra trailing line.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -41,8 +49,13 @@ def build_parameters(
     model_name: str,
     model_hash: str,
     loras: list[tuple[str, float]] | None = None,
+    styles: list[dict] | None = None,
 ) -> str:
-    """Format the `parameters` text chunk exactly like A1111/Forge does."""
+    """Format the `parameters` text chunk exactly like A1111/Forge does.
+
+    ``styles`` (imagagen extension): entries with "name", "prompt" and
+    "negative_prompt"; serialized as JSON on a trailing `Styles:` line.
+    """
     lines = [prompt]
     if negative_prompt:
         lines.append(f"Negative prompt: {negative_prompt}")
@@ -60,6 +73,17 @@ def build_parameters(
         tail.append(f"Lora: {name}@{weight:g}")
     tail.append(f"Version: {_VERSION}")
     lines.append(", ".join(tail))
+    if styles:
+        entries = [
+            {
+                "name": s.get("name", ""),
+                "prompt": s.get("prompt", ""),
+                "negative_prompt": s.get("negative_prompt", ""),
+            }
+            for s in styles
+        ]
+        # no newlines in the JSON (prompts keep theirs as \n escapes)
+        lines.append("Styles: " + json.dumps(entries, ensure_ascii=False))
     return "\n".join(lines)
 
 
@@ -124,6 +148,17 @@ def parse_parameters(text: str) -> dict[str, Any]:
             out["version"] = value
         else:
             out[key] = value
+    # imagagen extension: a trailing `Styles: [json]` line (kept off the
+    # meta line on purpose: style prompts contain ", " and would split it)
+    for line in lines:
+        if line.startswith("Styles:"):
+            try:
+                styles = json.loads(line.split(":", 1)[1].strip())
+                if isinstance(styles, list):
+                    out["styles"] = styles
+            except json.JSONDecodeError:
+                pass
+            break
     return out
 
 

@@ -37,6 +37,12 @@ class Job:
     finished: set[int] = field(default_factory=set)  # indices settled (ok or error)
     first_emitted: bool = False
     done_emitted: bool = False
+    # image metadata: the user's RAW prompt (request.prompt is the
+    # style-applied one) plus the styles' actual contents, so the PNG
+    # round-trips as "same prompt + same style list"
+    meta_prompt: str | None = None
+    meta_negative: str | None = None
+    meta_styles: list[dict] | None = None
 
     @property
     def completed(self) -> int:
@@ -97,12 +103,17 @@ class GenerationQueue:
         request: GenerateRequest,
         batch_size: int,
         plan: InpaintPlan | None = None,
+        meta_prompt: str | None = None,
+        meta_negative: str | None = None,
+        meta_styles: list[dict] | None = None,
     ) -> Job:
         import random
 
         base_seed = random.randrange(2**31) if request.seed == -1 else request.seed
         job = Job(id=self._next_job_id, model_id=model_id, request=request,
-                  batch_size=batch_size, base_seed=base_seed, plan=plan)
+                  batch_size=batch_size, base_seed=base_seed, plan=plan,
+                  meta_prompt=meta_prompt, meta_negative=meta_negative,
+                  meta_styles=meta_styles)
         if plan is not None:
             # the inpaint source image, for the UI's source thumbnail
             # (green border): lets the user go back to it when none of the
@@ -205,7 +216,7 @@ class GenerationQueue:
             out_image, new_mask = job.plan.postprocess(result.image)
         else:
             out_image, new_mask = result.image, None
-        png, info = _result_to_png(backend, req, result, out_image)
+        png, info = _result_to_png(backend, req, result, out_image, job)
         job.results[task.index] = png
         self.emit({"type": "image", "job": job.id, "index": task.index,
                    "seed": result.seed, "url": f"/api/thumb/{job.id}/{task.index}.png"})
@@ -241,7 +252,8 @@ def _plain_png(image: np.ndarray) -> bytes:
 
 
 def _result_to_png(
-    backend: ModelBackend, req: GenerateRequest, result, image: np.ndarray
+    backend: ModelBackend, req: GenerateRequest, result, image: np.ndarray,
+    job: Job | None = None,
 ) -> tuple[bytes, dict]:
     """Return (PNG bytes, text-chunk dict). The dict carries the metadata
     onto the canvas so saves of the canvas keep it too."""
@@ -252,10 +264,12 @@ def _result_to_png(
     from . import metadata
 
     # width/height describe the final (possibly blended/resized) image, not
-    # the raw generation size
+    # the raw generation size; the prompt/negative prompt are the user's
+    # raw ones (styles are recorded separately, not pre-applied)
     params = metadata.build_parameters(
-        prompt=req.prompt,
-        negative_prompt=req.negative_prompt,
+        prompt=job.meta_prompt if (job and job.meta_prompt is not None) else req.prompt,
+        negative_prompt=(job.meta_negative if (job and job.meta_negative is not None)
+                         else req.negative_prompt),
         steps=req.steps,
         sampler=req.sampler or backend.default_sampler,
         scheduler=req.scheduler or backend.default_scheduler,
@@ -266,6 +280,7 @@ def _result_to_png(
         model_name=backend.name,
         model_hash=backend.model_hash,
         loras=req.loras,
+        styles=job.meta_styles if job is not None else None,
     )
     img, pnginfo = metadata.attach_metadata(Image.fromarray(image), params)
     buf = BytesIO()

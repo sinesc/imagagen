@@ -9,24 +9,30 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
-
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 from pydantic import BaseModel, Field, ValidationError
 
+from . import metadata
 from .backends import DEFAULT_CFG, GenerateRequest, ModelBackend
 from .canvas import Canvas
 from .config import Config, ensure_dirs, load_config
 from .generation import INPAINT_PADDING, GenerationError, with_inpaint
-from .model_configs import ConfigError, ConfigStore, ModelConfig, ModelConfigUpsert, resolve_settings
-from . import metadata
+from .model_configs import (
+    ConfigError,
+    ConfigStore,
+    ModelConfig,
+    ModelConfigUpsert,
+    resolve_settings,
+)
 from .models import ModelRegistry, list_loras
 from .paths import next_output_path
 from .presets import Preset, PresetError, PresetStore
 from .queue import GenerationQueue
 from .segmentation import SegmentationError, SegmentationService
+from .styles import Style, StyleStore, apply_styles
 from .uistate import UiState, UiStateStore
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -123,6 +129,9 @@ class GenerateBody(BaseModel):
     sampler: str | None = None
     scheduler: str | None = None
     loras: list[tuple[str, float]] = Field(default_factory=list)
+    # ordered list of style names (styles.csv), applied to the prompt /
+    # negative prompt before generation
+    styles: list[str] = Field(default_factory=list)
     model_id: str | None = None
     mode: str = "generate"  # "generate" | "inpaint_masked" | "inpaint_not_masked"
     denoise: float = Field(1.0, ge=0.0, le=1.0)  # denoising strength, inpaint only
@@ -218,6 +227,7 @@ def create_app(
     # for unconfigured models (Phase 4)
     app.state.config_store = ConfigStore(config, lambda: registry.list())
     app.state.preset_store = PresetStore(config.presets_dir)
+    app.state.style_store = StyleStore(config.root / "styles.csv")
     app.state.segmentation = segmentation
     app.state.last_config_id: str | None = None
 
@@ -356,6 +366,37 @@ def create_app(
             return JSONResponse({"error": f"unknown preset: {name!r}"}, status_code=404)
         return {"ok": True}
 
+    # --- styles (styles.csv + in-memory "Session" temporaries) ---
+    @app.get("/api/styles")
+    def styles_list() -> dict:
+        return {"styles": app.state.style_store.all()}
+
+    @app.post("/api/styles")
+    def style_save(style: Style) -> dict:
+        # Style is validated by FastAPI (422); the store upserts by name
+        app.state.style_store.save(style)
+        return {"ok": True}
+
+    @app.post("/api/styles/delete")
+    def style_delete(body: dict) -> dict:
+        name = body.get("name", "")
+        if not app.state.style_store.delete(name):
+            return JSONResponse({"error": f"unknown style: {name!r}"}, status_code=404)
+        return {"ok": True}
+
+    @app.post("/api/styles/temp")
+    def style_temp(body: dict) -> dict:
+        """Register styles from imported image metadata that are missing
+        from styles.csv as in-memory temporaries ("Session" optgroup, never
+        persisted). Existing file styles win; temporaries are updated."""
+        for s in body.get("styles") or []:
+            try:
+                style = Style.model_validate(s)
+            except ValidationError:
+                continue
+            app.state.style_store.add_temporary(style)
+        return {"styles": app.state.style_store.all()}
+
     # --- generation ---
     @app.post("/api/generate")
     def generate(body: GenerateBody) -> dict:
@@ -385,9 +426,27 @@ def create_app(
         except ConfigError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         model_id = entry.model_id
+        # Styles are applied right before the prompt reaches the model
+        # (in list order; {prompt} replaced with the prompt so far).
+        # The raw (unapplied) prompt and the style *contents* are kept for
+        # the image metadata: the PNG must round-trip as "same prompt +
+        # same style list", not as the pre-applied text.
+        prompt, negative_prompt = apply_styles(
+            body.prompt, body.negative_prompt, body.styles,
+            app.state.style_store.get,
+        )
+        meta_styles = [
+            {
+                "name": name,
+                "prompt": (s := app.state.style_store.get(name)).prompt,
+                "negative_prompt": s.negative_prompt,
+            }
+            for name in body.styles
+            if app.state.style_store.get(name) is not None
+        ]
         req = GenerateRequest(
-            prompt=body.prompt,
-            negative_prompt=body.negative_prompt,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
             width=body.width,
             height=body.height,
             # rsteps is None only when the user used the -1 sentinel and
@@ -406,7 +465,10 @@ def create_app(
                                 padding=body.mask_padding)
         except GenerationError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-        job = queue.submit(model_id, req, body.batch_size, plan=plan)
+        job = queue.submit(model_id, req, body.batch_size, plan=plan,
+                           meta_prompt=body.prompt,
+                           meta_negative=body.negative_prompt,
+                           meta_styles=meta_styles)
         return {"job_id": job.id}
 
     @app.post("/api/interrupt")

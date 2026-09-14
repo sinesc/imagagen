@@ -111,6 +111,20 @@ button.mini:hover { background: #383838; }
   border-radius: 4px; padding: 0.2rem 0.3rem; font-size: 0.8rem;
 }
 
+/* style list: dropdown (optgroups from styles.csv) + remove, one per row,
+   plus the "+ Style" / gear buttons */
+.styles { display: flex; flex-direction: column; gap: 0.25rem; }
+.style-list { display: flex; flex-direction: column; gap: 0.2rem; }
+.style-row { display: flex; gap: 0.25rem; }
+.style-row select { flex: 1; min-width: 0; }
+.style-row select, .style-row button {
+  background: #222; color: #eee; border: 1px solid #444;
+  border-radius: 4px; padding: 0.2rem 0.3rem; font-size: 0.8rem;
+}
+/* the "+ Style" / gear row spans the full list width: "+ Style" stretches
+   so the gear's right edge sits under the rows' remove (−) buttons */
+#style-add { flex: 1; }
+
 /* thumbnails: below the parameter box in the sidebar, wrapping rows */
 #thumbs {
   display: flex;
@@ -343,9 +357,14 @@ button.danger:hover { background: #a33; }
   font-size: 0.8rem;
   color: #aaa;
 }
-#dialog-body input, #dialog-body select {
+#dialog-body input, #dialog-body select, #dialog-body textarea {
   background: #222; color: #eee; border: 1px solid #444;
   border-radius: 4px; padding: 0.3rem 0.4rem; font-size: 0.85rem;
+}
+/* style dialog: prompt / negative prompt textareas */
+#dialog-body textarea.style-prompt {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  font-family: inherit; line-height: 1.3;
 }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 .dialog-error {
