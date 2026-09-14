@@ -188,6 +188,14 @@ class SegmentationMaskBody(BaseModel):
     classes: list[str] = Field(default_factory=list)  # class labels to union
 
 
+class UndoRedoBody(BaseModel):
+    target: str = "draw"  # "mask" or "draw"
+
+
+class SelectBody(BaseModel):
+    id: str
+
+
 def create_app(
     config: Config | None = None,
     backend: ModelBackend | None = None,
@@ -546,11 +554,22 @@ def create_app(
     def list_brushes() -> dict:
         return {"brushes": canvas.list_brushes()}
 
+    def canvas_flags() -> dict:
+        return {
+            "undo_mask": canvas.can_undo_mask(),
+            "redo_mask": canvas.can_redo_mask(),
+            "undo_draw": canvas.can_undo_draw(),
+            "redo_draw": canvas.can_redo_draw(),
+        }
+
     @app.post("/api/canvas/upload")
     async def upload_canvas(request: Request) -> dict:
         data = await request.body()
-        canvas.set_from_png_bytes(data)
-        return {"ok": True, "canvas": canvas.has_image()}
+        try:
+            canvas.import_image(data)
+        except Exception:
+            return JSONResponse({"error": "could not read image"}, status_code=400)
+        return {"ok": True, "canvas": canvas.has_image(), **canvas_flags()}
 
     @app.post("/api/png-meta")
     async def png_meta(request: Request) -> dict:
@@ -568,30 +587,35 @@ def create_app(
     @app.post("/api/canvas/thumb")
     def set_canvas_from_thumb(body: ThumbBody) -> dict:
         job = queue.job(body.job)
-        data = job.results.get(body.index) if job else None
-        if data is None:
+        if job is None or body.index not in job.results:
             return {"error": "no such thumbnail"}
-        # "inpaint not masked": the plan's scaled mask is part of the
-        # resulting canvas state (thumbnails show it, so selecting one
-        # restores it)
-        plan_mask = job.plan.new_mask if job.plan is not None else None
-        canvas.set_from_png_bytes(data, mask=plan_mask)
-        return {"ok": True}
+        try:
+            canvas.set_current(f"job:{body.job}:{body.index}")
+        except ValueError as e:
+            return {"error": str(e)}
+        return {"ok": True, **canvas_flags()}
+
+    @app.post("/api/canvas/select")
+    def select_canvas_image(body: SelectBody) -> dict:
+        try:
+            canvas.set_current(body.id)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {"ok": True, **canvas_flags()}
 
     @app.post("/api/canvas/undo")
-    def canvas_undo() -> dict:
-        canvas.undo()
-        return {"ok": True, "undo": canvas.can_undo(), "redo": canvas.can_redo()}
+    def canvas_undo(body: UndoRedoBody) -> dict:
+        if body.target not in ("mask", "draw"):
+            return JSONResponse({"error": "unknown target"}, status_code=422)
+        canvas.undo("mask" if body.target == "mask" else "image")
+        return {"ok": True, **canvas_flags()}
 
     @app.post("/api/canvas/redo")
-    def canvas_redo() -> dict:
-        canvas.redo()
-        return {"ok": True, "undo": canvas.can_undo(), "redo": canvas.can_redo()}
-
-    @app.post("/api/canvas/clear")
-    def canvas_clear() -> dict:
-        canvas.clear()
-        return {"ok": True}
+    def canvas_redo(body: UndoRedoBody) -> dict:
+        if body.target not in ("mask", "draw"):
+            return JSONResponse({"error": "unknown target"}, status_code=422)
+        canvas.redo("mask" if body.target == "mask" else "image")
+        return {"ok": True, **canvas_flags()}
 
     @app.post("/api/canvas/stroke")
     def canvas_stroke(body: StrokeBody) -> dict:
@@ -611,7 +635,7 @@ def create_app(
             )
         except (ValueError, KeyError) as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-        return {"ok": True, "undo": canvas.can_undo(), "redo": canvas.can_redo()}
+        return {"ok": True, **canvas_flags()}
 
     @app.post("/api/canvas/mask")
     def canvas_mask_op(body: MaskOpBody) -> dict:
@@ -624,8 +648,7 @@ def create_app(
             "erode": lambda: canvas.mask_erode(body.px),
             "clear": lambda: canvas.mask_clear(),
         }[body.op]()
-        return {"ok": True, "changed": changed,
-                "undo": canvas.can_undo(), "redo": canvas.can_redo()}
+        return {"ok": True, "changed": changed, **canvas_flags()}
 
     # --- person mask generation (Phase 5) ---
     # Segmentation models are .tflite files in models/segmentation/; the
@@ -655,16 +678,16 @@ def create_app(
         except SegmentationError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         # union with the existing mask (element-wise max of the alpha);
-        # a user who wants a fresh mask clears it first
-        existing = canvas.mask
+        # a user who wants a fresh mask clears it first. The mask is
+        # image-independent, so union in the current image's pixel space.
+        existing = canvas.mask_scaled()
         merged = seg if existing is None else np.maximum(existing, seg)
         changed = canvas.set_mask(merged)
         return {
             "ok": True,
             "changed": changed,
             "pixels": int((merged > 0).sum()),
-            "undo": canvas.can_undo(),
-            "redo": canvas.can_redo(),
+            **canvas_flags(),
         }
 
     # --- save ---

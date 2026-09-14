@@ -31,7 +31,8 @@ class Job:
     batch_size: int
     base_seed: int
     plan: InpaintPlan | None = None  # inpaint modes: maps output to canvas state
-    source_png: bytes | None = None  # inpaint modes: source canvas snapshot
+    source_png: bytes | None = None  # source canvas snapshot (strip thumbnail)
+    source_image_id: str | None = None  # entity id of the source canvas image
     interrupted: bool = False
     results: dict[int, bytes] = field(default_factory=dict)  # index -> PNG bytes
     finished: set[int] = field(default_factory=set)  # indices settled (ok or error)
@@ -97,6 +98,22 @@ class GenerationQueue:
         with self._job_lock:
             return self._jobs.get(job_id)
 
+    def live_image_ids(self) -> set[str]:
+        """Entity ids referenced by a live job: every result plus each job's
+        source image. The canvas uses this (via ``anchor``) to decide what to
+        evict."""
+        with self._job_lock:
+            return self._live_image_ids_locked()
+
+    def _live_image_ids_locked(self) -> set[str]:
+        ids: set[str] = set()
+        for j in self._jobs.values():
+            if j.source_image_id is not None:
+                ids.add(j.source_image_id)
+            for idx in j.results:
+                ids.add(f"job:{j.id}:{idx}")
+        return ids
+
     def submit(
         self,
         model_id: str,
@@ -114,18 +131,28 @@ class GenerationQueue:
                   batch_size=batch_size, base_seed=base_seed, plan=plan,
                   meta_prompt=meta_prompt, meta_negative=meta_negative,
                   meta_styles=meta_styles)
-        if plan is not None:
-            # the inpaint source image, for the UI's source thumbnail
-            # (green border): lets the user go back to it when none of the
-            # results turn out good
-            job.source_png = _plain_png(plan.base_image)
-        elif self.canvas.has_image():
-            # generate: the image currently displayed on the canvas, kept
-            # as a source thumbnail (green border) the same way
-            job.source_png = _plain_png(self.canvas.image)
+        job.source_image_id = self.canvas.current_id()
+        if job.source_image_id is not None:
+            if plan is not None:
+                # the inpaint source image, for the UI's source thumbnail
+                # (green border): lets the user go back to it when none of
+                # the results turn out good
+                job.source_png = _plain_png(plan.base_image)
+            else:
+                # generate: the image currently displayed on the canvas, kept
+                # as a source thumbnail (green border) the same way
+                job.source_png = _plain_png(self.canvas.image)
         with self._job_lock:
+            # finished jobs are no longer referenced: drop them so their
+            # result entities can be evicted (in-flight jobs stay)
+            for jid in list(self._jobs.keys()):
+                if self._jobs[jid].done_emitted and jid != self._next_job_id:
+                    del self._jobs[jid]
             self._jobs[self._next_job_id] = job
             self._next_job_id += 1
+            live = self._live_image_ids_locked()
+        self.canvas.anchor(live)
+        self.canvas.evict_stale()
         with self._cond:
             for i in range(batch_size):
                 self._pending.append(_Task(job.id, i, base_seed + i))
@@ -138,6 +165,7 @@ class GenerationQueue:
             # canvas keeps its image (no auto-set); an empty-canvas
             # generate job has none, so the first result auto-sets.
             self.emit({"type": "source_image", "job": job.id,
+                       "image_id": job.source_image_id,
                        "url": f"/api/thumb/{job.id}/source.png"})
         return job
 
@@ -224,8 +252,14 @@ class GenerationQueue:
             out_image, new_mask = result.image, None
         png, info = _result_to_png(backend, req, result, out_image, job)
         job.results[task.index] = png
+        # register the result as a persistent canvas entity (a new image with
+        # an empty draw history); an inpaint-not-masked result carries the
+        # mask that belongs to it
+        plan_mask = job.plan.new_mask if job.plan is not None else None
+        eid = self.canvas.add_result(job.id, task.index, png, info, plan_mask)
         self.emit({"type": "image", "job": job.id, "index": task.index,
-                   "seed": result.seed, "url": f"/api/thumb/{job.id}/{task.index}.png"})
+                   "seed": result.seed, "image_id": eid,
+                   "url": f"/api/thumb/{job.id}/{task.index}.png"})
         if not job.first_emitted:
             job.first_emitted = True
             # the first completed image is automatically set in the canvas
@@ -234,12 +268,7 @@ class GenerationQueue:
             # image (selectable via the green-bordered source thumbnail)
             # until the user picks one of the freshly generated thumbnails.
             if job.source_png is None:
-                # carry the result's PNG text chunks onto the canvas so a
-                # later save keeps the generation metadata
-                if new_mask is not None:
-                    self.canvas.set_image(out_image, mask=new_mask, info=info)
-                else:
-                    self.canvas.set_image_keep_mask(out_image, info=info)
+                self.canvas.set_current(eid)
                 self.emit({"type": "canvas_set", "job": job.id,
                            "index": task.index})
         self._settle(job, task.index)

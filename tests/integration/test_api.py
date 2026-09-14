@@ -138,7 +138,9 @@ def test_interrupt_drops_partial(client, tmp_path):
         assert client.get(f"/api/thumb/{job_id}/0.png").status_code == 404
 
 
-def test_canvas_upload_undo_redo(client):
+def test_canvas_upload_creates_new_image_not_undo_step(client):
+    """Uploads create a new image entity (and evict the previous one), they
+    do NOT push an undo step: the undo stack is the per-image draw stack."""
     img = np.full((8, 8, 3), 200, dtype=np.uint8)
     buf = __import__("io").BytesIO()
     from PIL import Image
@@ -150,17 +152,21 @@ def test_canvas_upload_undo_redo(client):
     data = client.get("/api/canvas.png").content
     assert Image.open(__import__("io").BytesIO(data)).size == (8, 8)
 
-    # upload a second image, then undo back to the first
+    # stroke the first image (its draw stack now has one step)
+    client.post("/api/canvas/stroke", json={
+        "points": [[4.0, 4.0]], "size": 4, "color": "#ff0000", "target": "image"})
+
+    # upload a second image: a NEW entity, the first is evicted
     img2 = np.zeros((8, 8, 3), dtype=np.uint8)
     buf2 = __import__("io").BytesIO()
     Image.fromarray(img2).save(buf2, format="PNG")
     client.post("/api/canvas/upload", content=buf2.getvalue())
     assert Image.open(__import__("io").BytesIO(client.get("/api/canvas.png").content)) \
         .getpixel((0, 0)) == (0, 0, 0)
-    client.post("/api/canvas/undo")
-    arr = np.asarray(Image.open(__import__("io").BytesIO(client.get("/api/canvas.png").content)))
-    assert arr[0, 0, 0] == 200
-    client.post("/api/canvas/redo")
+    # the second image's draw stack is empty (nothing to undo), and the
+    # stroke on the evicted first image is gone
+    r = client.post("/api/canvas/undo", json={"target": "draw"})
+    assert r.json()["undo_draw"] is False
     arr = np.asarray(Image.open(__import__("io").BytesIO(client.get("/api/canvas.png").content)))
     assert arr[0, 0, 0] == 0
 

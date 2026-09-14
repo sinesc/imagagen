@@ -9,9 +9,18 @@ and the (skipping) browser test in tests/ui/test_segmentation_ui.py.
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from imagagen.canvas import Canvas
 from imagagen.segmentation import SegmentationError, SegmentationService
+
+
+def _png(arr: np.ndarray) -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 class FakeM:
@@ -177,8 +186,7 @@ def test_generate_rejects_empty_selection(tmp_path):
 
 def test_canvas_set_mask_replaces_and_undoes():
     c = Canvas()
-    img = np.full((4, 4, 3), 9, np.uint8)
-    c.set_image(img)
+    c.import_image(_png(np.full((4, 4, 3), 9, np.uint8)))
     c.set_mask(np.full((4, 4), 30, np.uint8))  # some pre-existing mask
     assert (c.mask == 30).all()
 
@@ -187,18 +195,21 @@ def test_canvas_set_mask_replaces_and_undoes():
     assert c.set_mask(new)  # changed -> one undo step
     assert np.array_equal(c.mask, new)
 
-    c.undo()
+    c.undo("mask")
     assert (c.mask == 30).all()
-    c.redo()
+    c.redo("mask")
     assert np.array_equal(c.mask, new)
     # the image was not touched
-    assert np.array_equal(c.image, img)
+    assert (c.image == 9).all()
 
 
-def test_canvas_set_mask_errors():
+def test_set_mask_accepts_any_size_without_image():
+    # the mask is image-independent: settable with or without a canvas image
+    # and at any size (it is scaled for display/use against the image)
     c = Canvas()
-    with pytest.raises(ValueError, match="empty canvas"):
-        c.set_mask(np.zeros((4, 4), np.uint8))
-    c.set_image(np.zeros((4, 4, 3), np.uint8))
-    with pytest.raises(ValueError, match="does not match"):
-        c.set_mask(np.zeros((3, 3), np.uint8))
+    assert c.set_mask(np.zeros((3, 3), np.uint8))
+    assert c.mask.shape == (3, 3)
+    c.import_image(_png(np.full((8, 8, 3), 5, np.uint8)))
+    # mask native size is preserved, displayed at the image size
+    assert c.mask.shape == (3, 3)
+    assert c.mask_scaled().shape == (8, 8)

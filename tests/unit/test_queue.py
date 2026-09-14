@@ -1,11 +1,20 @@
 import time
 
 import numpy as np
+from PIL import Image
 
 from imagagen.backends import GenerateRequest, MockBackend
 from imagagen.canvas import Canvas
 from imagagen.generation import InpaintPlan
 from imagagen.queue import GenerationQueue
+
+
+def _png(arr: np.ndarray) -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 class FakeRegistry:
@@ -41,7 +50,7 @@ def _wait_done(q, job_id, timeout=10.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         job = q.job(job_id)
-        if job and job.completed == job.batch_size:
+        if job and job.completed == job.batch_size and job.done_emitted:
             return job
         time.sleep(0.02)
     raise TimeoutError
@@ -94,7 +103,7 @@ def test_generate_retains_nonempty_canvas_as_source_thumbnail():
     backend = MockBackend()
     events = []
     q, canvas = _queue(backend, events)
-    canvas.set_image(np.full((8, 8, 3), 5, dtype=np.uint8))
+    canvas.import_image(_png(np.full((8, 8, 3), 5, dtype=np.uint8)))
     job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 2)
     _wait_done(q, job.id)
     # canvas untouched (no auto-set, no canvas_set event)
@@ -104,6 +113,8 @@ def test_generate_retains_nonempty_canvas_as_source_thumbnail():
     src = [e for e in events if e["type"] == "source_image"]
     assert len(src) == 1
     assert job.source_png is not None
+    # the source event references the canvas image entity
+    assert src[0]["image_id"] == canvas.current_id()
 
 
 def test_inpaint_retains_canvas_until_thumb_selected():
@@ -114,7 +125,7 @@ def test_inpaint_retains_canvas_until_thumb_selected():
     events = []
     q, canvas = _queue(backend, events)
     base = np.full((8, 8, 3), 5, dtype=np.uint8)
-    canvas.set_image(base)
+    canvas.import_image(_png(base))
     mask = np.zeros((8, 8), dtype=np.uint8)
     mask[3:5, 3:5] = 255
     plan = InpaintPlan("inpaint_masked", base, mask, bbox=(0, 0, 8, 8))
@@ -168,3 +179,45 @@ def test_result_pngs_have_parameters_chunk():
     png = job.results[0]
     assert b"parameters" in png
     assert b"turtle" in png
+
+
+def test_image_events_carry_image_id():
+    backend = MockBackend()
+    events = []
+    q, canvas = _queue(backend, events)
+    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 2)
+    _wait_done(q, job.id)
+    img_events = [e for e in events if e["type"] == "image"]
+    assert len(img_events) == 2
+    # each result is registered as a canvas entity referenced by the event
+    for i, e in enumerate(img_events):
+        assert e["image_id"] == f"job:{job.id}:{i}"
+        assert e["image_id"] in canvas._images
+
+
+def test_finished_jobs_dropped_on_next_submit():
+    backend = MockBackend()
+    events = []
+    q, _ = _queue(backend, events)
+    j1 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 1)
+    _wait_done(q, j1.id)
+    assert j1.id in q.jobs()  # present until the next submit
+    j2 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=2), 1)
+    _wait_done(q, j2.id)
+    # the finished first job was dropped when the second was submitted;
+    # the in-flight/finished-but-newest job stays
+    assert j1.id not in q.jobs()
+    assert j2.id in q.jobs()
+
+
+def test_live_image_ids_contains_results_and_source():
+    backend = MockBackend()
+    events = []
+    q, canvas = _queue(backend, events)
+    canvas.import_image(_png(np.full((8, 8, 3), 7, np.uint8)))
+    src_id = canvas.current_id()
+    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 1)
+    _wait_done(q, job.id)
+    live = q.live_image_ids()
+    assert src_id in live  # the source canvas image is referenced
+    assert f"job:{job.id}:0" in live  # the result is referenced

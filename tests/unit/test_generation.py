@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from imagagen.backends import GenerateRequest
 from imagagen.canvas import Canvas
@@ -160,11 +161,35 @@ def test_paste_centered_edge_replicated_border():
 # -------------------------------------------------------------------- plans --
 
 
+def _png(arr: np.ndarray) -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _canvas(w=64, h=48):
     c = Canvas()
     img = np.full((h, w, 3), 100, dtype=np.uint8)
-    c.set_image(img)
+    c.import_image(_png(img))
     return c
+
+
+def test_inpaint_masked_with_differently_sized_mask():
+    # the native mask (32x32) is smaller than the image (64x48): for
+    # inpainting it is scaled (fit-within) to the image, not used raw
+    c = _canvas(64, 48)
+    m = np.zeros((32, 32), dtype=np.uint8)
+    m[10:22, 10:22] = 255
+    c.set_mask(m)
+    req = GenerateRequest(prompt="x", width=64, height=64)
+    plan = with_inpaint(req, "inpaint_masked", c, 0.8, padding=0)
+    assert isinstance(plan, InpaintPlan)
+    # the plan's base mask is at the image size, not the native 32x32
+    assert plan.base_mask.shape == (48, 64)
+    assert req.init_mask is not None
+    assert req.init_mask.max() == 255 and req.init_mask.min() == 0
 
 
 def test_generate_mode_is_noop():
@@ -193,7 +218,7 @@ def test_inpaint_masked_populates_request():
     c = _canvas()
     m = np.zeros((48, 64), dtype=np.uint8)
     m[10:20, 12:32] = 255
-    c.set_image(c.image, mask=m)
+    c.set_mask(m)
     req = GenerateRequest(prompt="x", width=64, height=64)
     plan = with_inpaint(req, "inpaint_masked", c, 0.8, padding=0)
     assert isinstance(plan, InpaintPlan)
@@ -219,7 +244,7 @@ def test_inpaint_masked_context_padding():
     c = _canvas()
     m = np.zeros((48, 64), dtype=np.uint8)
     m[10:20, 12:32] = 255
-    c.set_image(c.image, mask=m)
+    c.set_mask(m)
     req = GenerateRequest(prompt="x", width=64, height=64)
     plan = with_inpaint(req, "inpaint_masked", c, 0.8)
     assert plan.bbox == (12 - 20, 5 - 20, 20 + 40, 20 + 40)
@@ -232,7 +257,7 @@ def test_inpaint_masked_context_padding():
     c2 = _canvas(512, 512)
     m2 = np.zeros((512, 512), dtype=np.uint8)
     m2[100:400, 100:300] = 255  # 300 tall x 200 wide
-    c2.set_image(c2.image, mask=m2)
+    c2.set_mask(m2)
     req2 = GenerateRequest(prompt="x", width=64, height=64)
     plan2 = with_inpaint(req2, "inpaint_masked", c2, 0.8)
     # tight 1:1 box is 300x300 centred on the mask: left 50, top 100;
@@ -246,7 +271,7 @@ def test_inpaint_masked_postprocess_blends_only_mask_region():
     c = _canvas()
     m = np.zeros((48, 64), dtype=np.uint8)
     m[10:20, 12:32] = 255
-    c.set_image(c.image, mask=m)
+    c.set_mask(m)
     req = GenerateRequest(prompt="x", width=20, height=10)
     plan = with_inpaint(req, "inpaint_masked", c, 1.0)
     gen = np.full((10, 20, 3), 250, dtype=np.uint8)
@@ -264,7 +289,7 @@ def test_inpaint_not_masked_populates_request():
     c = _canvas()  # 64x48
     m = np.zeros((48, 64), dtype=np.uint8)
     m[10:20, 12:32] = 255
-    c.set_image(c.image, mask=m)
+    c.set_mask(m)
     req = GenerateRequest(prompt="x", width=64, height=48)
     plan = with_inpaint(req, "inpaint_not_masked", c, 0.75)
     # same size: no scale, no border

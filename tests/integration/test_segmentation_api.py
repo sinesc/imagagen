@@ -105,7 +105,7 @@ def test_segmentation_mask_endpoint_writes_mask(client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True and body["changed"] is True
-    assert body["undo"] is True and body["redo"] is False
+    assert body["undo_mask"] is True and body["redo_mask"] is False
     # union of hair (4x4) and face (4x4) support: 32 pixels total
     assert body["pixels"] == 32
 
@@ -122,9 +122,9 @@ def test_segmentation_mask_is_undable(client):
     client.post("/api/segmentation/mask", json={
         "model": "selfie_multiclass_256x256.tflite", "classes": ["face"],
     })
-    r = client.post("/api/canvas/undo")
+    r = client.post("/api/canvas/undo", json={"target": "mask"})
     assert r.status_code == 200
-    assert r.json()["redo"] is True
+    assert r.json()["redo_mask"] is True
 
 
 def test_segmentation_unions_with_existing_mask(client):

@@ -74,7 +74,10 @@ def test_segment_mask_flow(seg_env, page):
     # most of the image stays unmasked (a person is <50% of the frame)
     assert (mask > 0).mean() < 0.5
 
-    # the mask write is one undo step
+    # the mask write is one undo step. Undo follows the active tool, so
+    # switch to the mask tool first (the default is the brush tool, whose
+    # draw stack is empty).
+    page.keyboard.press("m")
     page.click("#btn-undo")
     assert wait_until(
         lambda: (m := mask_arr(base)) is not None and m.max() == 0)

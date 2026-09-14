@@ -24,9 +24,8 @@ function setStatus(text) {
   $("status-line").textContent = text || "";
 }
 
-// POST-only API helper. Every call is a POST (some endpoints, like
-// /api/canvas/undo, take no body -- an empty {} is sent, which FastAPI
-// ignores for body-less endpoints).
+// POST-only API helper. Every call is a POST; body-less endpoints simply
+// ignore the empty {} JSON body that is always sent.
 async function api(path, body = {}) {
   const res = await fetch(path, {
     method: "POST",
@@ -269,16 +268,12 @@ function openStyleManage() {
 // the source image (green border, canvas snapshot at submit time --
 // inpaint always, generate when the canvas was non-empty) is not a job
 // result, so its PNG is fetched and re-uploaded.
+// Both kinds of thumbnail (results and the green-bordered source snapshot)
+// are live canvas image entities now, so selecting one is always a select
+// by id; the response carries the four undo/redo flags.
 async function restoreThumb(t) {
-  if (t.source) {
-    const res = await fetch(t.url);
-    if (!res.ok) throw new Error(`source: ${res.status}`);
-    const data = await res.arrayBuffer();
-    const up = await fetch("/api/canvas/upload", { method: "POST", body: data });
-    if (!up.ok) throw new Error(`upload: ${up.status}`);
-    return;
-  }
-  await api("/api/canvas/thumb", { job: t.job, index: t.index });
+  const r = await api("/api/canvas/select", { id: t.image_id });
+  storeUndoFlags(r);
 }
 
 function renderThumbs() {
@@ -747,14 +742,43 @@ function syncToolbar() {
 function switchTool(t) {
   Tools.switch(t);
   syncToolbar();
+  syncUndoButtons();
+}
+
+// ---------------- undo / redo (per-image draw + global mask) ----------------
+// The server reports, on every canvas-mutating response, how far each of
+// the two independent stacks can go: the per-image draw stack of the
+// CURRENT image, and the image-independent global mask. One toolbar
+// undo/redo pair follows the active tool: "mask" drives the mask stack, any
+// other tool drives the draw stack.
+let undoFlags = { undo_mask: false, redo_mask: false,
+                  undo_draw: false, redo_draw: false };
+function syncUndoButtons() {
+  const t = Tools.current === "mask" ? "mask" : "draw";
+  $("btn-undo").textContent = `↩ undo ${t}`;
+  $("btn-redo").textContent = `↪ redo ${t}`;
+  $("btn-undo").disabled = !undoFlags[`undo_${t}`];
+  $("btn-redo").disabled = !undoFlags[`redo_${t}`];
+}
+// Store the four flags from a canvas-mutating response and re-sync the
+// tool-dependent button state (called by every such handler, incl. the
+// stroke commit in canvas.js).
+function storeUndoFlags(r) {
+  if (r && typeof r === "object") {
+    for (const k of ["undo_mask", "redo_mask", "undo_draw", "redo_draw"]) {
+      if (typeof r[k] === "boolean") undoFlags[k] = r[k];
+    }
+  }
+  syncUndoButtons();
 }
 
 async function maskOp(op) {
   try {
-    await api("/api/canvas/mask", {
+    const r = await api("/api/canvas/mask", {
       op,
       px: parseInt($("mask-px").value, 10) || 0,
     });
+    storeUndoFlags(r);
     await viewRefresh();
   } catch (e) {
     setStatus(`mask ${op} failed: ${e.message}`);
@@ -800,6 +824,7 @@ function openSegDialog() {
     if (!classes.length) return false; // keep the dialog open
     try {
       const r = await api("/api/segmentation/mask", { model: model.id, classes });
+      storeUndoFlags(r);
       state.segClasses = classes;
       scheduleSaveUiState(0);
       setStatus(`mask generated: ${r.pixels.toLocaleString()} px (undo to revert)`);
@@ -905,6 +930,7 @@ async function importPng(file) {
     const { meta, width, height } = await metaRes.json();
     const up = await fetch("/api/canvas/upload", { method: "POST", body: await file.arrayBuffer() });
     if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
+    storeUndoFlags(await up.json());
     await applyPngMeta(meta, width, height);
     viewRefresh();
     setStatus(meta ? `imported ${file.name} (metadata applied)` : `loaded ${file.name} onto the canvas (no metadata)`);
@@ -990,6 +1016,7 @@ function wireCanvasDrop() {
     try {
       const up = await fetch("/api/canvas/upload", { method: "POST", body: await file.arrayBuffer() });
       if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
+      storeUndoFlags(await up.json());
       viewRefresh();
       setStatus(`loaded ${file.name} onto the canvas`);
     } catch (err) {
@@ -1162,12 +1189,14 @@ function connectWS() {
         break;
       case "source_image":
         // canvas snapshot at submit time (inpaint, or generate on a
-        // non-empty canvas), shown before any result arrives
-        state.thumbs.unshift({ source: true, url: msg.url });
+        // non-empty canvas), shown before any result arrives; the id lets
+        // it be restored as a live canvas entity
+        state.thumbs.unshift({ source: true, url: msg.url, image_id: msg.image_id });
         renderThumbs();
         break;
       case "image":
-        state.thumbs.push({ job: msg.job, index: msg.index, url: msg.url, seed: msg.seed });
+        state.thumbs.push({ job: msg.job, index: msg.index, url: msg.url, seed: msg.seed,
+                            image_id: msg.image_id });
         if (state.currentThumb === -1) {
           // highlight whatever is currently on the canvas: a source
           // thumbnail exists exactly when the canvas keeps its image (no
@@ -1180,6 +1209,12 @@ function connectWS() {
         renderThumbs();
         break;
       case "canvas_set":
+        // the canvas auto-set to a fresh result entity: its draw history
+        // is empty (only the global mask is retained), so reset the draw
+        // flags before re-syncing the buttons
+        undoFlags.undo_draw = false;
+        undoFlags.redo_draw = false;
+        syncUndoButtons();
         viewRefresh();
         break;
       case "done":
@@ -1211,13 +1246,26 @@ $("btn-save").onclick = async () => {
     setStatus(`save failed: ${e.message}`);
   }
 };
+function currentUndoTarget() {
+  return Tools.current === "mask" ? "mask" : "draw";
+}
 $("btn-undo").onclick = async () => {
-  await api("/api/canvas/undo");
-  viewRefresh();
+  const t = currentUndoTarget();
+  try {
+    storeUndoFlags(await api("/api/canvas/undo", { target: t }));
+    await viewRefresh();
+  } catch (e) {
+    setStatus(`undo failed: ${e.message}`);
+  }
 };
 $("btn-redo").onclick = async () => {
-  await api("/api/canvas/redo");
-  viewRefresh();
+  const t = currentUndoTarget();
+  try {
+    storeUndoFlags(await api("/api/canvas/redo", { target: t }));
+    await viewRefresh();
+  } catch (e) {
+    setStatus(`redo failed: ${e.message}`);
+  }
 };
 $("model").onchange = (e) => {
   selectModel(e.target.value);
@@ -1251,6 +1299,7 @@ document.addEventListener("keydown", (e) => {
 // ---------------- boot ----------------
 Tools.load();
 syncToolbar();
+syncUndoButtons();
 wireToolbar();
 wireConfig();
 wirePromptDrop();

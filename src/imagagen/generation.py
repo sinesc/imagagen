@@ -218,7 +218,8 @@ def with_inpaint(
     image = canvas.image
     if image is None:
         raise GenerationError("canvas is empty")
-    mask = canvas.mask
+    # the mask is image-independent; use it at the canvas image's size
+    mask = canvas.mask_scaled()
 
     if mode == "inpaint_masked":
         if mask is None or not (mask > 0).any():

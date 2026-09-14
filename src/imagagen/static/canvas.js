@@ -302,8 +302,9 @@ function setupCanvasInput() {
     if (!view.stroke) return;
     const s = view.stroke;
     const st = Tools.get();
+    let resp;
     try {
-      await api("/api/canvas/stroke", {
+      resp = await api("/api/canvas/stroke", {
         points: s.points,
         size: s.size, // canvas px (screen mode already divided by zoom)
         opacity: st.opacity,
@@ -319,6 +320,7 @@ function setupCanvasInput() {
       viewRedraw();
       return;
     }
+    storeUndoFlags(resp); // the response carries the four undo/redo flags
     // Drop the stroke WITHOUT redrawing in between: the screen keeps the
     // last rendered frame (preview over the old image) until viewRefresh()
     // has fetched and drawn the committed pixels, so the stroke never

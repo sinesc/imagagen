@@ -51,7 +51,9 @@ def test_stroke_paints_image(tmp_path):
             "points": [[16.0, 12.0]], "size": 12, "opacity": 1.0,
             "color": "#ff0000", "target": "image",
         })
-        assert r.json() == {"ok": True, "undo": True, "redo": False}
+        # the draw stack now has one step; the mask stack is untouched
+        assert r.json() == {"ok": True, "undo_mask": False, "redo_mask": False,
+                            "undo_draw": True, "redo_draw": False}
         img = _img(c)
         assert img[12, 16][0] == 255 and img[12, 16][1] == 0
         assert img[0, 0][0] == 10  # untouched corner
@@ -164,17 +166,48 @@ def test_undo_redo_over_api_with_mask(tmp_path):
             "points": [[16.0, 12.0]], "size": 10, "target": "mask"})
         assert _mask(c)[12, 16] == 255
 
-        c.post("/api/canvas/undo")
+        # undo the mask stroke (independent of the draw stack)
+        r = c.post("/api/canvas/undo", json={"target": "mask"})
+        assert r.json()["undo_mask"] is False  # nothing left to undo in mask
+        assert r.json()["undo_draw"] is True  # the image stroke still undoable
         assert _mask(c)[12, 16] == 0  # mask stroke reverted
         assert _img(c)[12, 16][1] == 255  # image stroke intact
 
-        c.post("/api/canvas/redo")
+        c.post("/api/canvas/redo", json={"target": "mask"})
         assert _mask(c)[12, 16] == 255
 
-        c.post("/api/canvas/clear")
-        assert c.get("/api/canvas.png").status_code == 404
-        c.post("/api/canvas/undo")  # back to the painted canvas
-        assert _img(c)[12, 16][1] == 255
+        # the draw stack is independent: undo it separately
+        c.post("/api/canvas/undo", json={"target": "draw"})
+        assert _img(c)[12, 16][1] == 10  # image stroke reverted
+        assert _mask(c)[12, 16] == 255  # mask stroke still applied
+
+
+def test_undo_redo_unknown_target_422(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c)
+        assert c.post("/api/canvas/undo", json={"target": "bogus"}).status_code == 422
+        assert c.post("/api/canvas/redo", json={"target": "bogus"}).status_code == 422
+
+
+def test_select_switches_and_rejects_unknown(tmp_path):
+    with _client(tmp_path) as c:
+        c.post("/api/canvas/upload", content=_png_bytes(32, 24, 1))  # upload:0
+        # re-selecting the current id is a no-op that succeeds + returns flags
+        r = c.post("/api/canvas/select", json={"id": "upload:0"})
+        assert r.status_code == 200 and r.json()["ok"] is True
+        assert "undo_draw" in r.json() and "redo_mask" in r.json()
+        # unknown id -> 400
+        assert c.post("/api/canvas/select", json={"id": "nope"}).status_code == 400
+
+
+def test_mask_png_follows_image_size(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c)  # 32x24
+        c.post("/api/canvas/stroke", json={
+            "points": [[16.0, 12.0]], "size": 10, "target": "mask"})
+        assert _mask(c).shape == (24, 32)
+        _set_canvas(c, _png_bytes(64, 48))  # mask.png now follows the image
+        assert _mask(c).shape == (48, 64)
 
 
 def test_mask_retained_across_same_size_image(tmp_path):
@@ -189,14 +222,18 @@ def test_mask_retained_across_same_size_image(tmp_path):
         assert _mask(c)[12, 16] == 255
 
 
-def test_mask_reset_on_size_change(tmp_path):
+def test_mask_scaled_on_size_change(tmp_path):
+    """The mask is image-independent: changing the image size scales the
+    mask to fit (not reset it)."""
     with _client(tmp_path) as c:
         _set_canvas(c)  # 32x24
         c.post("/api/canvas/stroke", json={
             "points": [[16.0, 12.0]], "size": 10, "target": "mask"})
         assert _mask(c)[12, 16] == 255
-        _set_canvas(c, _png_bytes(64, 48))  # different size -> fresh mask
-        assert (_mask(c) == 0).all()
+        _set_canvas(c, _png_bytes(64, 48))  # different size -> mask scaled
+        m = _mask(c)
+        assert m.shape == (48, 64)  # mask.png follows the image size
+        assert m[24, 32] == 255  # the dot scaled 2x (12,16 -> 24,32)
 
 
 def _png_with_meta(w=16, h=12) -> bytes:

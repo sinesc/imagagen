@@ -1,4 +1,5 @@
-"""Canvas v2: brush strokes, mask buffer, mask morphology, undo/redo.
+"""Canvas v2: per-image draw history, global image-independent mask, mask
+morphology, mask scaling, entity eviction.
 
 Pure-Python (numpy/PIL/scipy) -- no GPU, no model.
 """
@@ -7,12 +8,20 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from imagagen.canvas import Canvas
+from imagagen.canvas import Canvas, DRAW_HISTORY, MASK_HISTORY
+
+
+def _png(arr: np.ndarray) -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def blank_canvas(w=64, h=48, value=10):
     c = Canvas()
-    c.set_image(np.full((h, w, 3), value, dtype=np.uint8))
+    c.import_image(_png(np.full((h, w, 3), value, dtype=np.uint8)))
     return c
 
 
@@ -204,82 +213,212 @@ def test_mask_clear():
 
 def test_morphology_noop_on_empty_mask():
     c = blank_canvas()
-    n = len(c._undo)
+    n = len(c._mask_undo)
     assert not c.mask_dilate(5)
     assert not c.mask_erode(5)
-    assert len(c._undo) == n  # no-ops record no undo step
+    assert len(c._mask_undo) == n  # no-ops record no undo step
 
 
-# ---------------- undo/redo incl. mask ----------------
+# ---------------- mask scaling (image-independent) ----------------
 
-def test_undo_redo_tracks_image_and_mask():
+def test_mask_scaled_follows_image_size():
+    # native 100x100 mask, displayed over a 200x100 image -> fit-within,
+    # centered: scale = min(200/100, 100/100) = 1, offset x = (200-100)//2 = 50
+    c = blank_canvas(200, 100)
+    m = np.zeros((100, 100), dtype=np.uint8)
+    m[40:60, 40:60] = 255
+    c.set_mask(m)
+    scaled = c.mask_scaled()
+    assert scaled.shape == (100, 200)  # (H, W) of the image
+    assert scaled[40:60, 90:110].max() == 255  # mask sits at x = 50..150
+    assert scaled[40:60, 0:49].max() == 0  # left remainder unmasked
+    # the served mask.png is at the image size
+    import io
+
+    png = Image.open(io.BytesIO(c.to_mask_png_bytes()))
+    assert png.size == (200, 100)
+
+
+def test_mask_stroke_remaps_to_native():
+    # image 200x100, native mask 100x100 (scale 1, ox=50): a stroke at canvas
+    # x=100 (centre) lands on native x=50
+    c = blank_canvas(200, 100)
+    m = np.zeros((100, 100), dtype=np.uint8)
+    c.set_mask(m)
+    c.stroke([(100.0, 50.0)], size=10, target="mask")
+    assert c.mask.shape == (100, 100)  # native size unchanged
+    assert c.mask[50, 50] == 255  # remapped from canvas (100,50) to native (50,50)
+    assert c.mask[50, 90] == 0  # canvas x=140 is native x=90, untouched
+
+
+def test_dilate_runs_on_native_resolution():
+    c = blank_canvas(200, 100)
+    m = np.zeros((100, 100), dtype=np.uint8)
+    m[48:52, 48:52] = 255
+    c.set_mask(m)
+    before = (c.mask > 0).sum()
+    c.mask_dilate(3)
+    assert (c.mask > 0).sum() > before  # dilated in native px
+
+
+def test_set_mask_identical_pushes_no_step():
+    c = blank_canvas()
+    m = np.zeros((48, 64), dtype=np.uint8)
+    m[10:20, 10:20] = 255
+    assert c.set_mask(m)
+    n = len(c._mask_undo)
+    assert not c.set_mask(m.copy())  # identical -> no step
+    assert len(c._mask_undo) == n
+
+
+# ---------------- undo/redo: per-image draw + global mask ----------------
+
+def _two_images(c):
+    a = c.import_image(_png(np.full((24, 32, 3), 100, np.uint8)))
+    c.anchor({a})  # keep A alive while B is imported
+    b = c.import_image(_png(np.full((48, 64, 3), 50, np.uint8)))
+    c.anchor({a, b})  # both now job-referenced
+    return a, b
+
+
+def test_draw_and_mask_stacks_independent():
     c = blank_canvas()
     c.stroke([(32.0, 24.0)], size=10, color=(255, 0, 0), target="image")
     c.stroke([(32.0, 24.0)], size=10, target="mask")
     assert c.mask[24, 32] == 255
 
-    c.undo()  # reverts the mask stroke
+    c.undo("mask")  # reverts the mask stroke only
     assert c.mask[24, 32] == 0
     assert c.image[24, 32][0] == 255  # image stroke intact
+    assert c.can_undo_draw()  # draw stack still has the image stroke
 
-    c.undo()  # reverts the image stroke
+    c.undo("image")  # reverts the image stroke only
     assert c.image[24, 32][0] == 10
 
-    c.redo()
-    c.redo()
+    c.redo("image")
     assert c.image[24, 32][0] == 255
+    c.redo("mask")
     assert c.mask[24, 32] == 255
-    assert not c.can_redo()
+    assert not c.can_redo_draw() and not c.can_redo_mask()
 
 
-def test_new_stroke_clears_redo():
+def test_new_stroke_clears_only_its_redo():
     c = blank_canvas()
     c.stroke([(32.0, 24.0)], size=10, target="image")
-    c.undo()
-    assert c.can_redo()
-    c.stroke([(5.0, 5.0)], size=10, target="image")
-    assert not c.can_redo()
+    c.stroke([(5.0, 5.0)], size=10, target="mask")
+    c.undo("image")
+    c.undo("mask")
+    assert c.can_redo_draw() and c.can_redo_mask()
+    # a new image stroke clears only the draw redo, not the mask redo
+    c.stroke([(9.0, 9.0)], size=10, target="image")
+    assert not c.can_redo_draw()
+    assert c.can_redo_mask()
 
 
-def test_set_image_resets_mask():
+def test_per_image_draw_history_restored_on_reselect():
+    c = Canvas()
+    a, b = _two_images(c)
+    c.set_current(a)
+    c.stroke([(8.0, 8.0)], size=8, target="image")
+    c.set_current(b)
+    c.stroke([(8.0, 8.0)], size=8, target="image")
+    # each image kept its own single-stroke history
+    assert len(c._images[a].undo) == 1 and len(c._images[b].undo) == 1
+    # back to A: its pre-stroke pixels restore on undo, B's stack untouched
+    c.set_current(a)
+    c.undo("image")
+    assert (c.image == 100).all()  # A restored to its original value
+    assert len(c._images[b].undo) == 1  # B's stack intact
+
+
+def test_selection_is_not_an_undo_step():
+    c = Canvas()
+    a, b = _two_images(c)
+    c.set_current(a)
+    c.stroke([(8.0, 8.0)], size=8, target="image")
+    c.set_current(b)  # switching images pushes nothing
+    assert not c.can_undo_draw()  # B has an empty draw stack
+    c.set_current(a)
+    assert c.can_undo_draw()  # A's stack is restored, not reset
+
+
+def test_mask_retained_across_image_switch():
     c = blank_canvas()
     c.stroke([(32.0, 24.0)], size=10, target="mask")
     assert c.mask[24, 32] == 255
-    c.set_image(np.zeros((48, 64, 3), dtype=np.uint8))
-    assert (c.mask == 0).all()
+    # switching to a differently-sized image keeps (scales) the mask
+    c.import_image(_png(np.zeros((32, 24, 3), dtype=np.uint8)))
+    assert (c.mask_scaled() > 0).any()
 
 
-def test_set_image_retains_mask_when_given():
-    c = blank_canvas()
-    m = np.zeros((48, 64), dtype=np.uint8)
-    m[10:20, 10:20] = 255
-    c.set_image(np.zeros((48, 64, 3), dtype=np.uint8), mask=m)
-    assert (c.mask[10:20, 10:20] == 255).all()
-
-
-def test_png_info_survives_strokes():
+def test_upload_png_info_survives_strokes():
     c = Canvas()
     png = _png_with_info(b"seed: 1")
-    c.set_from_png_bytes(png)
+    c.import_image(png)
     assert c.png_info().get("parameters") == "seed: 1"
-    c.stroke([(32.0, 24.0)], size=10, target="image")
+    c.stroke([(8.0, 8.0)], size=10, target="image")
     assert c.png_info().get("parameters") == "seed: 1"
     data = c.to_png_bytes()
     assert Image.open(_bytes_io(data)).info.get("parameters") == "seed: 1"
 
 
-def test_history_is_capped():
-    from imagagen.canvas import MAX_HISTORY
+# ---------------- history caps ----------------
 
+def test_draw_history_capped():
+    c = blank_canvas(32, 32)
+    for i in range(DRAW_HISTORY + 20):
+        x = 4.0 + (i % 4) * 6.0
+        col = (i // 4) % 2 * 255  # flip the colour every 4 -> each stroke changes
+        c.stroke([(x, 16.0)], size=4, color=(col, col, col), target="image")
+    assert len(c._images[c.current_id()].undo) == DRAW_HISTORY
+
+
+def test_mask_history_capped():
+    c = blank_canvas(64, 64)
+    for i in range(MASK_HISTORY + 20):
+        # alternate paint/erase at the same spot -> every stroke changes
+        c.stroke([(32.0, 32.0)], size=8, target="mask", erase=(i % 2 == 1))
+    assert len(c._mask_undo) == MASK_HISTORY
+
+
+# ---------------- entity eviction ----------------
+
+def test_upload_evicted_when_it_leaves_canvas():
+    c = Canvas()
+    a = c.import_image(_png(np.full((24, 32, 3), 100, np.uint8)))
+    b = c.import_image(_png(np.full((24, 32, 3), 50, np.uint8)))
+    # a left the canvas and has no job reference -> evicted on import of b
+    assert a not in c._images
+    assert b in c._images and c.current_id() == b
+
+
+def test_anchored_entity_survives_leaving_canvas():
+    c = Canvas()
+    a = c.import_image(_png(np.full((24, 32, 3), 100, np.uint8)))
+    c.anchor({a})
+    b = c.import_image(_png(np.full((24, 32, 3), 50, np.uint8)))
+    assert a in c._images  # still referenced by a (live) job
+    # un-anchoring + evict drops it
+    c.anchor(set())
+    c.evict_stale()
+    assert a not in c._images and b in c._images
+
+
+def test_current_never_evicted():
+    c = Canvas()
+    a = c.import_image(_png(np.full((24, 32, 3), 100, np.uint8)))
+    c.anchor(set())
+    c.evict_stale()
+    assert a in c._images  # the displayed image always survives
+
+
+def test_set_current_unknown_id_raises():
     c = blank_canvas()
-    for i in range(MAX_HISTORY + 20):
-        c.set_image(np.full((8, 8, 3), i % 256, dtype=np.uint8))
-    assert len(c._undo) == MAX_HISTORY
-    # still undoable
-    for _ in range(MAX_HISTORY):
-        c.undo()
-    assert not c.can_undo()
+    with pytest.raises(ValueError):
+        c.set_current("job:9:0")
 
+
+# ---------------- helpers ----------------
 
 def _png_with_info(text: bytes) -> bytes:
     import io
