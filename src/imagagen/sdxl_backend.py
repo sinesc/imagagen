@@ -75,6 +75,22 @@ LoRAs (Phase 4):
   text-encoder keys against the actual model layout.
 - the active (name, weight) set is cached: unchanged between generations
   it is not re-injected; switching sets unloads all adapters first.
+
+Self attention guidance (SAG, Forge builtin extension; see sag.py):
+- per step (cfg > 1 only) the unconditional pass' mid-block self-attention
+  is captured via forward hooks on the layer's to_q/to_k (the UNet's own
+  attention runs untouched, so a generation with SAG installed but not
+  applied is bit-identical to one without it);
+- the attention's per-key mass (heads-averaged, query-summed, recomputed
+  chunked in fp32) forms a mask; the unconditional x0 is Gaussian-blurred
+  where the mask is set (the "degraded" x0);
+- the degraded x0 is re-noised to the current sigma, denoised with one
+  extra unconditional UNet pass, and (degraded - re-denoised) * scale is
+  added to the CFG result (x0 space, before the inpaint lock).
+- cost: +1 UNet pass per step (~50% more model time); the mask is
+  accumulated chunked over the query dim, so unlike the reference (which
+  keeps the full (heads, n, n) attention matrix in VRAM, ~6 GB at
+  1024x1024) the peak extra VRAM is a few tens of MB.
 """
 
 from __future__ import annotations
@@ -87,6 +103,7 @@ import numpy as np
 
 from . import kdiff
 from .backends import GenerateRequest, GenerateResult, ModelBackend
+from .sag import SagRecorder, compute_sag_mask, create_blur_map, install_sag_hooks
 from .soft_inpaint import SoftInpainting, adaptive_change_alpha, latent_blend
 
 # fp16 pipelines are intentionally offloaded to CPU between generations to
@@ -621,6 +638,20 @@ class SdxlBackend(ModelBackend):
                     x, t, encoder_hidden_states=emb, added_cond_kwargs=added
                 ).sample.float()
 
+            # --- self attention guidance (Forge builtin extension) ---
+            # the unconditional pass' mid-block self-attention is captured
+            # by hooks (installed right before sampling) and the guidance
+            # correction is added in model_fn; see sag.py. SAG needs the
+            # unconditional pass (cfg > 1) and a latent grid above 4 px
+            # (Forge skips tiny latents); otherwise it is simply not
+            # applied, like Forge.
+            sag = request.sag
+            sag_rec = (
+                SagRecorder()
+                if (sag is not None and request.cfg > 1.0 and min(lh, lw) > 4)
+                else None
+            )
+
             def model_fn(x, sigma):
                 if self._cancel:
                     raise InterruptedError("cancelled")
@@ -647,16 +678,45 @@ class SdxlBackend(ModelBackend):
                     eps = unet_forward(prompt_embeds, pooled, x_in, t)
                 else:
                     c = unet_forward(prompt_embeds, pooled, x_in, t)
+                    if sag_rec is not None:
+                        # SAG records the mid-block self-attention of the
+                        # unconditional pass only (see sag.py)
+                        sag_rec.record = True
                     uc = unet_forward(neg_embeds, neg_pooled, x_in, t)
+                    if sag_rec is not None:
+                        sag_rec.record = False
                     eps = uc + request.cfg * (c - uc)
                 if progress and self._step <= self._steps_total:
                     progress(self._step / self._steps_total,
                              f"step {self._step}/{self._steps_total}")
                 # UNet output is an epsilon prediction -> convert to x0.
                 # x is fp32 (solver state), so x0 stays fp32.
-                x0 = xwork - sigma * eps
-                if lcm is not None:
-                    x0 = lcm.x0_scaled(xwork, sigma, eps)
+                def x0_of(xx, e):
+                    r = xx - sigma * e
+                    if lcm is not None:
+                        r = lcm.x0_scaled(xx, sigma, e)
+                    return r
+                x0 = x0_of(xwork, eps)
+                if sag_rec is not None and sag_rec.q is not None:
+                    # SAG (Forge builtin extension): the uncond x0 is
+                    # adversarially blurred where the uncond self-attention
+                    # is concentrated, re-noised to the current sigma,
+                    # denoised with one extra uncond UNet pass, and the
+                    # (degraded - re-denoised) difference is added to the
+                    # CFG result, scaled (x0 space, before the lock)
+                    uncond_pred = x0_of(xwork, uc)
+                    mask = compute_sag_mask(
+                        sag_rec.q, sag_rec.k, sag_rec.heads, sag.threshold)
+                    degraded = create_blur_map(
+                        uncond_pred, mask, sag.blur_sigma)
+                    degraded_noised = degraded + xwork - uncond_pred
+                    sag_eps = unet_forward(
+                        neg_embeds, neg_pooled,
+                        (degraded_noised / (sigma ** 2 + 1.0).sqrt())
+                        .to(torch.float16),
+                        t)
+                    x0 = x0 + (degraded - x0_of(degraded_noised, sag_eps)) \
+                        * sag.scale
                 if mask_t is not None:
                     if soft is not None:
                         # soft inpainting (Forge builtin extension): instead
@@ -760,8 +820,15 @@ class SdxlBackend(ModelBackend):
                 noise = noise * model_wrap.max_sigma
             # the seed is threaded into the sampler so SDE/ancestral samplers
             # derive their per-step noise deterministically from it
-            samples = sampler_fn(model_wrap, noise, sigma_sched,
-                                 extra_args={"seed": request.seed})
+            sag_handles = (
+                install_sag_hooks(unet, sag_rec) if sag_rec is not None else []
+            )
+            try:
+                samples = sampler_fn(model_wrap, noise, sigma_sched,
+                                     extra_args={"seed": request.seed})
+            finally:
+                for h in sag_handles:
+                    h.remove()
             if init_latent is not None and mask_t is not None and soft is None:
                 # final lock: the protected region is exactly the init latent
                 # (skipped with soft inpainting: the protected content is

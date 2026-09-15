@@ -53,6 +53,12 @@ class UiState(BaseModel):
     soft_composite_mask_influence: float = Field(0.0, ge=0, le=1)
     soft_composite_difference_threshold: float = Field(0.5, ge=0, le=8)
     soft_composite_difference_contrast: float = Field(2.0, ge=0, le=8)
+    # self attention guidance (Forge builtin extension): enabled flag +
+    # the three options; same ranges/defaults as the Forge sliders
+    sag: bool = False
+    sag_scale: float = Field(0.5, ge=-2.0, le=5.0)
+    sag_blur_sigma: float = Field(2.0, ge=0.0, le=10.0)
+    sag_threshold: float = Field(1.0, ge=0.0, le=4.0)
     # user-selected LoRAs, [[name, weight], ...] (model-config LoRAs are
     # prepended server-side at generation time)
     loras: list[tuple[str, float]] = Field(default_factory=list)

@@ -323,6 +323,7 @@ def _result_to_png(
         loras=req.loras,
         styles=job.meta_styles if job is not None else None,
         soft_inpainting=req.soft_inpainting,
+        sag=req.sag,
     )
     img, pnginfo = metadata.attach_metadata(Image.fromarray(image), params)
     buf = BytesIO()

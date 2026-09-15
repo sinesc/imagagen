@@ -29,6 +29,7 @@ from .model_configs import (
 )
 from .models import ModelRegistry, list_loras
 from .paths import next_output_path
+from .sag import SelfAttentionGuidance
 from .soft_inpaint import SoftInpainting
 from .presets import Preset, PresetError, PresetStore
 from .queue import GenerationQueue
@@ -139,6 +140,10 @@ class GenerateBody(BaseModel):
     # soft inpainting (Forge builtin extension); null = off. The UI only
     # sends it for inpaint modes (the backend requires an init mask anyway)
     soft_inpainting: SoftInpainting | None = None
+    # self attention guidance (Forge builtin extension); null = off.
+    # Works in all modes; needs cfg > 1 (the SDXL backend skips it, like
+    # Forge, when there is no unconditional pass)
+    sag: SelfAttentionGuidance | None = None
     # context padding around the masked area (canvas px per side);
     # "inpaint_masked" only, capped at the mask's largest extent
     mask_padding: int = Field(default=INPAINT_PADDING, ge=0, le=2048)
@@ -498,6 +503,7 @@ def create_app(
             scheduler=scheduler,
             loras=loras,
             soft_inpainting=body.soft_inpainting,
+            sag=body.sag,
         )
         try:
             # inpaint modes snapshot the canvas and populate init image/mask;

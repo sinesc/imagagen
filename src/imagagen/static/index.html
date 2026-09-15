@@ -81,6 +81,13 @@
         </label>
         <button id="soft-inpaint-cfg" class="mini icon" title="soft inpainting options">⚙</button>
       </div>
+      <div class="row sag-row">
+        <label class="soft-check" title="self attention guidance (Forge builtin extension): sharpens high-detail regions (faces, eyes, fine structures) by feeding the model's own self-attention back through an extra unconditional denoise (all modes, needs CFG &gt; 1)">
+          <input id="sag" type="checkbox">
+          <span>Self attention guidance</span>
+        </label>
+        <button id="sag-cfg" class="mini icon" title="self attention guidance options">⚙</button>
+      </div>
       <div class="row actions">
         <button id="btn-generate" class="primary">Generate</button>
         <button id="btn-save">Save</button>

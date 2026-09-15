@@ -21,6 +21,10 @@ const state = {
   // soft inpainting (Forge builtin extension) options; the enabled flag
   // lives on the checkbox. Defaults = Forge's built-in defaults.
   soft: { power: 1, scale: 0.5, detail: 4, maskInf: 0, threshold: 0.5, contrast: 2 },
+  // self attention guidance (Forge builtin extension) options; the
+  // enabled flag lives on the checkbox. Defaults = Forge's built-in
+  // defaults.
+  sag: { scale: 0.5, blur: 2, threshold: 1 },
 };
 
 function setStatus(text) {
@@ -417,6 +421,7 @@ async function generate() {
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
     soft_inpainting: softInpaintBody(), // null = off
+    sag: sagBody(), // null = off
   };
   clearThumbs();
   setStatus("queued…");
@@ -1006,6 +1011,51 @@ function softInpaintBody() {
   };
 }
 
+// ---------------- self attention guidance (Forge builtin extension) ----------------
+
+// The three Forge sliders: [state key, label, min, max, step, help].
+const SAG_OPTS = [
+  ["scale", "Scale", -2, 5, 0.01,
+   "How strongly the guidance is applied: the difference between the degraded image and its re-denoised version is multiplied by this and added to the CFG result. 0 disables the effect; negative values work in reverse."],
+  ["blur", "Blur Sigma", 0, 10, 0.01,
+   "The Gaussian blur strength used to degrade the regions the model's self-attention focuses on. 0 leaves the image unchanged."],
+  ["threshold", "Blur mask threshold", 0, 4, 0.01,
+   "How concentrated the attention has to be for a region to be degraded. 0 blurs everything, higher values target only the most focused regions."],
+];
+
+function openSagDialog() {
+  const fields = [];
+  const make = ([key, label, min, max, step, help]) => {
+    const input = el("input", { type: "range", min, max, step });
+    input.value = state.sag[key];
+    const val = el("b", {}, String(state.sag[key]));
+    input.oninput = () => { val.textContent = input.value; };
+    fields.push({ key, input });
+    return el("label", { class: "soft-opt" },
+      el("div", { class: "soft-opt-head" }, el("span", {}, label), val),
+      input,
+      el("div", { class: "soft-opt-help" }, help),
+    );
+  };
+  openDialog("Self attention guidance options", el("div", {},
+    el("div", { class: "soft-lead" },
+      "Self attention guidance (Forge builtin extension) sharpens high-detail regions (faces, eyes, fine structures): the unconditional x0 is degraded where the model's own self-attention is concentrated, the degraded copy is re-denoised with an extra unconditional UNet pass, and the difference is fed back into the result. Needs CFG > 1 and adds one extra UNet pass per step (~50% more model time)."),
+    ...SAG_OPTS.map(make),
+  ), () => {
+    fields.forEach(({ key, input }) => { state.sag[key] = parseFloat(input.value); });
+    scheduleSaveUiState(0);
+  });
+}
+
+// The generate body's sag field: null when off. All modes; the backend
+// needs cfg > 1 to apply it (skips it like Forge when there is no
+// unconditional pass)
+function sagBody() {
+  if (!$("sag").checked) return null;
+  const s = state.sag;
+  return { scale: s.scale, blur_sigma: s.blur, threshold: s.threshold };
+}
+
 function wireToolbar() {
   $("tool-brush").onclick = () => switchTool("brush");
   $("tool-mask").onclick = () => switchTool("mask");
@@ -1041,6 +1091,8 @@ function wireToolbar() {
   $("seg-run").onclick = () => openSegDialog();
   $("soft-inpaint").onchange = () => scheduleSaveUiState(0);
   $("soft-inpaint-cfg").onclick = openSoftInpaintDialog;
+  $("sag").onchange = () => scheduleSaveUiState(0);
+  $("sag-cfg").onclick = openSagDialog;
   $("zoom-in").onclick = () => zoomCenter(1.25);
   $("zoom-out").onclick = () => zoomCenter(0.8);
   $("zoom-fit").onclick = () => viewFit();
@@ -1150,6 +1202,19 @@ async function applyPngMeta(meta, width, height) {
       if (Number.isFinite(v)) state.soft[key] = v;
     }
   }
+  // self attention guidance (Forge SAG extra parameters) round-trips
+  // through the PNG under the extension's raw snake_case keys
+  if (meta.sag_enabled) {
+    $("sag").checked = true;
+    for (const [key, label] of Object.entries({
+      scale: "sag_scale",
+      blur: "sag_blur_sigma",
+      threshold: "sag_threshold",
+    })) {
+      const v = parseFloat(meta[label]);
+      if (Number.isFinite(v)) state.sag[key] = v;
+    }
+  }
   // meta "Model" carries the model's display name; match it against the
   // loaded configurations (fall back to id for robustness)
   if (meta.model) {
@@ -1249,6 +1314,10 @@ function readUiState() {
     soft_composite_mask_influence: state.soft.maskInf,
     soft_composite_difference_threshold: state.soft.threshold,
     soft_composite_difference_contrast: state.soft.contrast,
+    sag: $("sag").checked,
+    sag_scale: state.sag.scale,
+    sag_blur_sigma: state.sag.blur,
+    sag_threshold: state.sag.threshold,
     loras: getLoras(),
     styles: getStyles(),
     // preset is not persisted either: the dropdown always starts at "—"
@@ -1296,6 +1365,16 @@ function applyUiState(st) {
     ["soft_composite_difference_contrast", "contrast"],
   ]) {
     if (typeof st[key] === "number") state.soft[k] = st[key];
+  }
+  // self attention guidance: enabled flag + the three options (JS state
+  // object)
+  if (typeof st.sag === "boolean") $("sag").checked = st.sag;
+  for (const [key, k] of [
+    ["sag_scale", "scale"],
+    ["sag_blur_sigma", "blur"],
+    ["sag_threshold", "threshold"],
+  ]) {
+    if (typeof st[key] === "number") state.sag[k] = st[key];
   }
 }
 

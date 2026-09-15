@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
+from .sag import SelfAttentionGuidance
 from .soft_inpaint import SoftInpainting
 
 #: built-in CFG when neither the user (sentinel -1) nor the model
@@ -45,6 +46,11 @@ class GenerateRequest(BaseModel):
     # replacing the hard content lock + difference-based pixel composite
     # (inpaint modes only; ignored by backends that do not support it)
     soft_inpainting: SoftInpainting | None = None
+    # self attention guidance (Forge builtin extension): an extra
+    # unconditional pass sharpens the regions the model's self-attention
+    # focuses on (all modes; requires cfg > 1, ignored by backends that
+    # do not support it)
+    sag: SelfAttentionGuidance | None = None
 
     def resolved_seed(self) -> int:
         import random

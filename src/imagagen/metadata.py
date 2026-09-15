@@ -20,6 +20,7 @@ from typing import Any
 
 from PIL import Image, PngImagePlugin
 
+from .sag import SelfAttentionGuidance
 from .soft_inpaint import SoftInpainting
 
 _VERSION = "v0.1.0"
@@ -53,6 +54,7 @@ def build_parameters(
     loras: list[tuple[str, float]] | None = None,
     styles: list[dict] | None = None,
     soft_inpainting: SoftInpainting | None = None,
+    sag: SelfAttentionGuidance | None = None,
 ) -> str:
     """Format the `parameters` text chunk exactly like A1111/Forge does.
 
@@ -62,6 +64,11 @@ def build_parameters(
     ``soft_inpainting``: when set, the enabled flag and the six option
     values travel on the meta line under Forge's exact extra-parameter
     labels, so Forge (or this file's parser) can read them back.
+
+    ``sag``: when set, the enabled flag and the three option values travel
+    on the meta line under the Forge SAG extension's exact extra-parameter
+    keys (raw snake_case: ``sag_enabled`` & co.), so Forge can read them
+    back.
     """
     lines = [prompt]
     if negative_prompt:
@@ -103,6 +110,11 @@ def build_parameters(
             "Soft inpainting difference contrast: "
             f"{soft_inpainting.composite_difference_contrast:g}"
         )
+    if sag is not None:
+        tail.append("sag_enabled: True")
+        tail.append(f"sag_scale: {sag.scale:g}")
+        tail.append(f"sag_blur_sigma: {sag.blur_sigma:g}")
+        tail.append(f"sag_threshold: {sag.threshold:g}")
     tail.append(f"Version: {_VERSION}")
     lines.append(", ".join(tail))
     if styles:

@@ -84,11 +84,12 @@ body {
 select option[value=""] { font-style: italic; }
 .actions { margin-top: 0.3rem; }
 .actions button { flex: 1; }
-/* soft inpainting row: checkbox left-aligned, options gear right-aligned.
-   #controls-prefixed to win the specificity over #controls label (which is
-   flex-column for the label-over-control sidebar layout) */
-#controls .soft-row { align-items: center; }
-#controls .soft-row .soft-check {
+/* soft inpainting / self attention guidance rows: checkbox left-aligned,
+   options gear right-aligned. #controls-prefixed to win the specificity
+   over #controls label (which is flex-column for the label-over-control
+   sidebar layout) */
+#controls .soft-row, #controls .sag-row { align-items: center; }
+#controls .soft-row .soft-check, #controls .sag-row .soft-check {
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -96,7 +97,8 @@ select option[value=""] { font-style: italic; }
   font-size: 0.85rem;
   color: #ccc;
 }
-#controls .soft-row input[type="checkbox"] { width: auto; height: auto; padding: 0; }
+#controls .soft-row input[type="checkbox"],
+#controls .sag-row input[type="checkbox"] { width: auto; height: auto; padding: 0; }
 
 /* model configuration buttons next to the model selector */
 .model-row { align-items: flex-end; }
