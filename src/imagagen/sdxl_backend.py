@@ -31,6 +31,10 @@ SDXL specifics (matching the k-diffusion / A1111 contract):
   sigma (A1111 noise_scaling)
 - sampling runs in the VAE-scaled latent space; divide by
   vae.config.scaling_factor (0.13025 for SDXL) before decode
+- prompts are encoded Forge/A1111-style: split into 75-token windows (77
+  incl. BOS/EOS), encode each, and concatenate the hidden states along the
+  sequence dim instead of diffusers' hard 77-token truncation, so long prompts
+  (e.g. a style stacked on top of a keyword-heavy prompt) lose no content
 
 Precision (matching Forge's kdiff path exactly):
 - the solver state x runs in fp32: Forge's model call casts the UNet output
@@ -343,11 +347,72 @@ class SdxlBackend(ModelBackend):
                 _quantize_unet_nf4(self.pipe.unet, self.device)
                 torch.cuda.empty_cache()
 
-    def _encoder_kwargs(self, device) -> dict:
-        return {
-            "device": device,
-            "num_images_per_prompt": 1,
-        }
+    def _encode_prompt_chunked(self, prompt: str, device) -> tuple:
+        """Encode `prompt` with Forge/A1111-style chunked CLIP encoding.
+
+        diffusers' `encode_prompt` tokenizes with `truncation=True` and a
+        77-token cap, silently dropping any tail beyond it. Instead we split
+        the prompt's token stream into fixed 75-token windows (77 including
+        the BOS/EOS framing tokens, exactly A1111's `PromptChunk` layout),
+        encode each window through the encoder, and concatenate the per-window
+        hidden states along the sequence dimension. The UNet's cross-attention
+        accepts the longer sequence, so no prompt content is lost. The pooled
+        output is taken from the first window (A1111's `zs[0].pooled`).
+
+        Returns ``(prompt_embeds, pooled)``: CLIP-L and CLIP-G window
+        embeddings are concatenated along the feature dim (as diffusers does
+        with `torch.concat(..., dim=-1)`), and `pooled` is CLIP-G's first
+        window (``None`` when only a single encoder is present).
+        """
+        import torch
+
+        pipe = self.pipe
+        chunk_len = 75  # 77 total per window incl. BOS/EOS
+
+        encoders = []
+        if pipe.tokenizer is not None:
+            encoders.append((pipe.tokenizer, pipe.text_encoder))
+        if getattr(pipe, "tokenizer_2", None) is not None:
+            encoders.append((pipe.tokenizer_2, pipe.text_encoder_2))
+
+        window_embeds = []
+        pooled = None
+        for tokenizer, text_encoder in encoders:
+            # content tokens without the framing special tokens
+            content = tokenizer(
+                prompt, add_special_tokens=False, return_tensors="pt"
+            ).input_ids[0].tolist()
+            bos = tokenizer.bos_token_id
+            eos = tokenizer.eos_token_id
+            pad = tokenizer.pad_token_id
+            # empty prompt -> a single empty window ([BOS] + [EOS] + pad),
+            # identical to diffusers encoding ""
+            windows = (
+                [[]] if not content
+                else [content[i:i + chunk_len] for i in range(0, len(content), chunk_len)]
+            )
+            hidden_parts = []
+            for window in windows:
+                # each window is framed like diffusers: [BOS] + content + [EOS]
+                # + pad. The pad token differs per encoder (49407 for CLIP-L,
+                # 0 for CLIP-G), so use the tokenizer's real pad_token_id.
+                ids = [bos] + window + [eos]
+                while len(ids) < 77:
+                    ids.append(pad)
+                out = text_encoder(
+                    torch.tensor([ids], device=device, dtype=torch.long),
+                    output_hidden_states=True,
+                )
+                # pooled comes from the encoder whose leading output field is
+                # 2-D (CLIP-G); capture it from the first window only
+                if pooled is None and out[0].ndim == 2:
+                    pooled = out[0]
+                # clip_skip=None: penultimate transformer layer (diffusers default)
+                hidden_parts.append(out.hidden_states[-2])
+            window_embeds.append(torch.cat(hidden_parts, dim=1))
+
+        prompt_embeds = torch.cat(window_embeds, dim=-1)
+        return prompt_embeds, pooled
 
     def cancel(self) -> None:
         self._cancel = True
@@ -497,12 +562,14 @@ class SdxlBackend(ModelBackend):
             pipe.text_encoder.to(te_dev)
             if getattr(pipe, "text_encoder_2", None) is not None:
                 pipe.text_encoder_2.to(te_dev)
-            ek = self._encoder_kwargs(te_dev)
-            # encode_prompt -> (prompt_embeds, neg_embeds, pooled, neg_pooled)
-            prompt_embeds, _, pooled, _ = pipe.encode_prompt(prompt=request.prompt, **ek)
+            # Forge-style chunked encoding (see _encode_prompt_chunked): a
+            # prompt longer than 75 tokens is split into 75-token windows and
+            # each window is encoded, then concatenated -- nothing is dropped.
+            # diffusers' encode_prompt would hard-truncate to 77 instead.
+            prompt_embeds, pooled = self._encode_prompt_chunked(request.prompt, te_dev)
             # A1111 semantics: an empty negative prompt means encoding ""
-            _, neg_embeds, _, neg_pooled = pipe.encode_prompt(
-                prompt=request.negative_prompt or "", **ek
+            neg_embeds, neg_pooled = self._encode_prompt_chunked(
+                request.negative_prompt or "", te_dev
             )
             if te_dev == "cpu":
                 # embeddings to the GPU; the encoders stay in system RAM
