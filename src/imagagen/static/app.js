@@ -1177,7 +1177,29 @@ async function applyPngMeta(meta, width, height) {
     const sel = $(id);
     if (meta[id] && [...sel.options].some((o) => o.value === meta[id])) sel.value = meta[id];
   }
-  if (meta.loras?.length) renderMainLoras(parseMetaLoras(meta.loras));
+  // The configuration the import ends up selecting: the image's model if
+  // a configuration matches it, else the currently selected one. That
+  // configuration's LoRAs were baked into the image at generation time
+  // (always prepended to the UI selection), so they are dropped from the
+  // metadata list before the remaining LoRAs are applied -- otherwise
+  // they would load twice (once via the config, once via the UI).
+  const matchedEntry = meta.model
+    ? state.entries.find((e) => e.name === meta.model || e.id === meta.model) || null
+    : null;
+  const targetEntry = matchedEntry || currentEntry();
+  if (meta.loras?.length) {
+    let loras = parseMetaLoras(meta.loras);
+    if (targetEntry) {
+      // match on name AND weight (a user may have added a config LoRA at
+      // another weight in the UI; only the config-provided copy is removed)
+      const configLoras = new Set(
+        [...(targetEntry.t2i?.loras || []), ...(targetEntry.i2i?.loras || [])]
+          .map((l) => `${l.name}@${l.weight}`)
+      );
+      loras = loras.filter(([name, weight]) => !configLoras.has(`${name}@${weight}`));
+    }
+    renderMainLoras(loras);
+  }
   // styles travel as name + actual contents; the server registers missing
   // ones as in-memory "Session" temporaries (not written to styles.csv)
   if (meta.styles?.length) {
@@ -1230,14 +1252,10 @@ async function applyPngMeta(meta, width, height) {
       if (Number.isFinite(v)) state.sag[key] = v;
     }
   }
-  // meta "Model" carries the model's display name; match it against the
-  // loaded configurations (fall back to id for robustness)
-  if (meta.model) {
-    const entry = state.entries.find((e) => e.name === meta.model || e.id === meta.model);
-    if (entry) {
-      $("model").value = entry.id;
-      selectModel(entry.id);
-    }
+  // switch to the image's model (see matchedEntry above)
+  if (matchedEntry) {
+    $("model").value = matchedEntry.id;
+    selectModel(matchedEntry.id);
   }
   scheduleSaveUiState();
 }

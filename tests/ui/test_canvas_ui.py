@@ -6,6 +6,7 @@ tool-state persistence across reload, custom brush listing.
 """
 
 import io
+import json
 from pathlib import Path
 
 import httpx
@@ -624,3 +625,65 @@ def test_drop_png_without_metadata_only_sets_size(page, server):
     assert page.input_value("#width") == "112"
     assert page.input_value("#height") == "88"
     assert page.input_value("#prompt") == "keep me"
+
+
+def _lora_png(model_name: str, loras: list[tuple[str, float]]) -> bytes:
+    """PNG whose parameters chunk carries the given model name + LoRAs."""
+    from imagagen import metadata as md
+
+    img, info = md.attach_metadata(
+        Image.new("RGB", (64, 64), BG),
+        md.build_parameters("lora test", "", 20, "Euler a", "Karras", 7.0, 1,
+                            64, 64, model_name, "abc123", loras=loras),
+    )
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", pnginfo=info)
+    return buf.getvalue()
+
+
+def test_drop_png_loras_skip_the_model_config_loras(page, server):
+    """The model configuration's LoRAs are always prepended by the backend
+    and therefore travel in the PNG metadata; on import they must not be
+    re-added to the UI selection (they would load twice). The config to
+    compare against is the one the import ends up selecting (the image's
+    model if a configuration matches it, else the currently selected
+    one)."""
+    base, root = server
+    (root / "loras" / "sdxl").mkdir(parents=True)
+    (root / "loras" / "sdxl" / "dmd2.safetensors").write_bytes(b"")
+    (root / "loras" / "sdxl" / "detail.safetensors").write_bytes(b"")
+    # named like the shipped configs: same name as the model, so the
+    # import's model match lands on this configuration
+    cfg = {
+        "name": "Mock Model",
+        "model": "mock/mock.safetensors",
+        "t2i": {"loras": [{"name": "dmd2", "weight": 0.7}]},
+        "i2i": {"loras": [{"name": "dmd2", "weight": 0.7}]},
+    }
+    (root / "model-configs").mkdir(exist_ok=True)
+    (root / "model-configs" / "mock-model.json").write_text(
+        json.dumps(cfg), "utf-8")
+    _open(page, base)
+    page.select_option("#model", "mock-model")
+    assert wait_until(lambda: page.evaluate("currentEntry()?.name") == "Mock Model")
+
+    # the image was made with the config LoRA (dmd2@0.7, prepended) plus a
+    # user-selected LoRA (detail@1.0): only the user's survives the import
+    _drop_png(page, "#prompt", _lora_png("Mock Model", [("dmd2", 0.7), ("detail", 1.0)]))
+    assert wait_until(lambda: page.evaluate("getLoras()") == [["detail", 1.0]])
+
+    # a user-selected copy of a config LoRA at a DIFFERENT weight stays:
+    # the match is on name AND weight
+    _drop_png(page, "#prompt", _lora_png("Mock Model", [("dmd2", 0.7), ("dmd2", 0.9)]))
+    assert wait_until(lambda: page.evaluate("getLoras()") == [["dmd2", 0.9]])
+
+    # image from a model with no configuration here: the filter falls back
+    # to the currently selected configuration
+    _drop_png(page, "#prompt", _lora_png("Other Model", [("dmd2", 0.7), ("detail", 0.5)]))
+    assert wait_until(lambda: page.evaluate("getLoras()") == [["detail", 0.5]])
+
+    # (pre-existing behavior) an image without any Lora lines leaves the
+    # UI selection untouched
+    _drop_png(page, "#prompt", _lora_png("Mock Model", []))
+    page.wait_for_timeout(200)
+    assert page.evaluate("getLoras()") == [["detail", 0.5]]
