@@ -17,6 +17,7 @@ the project root with the venv interpreter, e.g.:
 | `pipeline_reference.py` | Golden reference: runs the stock diffusers SDXL pipeline and our loop side by side and diffs the latent trajectory step by step (saved to `/tmp/ref_pipeline.png`, `/tmp/ref_mine.png`). Re-run whenever the sampling loop changes — a step-by-step growing diff pinpoints the regression. This is the tool that found the original four sampling-contract bugs. |
 | `smoke_sdxl_inpaint.py` | Live SDXL img2img/inpaint check: txt2img baseline, whole-box denoise, and half-protected inpaint (asserts protected region stays ~identical, inpainted region changes). The mock backend never exercises the real mask-lock path, so re-run whenever `sdxl_backend.py` sampling changes. |
 | `e2e_inpaint_ui_flow.py` | End-to-end over the real HTTP stack (temp root, GPU from a generated ini): bird generation → painted mask → `inpaint_masked` denoise 0.6, asserting masked-region change, unmasked preservation and mask retention. This is the tool that caught the `F.interpolate` 3D-tensor crash in the SDXL inpaint path. |
+| `soft_inpaint_check.py` | Soft-inpainting (Forge builtin extension) A/B on GPU 1: same masked inpaint with the hard lock vs the soft blend + pixel composite (defaults and a bias variant). Asserts the inpaint core changes and the protected core is restored exactly by the composite (the hard run only reaches the VAE round-trip). Saves per-run PNGs + a side-by-side composite with an amplified diff panel. |
 
 ## Notes
 

@@ -20,6 +20,8 @@ from typing import Any
 
 from PIL import Image, PngImagePlugin
 
+from .soft_inpaint import SoftInpainting
+
 _VERSION = "v0.1.0"
 
 # fields that travel both inside "parameters" and as standalone chunks
@@ -50,11 +52,16 @@ def build_parameters(
     model_hash: str,
     loras: list[tuple[str, float]] | None = None,
     styles: list[dict] | None = None,
+    soft_inpainting: SoftInpainting | None = None,
 ) -> str:
     """Format the `parameters` text chunk exactly like A1111/Forge does.
 
     ``styles`` (imagagen extension): entries with "name", "prompt" and
     "negative_prompt"; serialized as JSON on a trailing `Styles:` line.
+
+    ``soft_inpainting``: when set, the enabled flag and the six option
+    values travel on the meta line under Forge's exact extra-parameter
+    labels, so Forge (or this file's parser) can read them back.
     """
     lines = [prompt]
     if negative_prompt:
@@ -71,6 +78,31 @@ def build_parameters(
     ]
     for name, weight in loras or []:
         tail.append(f"Lora: {name}@{weight:g}")
+    if soft_inpainting is not None:
+        tail.append("Soft inpainting enabled: True")
+        tail.append(
+            f"Soft inpainting schedule bias: {soft_inpainting.mask_blend_power:g}"
+        )
+        tail.append(
+            "Soft inpainting preservation strength: "
+            f"{soft_inpainting.mask_blend_scale:g}"
+        )
+        tail.append(
+            "Soft inpainting transition contrast boost: "
+            f"{soft_inpainting.inpaint_detail_preservation:g}"
+        )
+        tail.append(
+            "Soft inpainting mask influence: "
+            f"{soft_inpainting.composite_mask_influence:g}"
+        )
+        tail.append(
+            "Soft inpainting difference threshold: "
+            f"{soft_inpainting.composite_difference_threshold:g}"
+        )
+        tail.append(
+            "Soft inpainting difference contrast: "
+            f"{soft_inpainting.composite_difference_contrast:g}"
+        )
     tail.append(f"Version: {_VERSION}")
     lines.append(", ".join(tail))
     if styles:

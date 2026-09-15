@@ -44,6 +44,15 @@ class UiState(BaseModel):
     # context padding around the masked area (canvas px per side),
     # "inpaint masked" only; same limits as the HTML input
     mask_padding: int = Field(default=256, ge=0, le=2048)
+    # soft inpainting (Forge builtin extension): enabled flag + the six
+    # options; same ranges/defaults as the Forge sliders
+    soft_inpainting: bool = False
+    soft_mask_blend_power: float = Field(1.0, ge=0, le=8)
+    soft_mask_blend_scale: float = Field(0.5, ge=0, le=8)
+    soft_inpaint_detail_preservation: float = Field(4.0, ge=1, le=32)
+    soft_composite_mask_influence: float = Field(0.0, ge=0, le=1)
+    soft_composite_difference_threshold: float = Field(0.5, ge=0, le=8)
+    soft_composite_difference_contrast: float = Field(2.0, ge=0, le=8)
     # user-selected LoRAs, [[name, weight], ...] (model-config LoRAs are
     # prepended server-side at generation time)
     loras: list[tuple[str, float]] = Field(default_factory=list)

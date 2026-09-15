@@ -322,6 +322,7 @@ def _result_to_png(
         model_hash=backend.model_hash,
         loras=req.loras,
         styles=job.meta_styles if job is not None else None,
+        soft_inpainting=req.soft_inpainting,
     )
     img, pnginfo = metadata.attach_metadata(Image.fromarray(image), params)
     buf = BytesIO()

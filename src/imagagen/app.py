@@ -29,6 +29,7 @@ from .model_configs import (
 )
 from .models import ModelRegistry, list_loras
 from .paths import next_output_path
+from .soft_inpaint import SoftInpainting
 from .presets import Preset, PresetError, PresetStore
 from .queue import GenerationQueue
 from .segmentation import SegmentationError, SegmentationService
@@ -135,6 +136,9 @@ class GenerateBody(BaseModel):
     model_id: str | None = None
     mode: str = "generate"  # "generate" | "inpaint_masked" | "inpaint_not_masked"
     denoise: float = Field(1.0, ge=0.0, le=1.0)  # denoising strength, inpaint only
+    # soft inpainting (Forge builtin extension); null = off. The UI only
+    # sends it for inpaint modes (the backend requires an init mask anyway)
+    soft_inpainting: SoftInpainting | None = None
     # context padding around the masked area (canvas px per side);
     # "inpaint_masked" only, capped at the mask's largest extent
     mask_padding: int = Field(default=INPAINT_PADDING, ge=0, le=2048)
@@ -468,6 +472,7 @@ def create_app(
             sampler=sampler,
             scheduler=scheduler,
             loras=loras,
+            soft_inpainting=body.soft_inpainting,
         )
         try:
             # inpaint modes snapshot the canvas and populate init image/mask;

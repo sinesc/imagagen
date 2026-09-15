@@ -84,6 +84,19 @@ body {
 select option[value=""] { font-style: italic; }
 .actions { margin-top: 0.3rem; }
 .actions button { flex: 1; }
+/* soft inpainting row: checkbox left-aligned, options gear right-aligned.
+   #controls-prefixed to win the specificity over #controls label (which is
+   flex-column for the label-over-control sidebar layout) */
+#controls .soft-row { align-items: center; }
+#controls .soft-row .soft-check {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: #ccc;
+}
+#controls .soft-row input[type="checkbox"] { width: auto; height: auto; padding: 0; }
 
 /* model configuration buttons next to the model selector */
 .model-row { align-items: flex-end; }
@@ -391,6 +404,22 @@ button.danger:hover { background: #a33; }
   font-size: 0.8rem;
   white-space: pre-wrap;
 }
+/* soft inpainting options dialog: slider rows with a live value + help,
+   grouped into the per-step blend and the pixel composite settings */
+#dialog-body .soft-lead { font-size: 0.8rem; color: #888; line-height: 1.4; }
+#dialog-body .soft-opt { gap: 0.15rem; }
+#dialog-body .soft-opt-head { display: flex; justify-content: space-between; gap: 0.5rem; }
+#dialog-body .soft-opt-head b { color: #eee; }
+#dialog-body .soft-opt-help { font-size: 0.72rem; line-height: 1.35; color: #888; }
+#dialog-body .soft-section {
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid #444;
+  font-size: 0.78rem;
+  color: #9cf;
+}
+#dialog-body input[type="range"] { height: auto; padding: 0; }
+#dialog-body input[type="checkbox"] { width: auto; height: auto; padding: 0; }
 
 /* model configuration dialog: name/model labels + per-mode fieldsets */
 .cfg-dialog {

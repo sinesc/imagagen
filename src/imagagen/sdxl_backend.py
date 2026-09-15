@@ -83,6 +83,7 @@ import numpy as np
 
 from . import kdiff
 from .backends import GenerateRequest, GenerateResult, ModelBackend
+from .soft_inpaint import SoftInpainting, adaptive_change_alpha, latent_blend
 
 # fp16 pipelines are intentionally offloaded to CPU between generations to
 # free VRAM; diffusers warns that fp16 does not compute on CPU -- it does not
@@ -590,9 +591,23 @@ class SdxlBackend(ModelBackend):
                 if lcm is not None:
                     x0 = lcm.x0_scaled(xwork, sigma, eps)
                 if mask_t is not None:
-                    # and the x0 estimate is locked back to the init latent
-                    # (protected content decodes exactly)
-                    x0 = x0 * (1.0 - mask_t) + init_latent * mask_t
+                    if soft is not None:
+                        # soft inpainting (Forge builtin extension): instead
+                        # of the hard lock, the x0 estimate is blended with
+                        # the init latent; the blend weight follows the mask
+                        # opacity and the current sigma (power -> when it
+                        # happens, scale -> how strongly), and the vector
+                        # magnitudes are interpolated under the detail
+                        # preservation exponent
+                        t = torch.pow(
+                            nmask4,
+                            (sigma ** soft.mask_blend_power) * soft.mask_blend_scale,
+                        )
+                        x0 = latent_blend(soft, init_latent, x0, t)
+                    else:
+                        # hard lock: the x0 estimate is locked back to the
+                        # init latent (protected content decodes exactly)
+                        x0 = x0 * (1.0 - mask_t) + init_latent * mask_t
                 return x0
 
             self._step = 0
@@ -631,6 +646,9 @@ class SdxlBackend(ModelBackend):
             # region, so protected = 1 - mask.
             init_latent = None
             mask_t = None
+            nmask4 = None  # (4, lh, lw): the inpaint region (1) as seen by
+                           # soft inpainting (all four channels carry it)
+            soft = request.soft_inpainting
             sigma_sched = sigmas
             if request.init_image is not None:
                 init_latent = self._encode_init(pipe, request.init_image, device)
@@ -660,6 +678,8 @@ class SdxlBackend(ModelBackend):
                     # re-noised; the protected region starts at the clean
                     # init latent (it is locked there at every step anyway)
                     noise = noise * (1.0 - mask_t) + init_latent * mask_t
+                    if soft is not None:
+                        nmask4 = (1.0 - mask_t[0, 0]).unsqueeze(0).expand(4, lh, lw)
             self._steps_total = max(1, len(sigma_sched) - 1)
             # txt2img: the solver state is the noisy sample itself, so scale the
             # unit prior to the max noise level. The UNet divides by sqrt(sigma^2+1)
@@ -675,8 +695,11 @@ class SdxlBackend(ModelBackend):
             # derive their per-step noise deterministically from it
             samples = sampler_fn(model_wrap, noise, sigma_sched,
                                  extra_args={"seed": request.seed})
-            if init_latent is not None and mask_t is not None:
+            if init_latent is not None and mask_t is not None and soft is None:
                 # final lock: the protected region is exactly the init latent
+                # (skipped with soft inpainting: the protected content is
+                # soft-blended at every step and restored by the pixel
+                # composite below instead)
                 samples = samples * (1.0 - mask_t) + init_latent * mask_t
 
             # sampling ran in VAE-scaled latent space -> unscale (fp32) and
@@ -685,6 +708,23 @@ class SdxlBackend(ModelBackend):
             image = pipe.vae.decode(latents, return_dict=False)[0].float()
             image = (image / 2 + 0.5).clamp(0, 1)
             arr = (image.cpu().numpy()[0].transpose(1, 2, 0) * 255).astype(np.uint8)
+
+        if soft is not None and mask_t is not None:
+            # Forge's post_sample pixel composite: composite the original
+            # image back over the generation wherever the latents did not
+            # change much (locally percentile-normalised distance,
+            # threshold scaled by the original mask, blurred at image scale)
+            c = adaptive_change_alpha(soft, nmask4, init_latent, samples, w, h)
+            base = np.ascontiguousarray(request.init_image)
+            if base.shape[:2] != (h, w):
+                from PIL import Image
+
+                base = np.asarray(
+                    Image.fromarray(base).resize((w, h), Image.LANCZOS)
+                )
+            arr = arr.astype(np.float32) * c[..., None] \
+                + base.astype(np.float32) * (1.0 - c[..., None])
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
 
         return GenerateResult(image=arr, seed=request.seed)
 

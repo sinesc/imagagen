@@ -18,6 +18,9 @@ const state = {
   styles: [], // styles from /api/styles ({name, prompt, negative_prompt, optgroup, temporary})
   segModels: [], // segmentation models from /api/segmentation/models
   segClasses: [], // last-used person-mask class selection ([] = default)
+  // soft inpainting (Forge builtin extension) options; the enabled flag
+  // lives on the checkbox. Defaults = Forge's built-in defaults.
+  soft: { power: 1, scale: 0.5, detail: 4, maskInf: 0, threshold: 0.5, contrast: 2 },
 };
 
 function setStatus(text) {
@@ -344,6 +347,7 @@ async function generate() {
     mode: $("mode").value,
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
+    soft_inpainting: softInpaintBody(), // null = off
   };
   clearThumbs();
   setStatus("queued…");
@@ -863,10 +867,74 @@ function zoomCenter(f) {
 }
 
 // denoising strength only applies to the inpaint modes (concept.md: "disabled
-// when not inpainting"); mask padding only to "inpaint masked"
+// when not inpainting"); mask padding only to "inpaint masked"; soft
+// inpainting only makes sense with an inpaint region
 function syncMode() {
   $("denoise").disabled = $("mode").value === "generate";
   $("mask-padding").disabled = $("mode").value !== "inpaint_masked";
+  $("soft-inpaint").disabled = $("mode").value === "generate";
+}
+
+// ---------------- soft inpainting (Forge builtin extension) ----------------
+
+// The six Forge sliders: [state key, label, min, max, step, help]. The
+// first group is the per-step latent blend, the second the pixel composite.
+const SOFT_LATENT_OPTS = [
+  ["power", "Schedule bias", 0, 8, 0.1,
+   "Shifts when the original content is preserved during denoising. 1 is balanced; below 1 the original content is preserved more strongly at the end of denoising (low noise), above 1 more strongly at the beginning (high noise)."],
+  ["scale", "Preservation strength", 0, 8, 0.05,
+   "Skews whether partially masked regions preserve the original content or favour the inpainted content. Low values favour the inpainted content, high values the original. 0 ignores the mask in the per-step blend entirely."],
+  ["detail", "Transition contrast boost", 1, 32, 0.5,
+   "How the original and denoised latent vectors are interpolated: their magnitudes are interpolated under this exponent, biased towards the larger of the two. Low values blend more softly (can lose contrast); high values keep contrast but can over-sharpen or over-saturate the transition."],
+];
+const SOFT_PIXEL_OPTS = [
+  ["maskInf", "Mask influence", 0, 1, 0.05,
+   "How strongly the original mask biases the pixel-composite difference threshold. 0 ignores the mask (only the image content decides where the original is kept), 1 follows it closely."],
+  ["threshold", "Difference threshold", 0, 8, 0.25,
+   "The latent-space distance at which the original pixels are kept at 50% opacity. Low: the generated content must be nearly identical for any original pixels to be kept. High: even clearly different content keeps the original pixels."],
+  ["contrast", "Difference contrast", 0, 8, 0.25,
+   "Contrast of the opacity transition between original and inpainted content. Low: gradual transitions (can ghost); high: abrupt transitions (no ghosting, but the seam can be visible)."],
+];
+
+function openSoftInpaintDialog() {
+  const fields = [];
+  const make = ([key, label, min, max, step, help]) => {
+    const input = el("input", { type: "range", min, max, step });
+    input.value = state.soft[key];
+    const val = el("b", {}, String(state.soft[key]));
+    input.oninput = () => { val.textContent = input.value; };
+    fields.push({ key, input });
+    return el("label", { class: "soft-opt" },
+      el("div", { class: "soft-opt-head" }, el("span", {}, label), val),
+      input,
+      el("div", { class: "soft-opt-help" }, help),
+    );
+  };
+  openDialog("Soft inpainting options", el("div", {},
+    el("div", { class: "soft-lead" },
+      "Soft inpainting (Forge builtin extension) blends the original content with the inpainted content according to the mask opacity instead of locking the protected region exactly. A high mask blur is recommended."),
+    ...SOFT_LATENT_OPTS.map(make),
+    el("div", { class: "soft-section" }, "Pixel composite settings"),
+    ...SOFT_PIXEL_OPTS.map(make),
+  ), () => {
+    fields.forEach(({ key, input }) => { state.soft[key] = parseFloat(input.value); });
+    scheduleSaveUiState(0);
+  });
+}
+
+// The generate body's soft_inpainting field: null when off or in
+// "generate" mode (the backend only applies it with an init mask anyway)
+function softInpaintBody() {
+  if (!$("soft-inpaint").checked || $("mode").value === "generate") return null;
+  const s = state.soft;
+  return {
+    mask_blend_power: s.power,
+    mask_blend_scale: s.scale,
+    inpaint_detail_preservation: s.detail,
+    composite_mask_influence: s.maskInf,
+    composite_difference_threshold: s.threshold,
+    composite_difference_contrast: s.contrast,
+  };
 }
 
 function wireToolbar() {
@@ -902,6 +970,8 @@ function wireToolbar() {
   $("mask-clear").onclick = () => maskOp("clear");
   $("seg-model").onchange = () => scheduleSaveUiState(0);
   $("seg-run").onclick = () => openSegDialog();
+  $("soft-inpaint").onchange = () => scheduleSaveUiState(0);
+  $("soft-inpaint-cfg").onclick = openSoftInpaintDialog;
   $("zoom-in").onclick = () => zoomCenter(1.25);
   $("zoom-out").onclick = () => zoomCenter(0.8);
   $("zoom-fit").onclick = () => viewFit();
@@ -992,6 +1062,22 @@ async function applyPngMeta(meta, width, height) {
       renderMainStyles(getStyles()); // options now include the temporaries
     } catch (e) {
       console.error("styles/temp:", e);
+    }
+  }
+  // soft inpainting (Forge extra parameters) round-trips through the PNG
+  if (meta["Soft inpainting enabled"]) {
+    $("soft-inpaint").checked = true;
+    const softMeta = {
+      power: "Soft inpainting schedule bias",
+      scale: "Soft inpainting preservation strength",
+      detail: "Soft inpainting transition contrast boost",
+      maskInf: "Soft inpainting mask influence",
+      threshold: "Soft inpainting difference threshold",
+      contrast: "Soft inpainting difference contrast",
+    };
+    for (const [key, label] of Object.entries(softMeta)) {
+      const v = parseFloat(meta[label]);
+      if (Number.isFinite(v)) state.soft[key] = v;
     }
   }
   // meta "Model" carries the model's display name; match it against the
@@ -1086,6 +1172,13 @@ function readUiState() {
     // "generate" mode since there is nothing to inpaint yet
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
+    soft_inpainting: $("soft-inpaint").checked,
+    soft_mask_blend_power: state.soft.power,
+    soft_mask_blend_scale: state.soft.scale,
+    soft_inpaint_detail_preservation: state.soft.detail,
+    soft_composite_mask_influence: state.soft.maskInf,
+    soft_composite_difference_threshold: state.soft.threshold,
+    soft_composite_difference_contrast: state.soft.contrast,
     loras: getLoras(),
     styles: getStyles(),
     // preset is not persisted either: the dropdown always starts at "—"
@@ -1122,6 +1215,18 @@ function applyUiState(st) {
   // select is restored here (after loadSegModels populated the dropdown)
   if (Array.isArray(st.seg_classes)) state.segClasses = st.seg_classes;
   if (st.seg_model && $("seg-model").options.length) $("seg-model").value = st.seg_model;
+  // soft inpainting: enabled flag + the six options (JS state object)
+  if (typeof st.soft_inpainting === "boolean") $("soft-inpaint").checked = st.soft_inpainting;
+  for (const [key, k] of [
+    ["soft_mask_blend_power", "power"],
+    ["soft_mask_blend_scale", "scale"],
+    ["soft_inpaint_detail_preservation", "detail"],
+    ["soft_composite_mask_influence", "maskInf"],
+    ["soft_composite_difference_threshold", "threshold"],
+    ["soft_composite_difference_contrast", "contrast"],
+  ]) {
+    if (typeof st[key] === "number") state.soft[k] = st[key];
+  }
 }
 
 let saveTimer = null;

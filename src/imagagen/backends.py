@@ -14,6 +14,8 @@ from dataclasses import dataclass
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
+from .soft_inpaint import SoftInpainting
+
 #: built-in CFG when neither the user (sentinel -1) nor the model
 #: configuration provide an override (A1111's universal default)
 DEFAULT_CFG = 7.0
@@ -39,6 +41,10 @@ class GenerateRequest(BaseModel):
     init_image: np.ndarray | None = None  # HxWx3 uint8
     init_mask: np.ndarray | None = None  # HxW uint8, 0..255 (255 = inpaint here)
     denoise: float = 0.75
+    # soft inpainting (Forge builtin extension): per-step latent blend
+    # replacing the hard content lock + difference-based pixel composite
+    # (inpaint modes only; ignored by backends that do not support it)
+    soft_inpainting: SoftInpainting | None = None
 
     def resolved_seed(self) -> int:
         import random
