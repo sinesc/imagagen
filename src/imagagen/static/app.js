@@ -66,7 +66,12 @@ async function updatePromptTokens() {
   const out = $("prompt-tokens");
   let r;
   try {
-    r = await api("/api/prompt-tokens", { prompt: $("prompt").value });
+    // styles are applied server-side (exactly as generation does), so the
+    // count reflects the full prompt the model will actually see
+    r = await api("/api/prompt-tokens", {
+      prompt: $("prompt").value,
+      styles: getStyles(),
+    });
   } catch (e) {
     return;
   }
@@ -78,6 +83,12 @@ async function updatePromptTokens() {
 function schedulePromptTokens() {
   clearTimeout(tokenTimer);
   tokenTimer = setTimeout(updatePromptTokens, 200);
+}
+// selected styles feed the (server-side applied) prompt, so any change to the
+// style list must refresh the counter as well as the persisted UI state
+function onStylesChanged() {
+  scheduleSaveUiState();
+  schedulePromptTokens();
 }
 
 // ---------------- small DOM helpers ----------------
@@ -210,7 +221,7 @@ function styleRow(name, onChange) {
 function renderMainStyles(names) {
   const c = $("styles");
   c.innerHTML = "";
-  (names || []).forEach((n) => c.append(styleRow(n, scheduleSaveUiState)));
+  (names || []).forEach((n) => c.append(styleRow(n, onStylesChanged)));
 }
 const getStyles = () => [...$("styles").querySelectorAll(".style-row")]
   .map((r) => r.querySelector(".style-name").value)
@@ -221,6 +232,7 @@ async function loadStyles() {
   state.styles = r.styles || [];
   // re-render existing rows against the fresh list, keeping the selection
   renderMainStyles(getStyles());
+  schedulePromptTokens(); // a selected style's contents may have changed
 }
 
 function openStyleDialog(existing) {
@@ -280,6 +292,7 @@ function openStyleManage() {
             await loadStyles();
           }
           scheduleSaveUiState(0);
+          schedulePromptTokens();
         } catch (e) { setStatus(e.message); return; }
         render();
       };
@@ -1048,10 +1061,10 @@ function wireConfig() {
   };
   $("preset-manage").onclick = openPresetManage;
   $("style-add").onclick = () => {
-    const row = styleRow("", scheduleSaveUiState);
+    const row = styleRow("", onStylesChanged);
     $("styles").append(row);
     row.querySelector("select").focus();
-    scheduleSaveUiState();
+    onStylesChanged();
   };
   $("style-manage").onclick = openStyleManage;
   // apply on change, then reset to "—" so the same preset can be

@@ -303,7 +303,11 @@ def create_app(
 
     @app.post("/api/prompt-tokens")
     def prompt_tokens(body: dict) -> dict:
-        """Live CLIP token count for the prompt field (UI counter).
+        """Live CLIP token count of the prompt field (UI counter).
+
+        The selected styles are applied first, exactly as ``/api/generate``
+        does, so the count reflects the full prompt the model will actually
+        see (a style can push a short raw prompt past one CLIP window).
 
         ``tokens`` is None when the tokenizer could not be loaded; the UI then
         hides the counter. ``windows`` is how many 75-token CLIP windows the
@@ -311,7 +315,13 @@ def create_app(
         """
         from .tokenize import count_prompt_tokens, prompt_windows
 
-        tokens = count_prompt_tokens(body.get("prompt", ""))
+        prompt, _ = apply_styles(
+            body.get("prompt", ""),
+            "",
+            body.get("styles", []),
+            app.state.style_store.get,
+        )
+        tokens = count_prompt_tokens(prompt)
         if tokens is None:
             return {"tokens": None, "windows": 0}
         return {"tokens": tokens, "windows": prompt_windows(tokens)}
