@@ -174,6 +174,51 @@ def test_generate_skips_deleted_style(client):
     assert negative == "digital art, cartoon"
 
 
+def _forge_png(client, prompt, negative, w=16, h=12) -> bytes:
+    """A Forge/A1111 PNG: the fully EXPANDED prompt as the meta prompt, no
+    dedicated style list (that is what Forge writes)."""
+    from imagagen import metadata
+
+    buf = io.BytesIO()
+    img, info = metadata.attach_metadata(
+        Image.new("RGB", (w, h), (5, 5, 5)),
+        metadata.build_parameters(
+            prompt, negative, 24, "DPM++ 2M SDE", "Polyexponential", 7.5,
+            1261832509, w, h, "some_model", "abc123"),
+    )
+    img.save(buf, format="PNG", pnginfo=info)
+    return buf.getvalue()
+
+
+def test_png_meta_restores_forge_styles(client):
+    _seed_csv(client)
+    # what Forge stored: base "a frog"/"ugly" with [Negs, Dunes, Cinematic]
+    # applied, i.e. this exact expanded prompt and negative
+    expanded_prompt = "cinematic film still a frog, in the dunes, white sand . moody"
+    expanded_negative = "ugly, digital art, cartoon"
+    data = _forge_png(client, expanded_prompt, expanded_negative)
+    assert b"Styles:" not in data  # genuinely foreign metadata
+
+    r = client.post("/api/png-meta", content=data)
+    m = r.json()["meta"]
+    # the styles are resolved out of the expanded prompt, and the prompts
+    # shown are the original (unapplied) ones
+    assert [s["name"] for s in m["styles"]] == ["Negs", "Dunes", "Cinematic"]
+    assert m["prompt"] == "a frog"
+    assert m["negative_prompt"] == "ugly"
+
+
+def test_png_meta_forge_unknown_styles_untouched(client):
+    _seed_csv(client)
+    # expanded by styles that are NOT in the CSV: nothing matches, so the
+    # expanded prompt is left as-is (nothing to restore)
+    data = _forge_png(client, "a totally alien prompt", "some negative")
+    m = client.post("/api/png-meta", content=data).json()["meta"]
+    assert "styles" not in m
+    assert m["prompt"] == "a totally alien prompt"
+    assert m["negative_prompt"] == "some negative"
+
+
 def test_generate_no_styles_keeps_old_metadata(client):
     with client.websocket_connect("/api/ws") as ws:
         r = client.post("/api/generate", json={

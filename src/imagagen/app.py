@@ -621,7 +621,23 @@ def create_app(
             width, height = img.size
         except Exception:
             return JSONResponse({"error": "could not read image"}, status_code=400)
-        return {"meta": metadata.read_metadata(data), "width": width, "height": height}
+        meta = metadata.read_metadata(data)
+        # A1111/Forge images store the fully expanded prompt and no style
+        # list, so the selected styles are resolved out of the expanded
+        # prompt the same way Forge does (StyleStore.extract_styles). imagagen
+        # writes an explicit style list, so this only runs for foreign
+        # metadata: it selects the recovered styles and shows the original
+        # (unapplied) prompts. Meta-data save logic is untouched.
+        if meta is not None and "styles" not in meta and meta.get("prompt"):
+            found, prompt, negative = app.state.style_store.extract_styles(
+                meta["prompt"], meta.get("negative_prompt", "")
+            )
+            if found:
+                meta["prompt"] = prompt
+                meta["styles"] = [s.to_dict() for s in found]
+                if "negative_prompt" in meta:
+                    meta["negative_prompt"] = negative
+        return {"meta": meta, "width": width, "height": height}
 
     @app.post("/api/canvas/thumb")
     def set_canvas_from_thumb(body: ThumbBody) -> dict:

@@ -98,6 +98,48 @@ class StyleStore:
             out += [s.to_dict(temporary=True) for s in self._temp.values()]
             return out
 
+    def extract_styles(
+        self, prompt: str, negative_prompt: str
+    ) -> tuple[list[Style], str, str]:
+        """Forge-style restoration of the styles applied to a prompt.
+
+        Given a fully expanded (styles already applied) positive and negative
+        prompt, determine which of this store's styles were applied and the
+        prompts with them removed. Peels one recognised style off at a time
+        until none matches, then returns the peeled styles in the order that
+        re-applies them to reproduce the input (i.e. the reverse of peel
+        order).
+
+        Used to import A1111/Forge images, whose metadata stores the expanded
+        prompt rather than the style list. Returns
+        ``(styles, prompt, negative_prompt)`` where ``styles`` is a list of
+        :class:`Style` (empty when nothing matched).
+        """
+        with self._lock:
+            applicable = self._read() + list(self._temp.values())
+        extracted: list[Style] = []
+        while True:
+            found = None
+            for style in applicable:
+                if not style.prompt and not style.negative_prompt:
+                    continue
+                ok_pos, new_prompt = _extract_style_text(style.prompt, prompt)
+                if not ok_pos:
+                    continue
+                ok_neg, new_negative = _extract_style_text(
+                    style.negative_prompt, negative_prompt
+                )
+                if not ok_neg:
+                    continue
+                found = style
+                prompt, negative_prompt = new_prompt, new_negative
+                applicable.remove(style)
+                break
+            if found is None:
+                break
+            extracted.append(found)
+        return list(reversed(extracted)), prompt, negative_prompt
+
     def get(self, name: str) -> Style | None:
         """Look up by exact name (file styles first, then temporaries)."""
         with self._lock:
@@ -140,6 +182,28 @@ class StyleStore:
             self._temp[style.name] = style.model_copy(
                 update={"optgroup": TEMP_GROUP}
             )
+
+
+def _extract_style_text(style_text: str, prompt: str) -> tuple[bool, str]:
+    """Inverse of :func:`_apply_one`. If ``style_text`` was applied last to
+    yield ``prompt`` (via :func:`apply_styles`), return ``(True, prompt
+    before it was applied)``; otherwise ``(False, prompt)`` unchanged.
+
+    Mirrors Forge's ``extract_style_text_from_prompt``: a style carrying a
+    ``{prompt}`` placeholder must wrap the whole prompt (prefix + suffix
+    around it); a plain style must trail it (with the joining ", " removed).
+    """
+    if "{prompt}" in style_text:
+        left, _, right = style_text.partition("{prompt}")
+        if prompt.startswith(left) and prompt.endswith(right):
+            return True, prompt[len(left): len(prompt) - len(right)]
+    else:
+        if prompt.endswith(style_text):
+            remainder = prompt[: len(prompt) - len(style_text)]
+            if remainder.endswith(", "):
+                remainder = remainder[:-2]
+            return True, remainder
+    return False, prompt
 
 
 def _apply_one(text: str, current: str) -> str:

@@ -152,6 +152,72 @@ def test_apply_styles_unknown_and_empty(tmp_path):
     assert p == "A text"
 
 
+# ---------------- style restoration (Forge import) ----------------
+
+def test_extract_styles_roundtrip(tmp_path):
+    store = StyleStore(tmp_path / "s.csv")
+    store.save(Style(name="Cinematic",
+                     prompt="cinematic film still {prompt} . moody, grainy"))
+    store.save(Style(name="Dunes",
+                     prompt="in the dunes, white sand, turquoise ocean"))
+    store.save(Style(name="Realism Negatives",
+                     negative_prompt="digital art, painting, cartoon"))
+
+    prompt, negative = apply_styles(
+        "a couple on the beach", "ugly", ["Realism Negatives", "Dunes", "Cinematic"],
+        store.get,
+    )
+    found, prompt0, negative0 = store.extract_styles(prompt, negative)
+    # peel order (outermost style first) is reversed back to application order
+    assert [s.name for s in found] == ["Realism Negatives", "Dunes", "Cinematic"]
+    assert prompt0 == "a couple on the beach"
+    assert negative0 == "ugly"
+    # re-applying the recovered styles (in the returned order) reproduces
+    # the expanded prompt exactly -- that is what the import regenerates
+    p2, n2 = apply_styles(prompt0, negative0, [s.name for s in found], store.get)
+    assert p2 == prompt and n2 == negative
+
+
+def test_extract_styles_reference_image(tmp_path):
+    # sunset-couple-style-decode.png, as stored by Forge: fully expanded
+    # prompt, no style list. The real CSV style contents, applied to the
+    # documented raw prompt, must be peeled back to that raw prompt.
+    write_csv(
+        tmp_path / "styles.csv",
+        [
+            "name,prompt,negative_prompt,optgroup",
+            "Realism Negatives,,\"digital art, painting, cartoon, 3d\",Negatives",
+            'Cinematic,"cinematic film still {prompt} . shallow depth, grainy",,Photo',
+            'Dunes,"in the dunes, white sand, turquoise ocean",,Background',
+        ],
+    )
+    store = StyleStore(tmp_path / "styles.csv")
+    expanded = (
+        "cinematic film still a couple on the beach, in the dunes, white sand, "
+        "turquoise ocean . shallow depth, grainy"
+    )
+    negative = "digital art, painting, cartoon, 3d"
+    found, prompt0, negative0 = store.extract_styles(expanded, negative)
+    assert [s.name for s in found] == ["Dunes", "Cinematic", "Realism Negatives"]
+    assert prompt0 == "a couple on the beach"
+    assert negative0 == ""
+
+
+def test_extract_styles_no_match(tmp_path):
+    store = StyleStore(tmp_path / "s.csv")
+    store.save(Style(name="Film", prompt="film photo {prompt} . grainy"))
+    found, prompt0, negative0 = store.extract_styles("a frog", "ugly")
+    assert found == []
+    assert (prompt0, negative0) == ("a frog", "ugly")
+
+
+def test_extract_styles_ignores_empty_style(tmp_path):
+    store = StyleStore(tmp_path / "s.csv")
+    store.save(Style(name="Empty", prompt=""))  # no prompt, no negative
+    found, prompt0, _ = store.extract_styles("a frog", "")
+    assert found == [] and prompt0 == "a frog"
+
+
 # ---------------- metadata round-trip ----------------
 
 def test_metadata_styles_roundtrip():
