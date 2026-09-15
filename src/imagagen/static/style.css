@@ -495,15 +495,18 @@ button.danger:hover { background: #a33; }
   width: 100%;
 }
 
-/* preset dialog: checkbox + label + value per setting */
-.preset-rows { display: flex; flex-direction: column; gap: 0.35rem; }
+/* preset dialog: same spacing rhythm as the model configuration dialog
+   (.cfg-dialog gap 0.55rem, options block one extra 0.35rem down) */
+.preset-dialog { display: flex; flex-direction: column; gap: 0.55rem; }
+/* extra section spacing before the options block (cf. .cfg-mode) */
+.preset-rows { margin-top: 0.35rem; display: flex; flex-direction: column; gap: 0.35rem; }
 .preset-row {
   display: grid;
   grid-template-columns: auto 7.5em 1fr;
   align-items: center;
   gap: 0.4rem;
 }
-.preset-row .preset-label { font-size: 0.78rem; color: #aaa; }
+.preset-row .preset-label { font-size: 0.78rem; color: #aaa; cursor: pointer; }
 /* direct children only: unscoped width:100% here used to bleed into the
    lora rows and squash their selects (cf. the .cfg-mode note) */
 .preset-row > input[type="number"] { width: 100%; }

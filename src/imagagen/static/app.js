@@ -720,7 +720,7 @@ function openPresetDialog(existing, onClose = null) {
   ];
   const rows = el("div", { class: "preset-rows" });
   for (const [key, label, kind, value] of defs) {
-    const cb = el("input", { type: "checkbox", class: "preset-cb" });
+    const cb = el("input", { type: "checkbox", class: "preset-cb", id: `preset-cb-${key}` });
     cb.checked = !!controls[key];
     let input;
     if (kind === "number" || kind === "loras" || kind === "bool") {
@@ -740,7 +740,7 @@ function openPresetDialog(existing, onClose = null) {
     }
     input.dataset.presetKey = key;
     input.dataset.presetKind = kind;
-    rows.append(el("div", { class: "preset-row" }, cb, el("span", { class: "preset-label" }, label), input));
+    rows.append(el("div", { class: "preset-row" }, cb, el("label", { class: "preset-label", for: `preset-cb-${key}` }, label), input));
   }
   const box = el("div", { class: "preset-dialog" },
     el("label", {}, "name", nameIn),
