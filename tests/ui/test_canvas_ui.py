@@ -500,7 +500,7 @@ def test_progress_bar_reserves_space(page, server):
         """async () => {
             await fetch('/api/generate', {method: 'POST',
               headers: {'content-type': 'application/json'},
-              body: JSON.stringify({prompt: 't', width: 64, height: 48,
+              body: JSON.stringify({prompt: 't', width: 64, height: 64,
                                     batch_size: 3})});
         }"""
     )
