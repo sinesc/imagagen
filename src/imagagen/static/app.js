@@ -54,6 +54,32 @@ async function apiError(res, path) {
   return new Error(msg);
 }
 
+// ---------------- prompt token counter ----------------
+// Live CLIP token count for the prompt field, shown in the caption row. The
+// count comes from the server (same BPE vocabulary the SDXL backend uses), so
+// it matches what actually gets encoded. Debounced; responses are sequenced so
+// a slow early request can never overwrite a newer one.
+let tokenTimer = null;
+let tokenSeq = 0;
+async function updatePromptTokens() {
+  const seq = ++tokenSeq;
+  const out = $("prompt-tokens");
+  let r;
+  try {
+    r = await api("/api/prompt-tokens", { prompt: $("prompt").value });
+  } catch (e) {
+    return;
+  }
+  if (seq !== tokenSeq) return; // a newer request superseded this one
+  if (r.tokens == null) { out.textContent = ""; out.classList.remove("over"); return; }
+  out.textContent = String(r.tokens);
+  out.classList.toggle("over", r.windows > 1); // >75 tokens -> split across windows
+}
+function schedulePromptTokens() {
+  clearTimeout(tokenTimer);
+  tokenTimer = setTimeout(updatePromptTokens, 200);
+}
+
 // ---------------- small DOM helpers ----------------
 function el(tag, attrs = {}, ...children) {
   const e = document.createElement(tag);
@@ -1068,6 +1094,7 @@ async function applyPngMeta(meta, width, height) {
   }
   if (meta.prompt !== undefined && meta.prompt !== null) $("prompt").value = meta.prompt;
   if (meta.negative_prompt !== undefined && meta.negative_prompt !== null) $("negative").value = meta.negative_prompt;
+  updatePromptTokens(); // imported metadata may have set the prompt
   for (const id of ["steps", "cfg", "seed", "width", "height"]) {
     if (meta[id] !== undefined && meta[id] !== null) $(id).value = meta[id];
   }
@@ -1317,6 +1344,7 @@ async function init() {
   fillPresetSelect($("preset"));
   applyUiState(u && u.state);
   syncMode();
+  updatePromptTokens(); // the restored prompt may be non-empty
 }
 
 // ---------------- WebSocket ----------------
@@ -1467,6 +1495,7 @@ connectWS();
 ["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch", "denoise", "mask-padding"].forEach((id) => {
   $(id).addEventListener("input", () => scheduleSaveUiState());
 });
+$("prompt").addEventListener("input", schedulePromptTokens);
 $("swap-dims").onclick = () => {
   const w = $("width").value;
   $("width").value = $("height").value;

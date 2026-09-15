@@ -94,7 +94,11 @@
 
     <main id="stage">
       <div id="prompts">
-        <label>Prompt
+        <label>
+          <span class="prompt-head">
+            <span>Prompt</span>
+            <span id="prompt-tokens" class="muted" title="CLIP tokens (75 per window); a prompt longer than one window is split across several"></span>
+          </span>
           <textarea id="prompt" placeholder="a photo of a frog"></textarea>
         </label>
         <textarea id="negative" placeholder="Negative prompt"></textarea>

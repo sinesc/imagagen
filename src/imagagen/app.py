@@ -301,6 +301,21 @@ def create_app(
     def loras() -> dict:
         return {"loras": list_loras(config)}
 
+    @app.post("/api/prompt-tokens")
+    def prompt_tokens(body: dict) -> dict:
+        """Live CLIP token count for the prompt field (UI counter).
+
+        ``tokens`` is None when the tokenizer could not be loaded; the UI then
+        hides the counter. ``windows`` is how many 75-token CLIP windows the
+        prompt occupies (the long-prompt chunked-encoding window size).
+        """
+        from .tokenize import count_prompt_tokens, prompt_windows
+
+        tokens = count_prompt_tokens(body.get("prompt", ""))
+        if tokens is None:
+            return {"tokens": None, "windows": 0}
+        return {"tokens": tokens, "windows": prompt_windows(tokens)}
+
     @app.post("/api/models/select")
     def select_model(body: dict) -> dict:  # sync: runs in the threadpool
         try:

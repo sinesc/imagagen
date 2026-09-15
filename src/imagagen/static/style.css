@@ -189,6 +189,16 @@ button.mini.icon {
   font-size: 0.8rem;
   color: #aaa;
 }
+/* the "Prompt" caption row: label on the left, live token counter right */
+#prompts .prompt-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+#prompt-tokens {
+  font-variant-numeric: tabular-nums;
+}
+#prompt-tokens.over { color: #e6a23c; }
 #prompts textarea {
   background: #222;
   color: #eee;
