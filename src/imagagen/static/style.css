@@ -345,6 +345,32 @@ button.danger:hover { background: #a33; }
   padding: 1rem;
   min-height: 0;
   overflow: hidden;
+  position: relative; /* anchors the thumbnail hover preview */
+}
+/* thumbnail hover preview: the thumbnail's full image, zoom-to-fit, laid
+   over the canvas box while hovering a strip thumbnail. Positioned by JS
+   onto the <canvas> element's on-screen rect (background/border match it),
+   so it looks like the canvas itself -- without touching the view, mask or
+   any state. Purely visual: pointer-events off, faded in/out in 0.25s. */
+#thumb-preview {
+  position: absolute;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1a1a; /* same as the canvas */
+  border: 1px solid #333; /* same as the canvas */
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+#thumb-preview[hidden] { display: none; }
+#thumb-preview.on { opacity: 1; }
+#thumb-preview img {
+  max-width: 100%; /* zoom-to-fit, centred by the flex parent */
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  user-select: none;
 }
 #canvas {
   max-width: 100%;

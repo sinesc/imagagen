@@ -279,6 +279,34 @@ async function restoreThumb(t) {
   storeUndoFlags(r);
 }
 
+// hover preview: the thumbnail's full image, zoom-to-fit, laid over the
+// canvas box. A purely visual overlay -- it never touches the view
+// (zoom/pan), the mask, or the undo stacks. The container is positioned
+// by JS onto the <canvas> element's on-screen rect so it fits it exactly.
+let thumbPreviewHideTimer = null;
+function thumbPreviewShow(url) {
+  if (!view.has) return; // no canvas to overlay on
+  clearTimeout(thumbPreviewHideTimer);
+  const pv = $("thumb-preview");
+  $("thumb-preview-img").src = url;
+  const holder = $("canvas-holder").getBoundingClientRect();
+  const c = cv().getBoundingClientRect();
+  pv.style.left = `${c.left - holder.left}px`;
+  pv.style.top = `${c.top - holder.top}px`;
+  pv.style.width = `${c.width}px`;
+  pv.style.height = `${c.height}px`;
+  pv.hidden = false;
+  void pv.offsetWidth; // flush styles so the fade-in runs from opacity 0
+  pv.classList.add("on");
+}
+function thumbPreviewHide() {
+  const pv = $("thumb-preview");
+  pv.classList.remove("on");
+  clearTimeout(thumbPreviewHideTimer);
+  // let the 0.25s fade-out finish, then drop the element
+  thumbPreviewHideTimer = setTimeout(() => (pv.hidden = true), 250);
+}
+
 function renderThumbs() {
   const strip = $("thumbs");
   strip.hidden = state.thumbs.length === 0;
@@ -291,6 +319,8 @@ function renderThumbs() {
       : `#${i} seed ${t.seed}`;
     if (t.source) image.classList.add("source");
     if (i === state.currentThumb) image.classList.add("selected");
+    image.onmouseenter = () => thumbPreviewShow(t.url);
+    image.onmouseleave = () => thumbPreviewHide();
     image.onclick = async () => {
       try {
         await restoreThumb(t);
