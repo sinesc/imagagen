@@ -258,7 +258,9 @@ def test_preset_dialog_sampler_use_model_default(page, server):
     hrow = box.locator(".preset-row", has_text="scheduler").first
     hrow.locator(".preset-cb").check()
     page.click("#dialog-ok")
-    page.wait_for_function("document.getElementById('dialog').hidden")
+    # saving returns to the management list (the new preset is re-listed)
+    wait_until(lambda: page.evaluate(
+        "document.getElementById('dialog-title').textContent") == "Setting presets")
     with httpx.Client(base_url=base, timeout=10) as c:
         p = c.get("/api/presets/reset-sampler").json()["preset"]
     assert p["sampler"] == "Euler a"
@@ -291,18 +293,21 @@ def test_preset_soft_inpaint_sag_checkbox_rows(page, server):
     arow.locator(".preset-cb").check()        # value stays unchecked:
     # the preset actively disables SAG
     page.click("#dialog-ok")
-    page.wait_for_function("document.getElementById('dialog').hidden")
+    # saving returns to the management list (the new preset is re-listed)
+    wait_until(lambda: page.evaluate(
+        "document.getElementById('dialog-title').textContent") == "Setting presets")
     with httpx.Client(base_url=base, timeout=10) as c:
         p = c.get("/api/presets/enable-sag").json()["preset"]
     assert p["soft_inpaint"] is True and p["sag"] is False
     assert p["controls"]["soft_inpaint"] is True and p["controls"]["sag"] is True
 
-    # the edit dialog prefills both checkboxes
-    page.click("#preset-manage")
-    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
+    # the edit dialog prefills both checkboxes (the management list is
+    # still open from the save)
+    wait_until(lambda: page.locator(".preset-manage-row", has_text="Enable SAG").count() == 1)
     page.locator(".preset-manage-row", has_text="Enable SAG") \
         .locator(".mini").first.click()
-    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
+    wait_until(lambda: page.evaluate(
+        "document.getElementById('dialog-title').textContent") == "Edit preset")
     box = page.locator(".preset-dialog")
     srow = box.locator(".preset-row", has_text="soft inpainting")
     assert srow.locator(".preset-cb").is_checked()
@@ -311,6 +316,11 @@ def test_preset_soft_inpaint_sag_checkbox_rows(page, server):
     assert arow.locator(".preset-cb").is_checked()
     assert not arow.locator(".preset-val").is_checked()
     page.click("#dialog-cancel")
+    # cancelling also returns to the management list
+    wait_until(lambda: page.evaluate(
+        "document.getElementById('dialog-title').textContent") == "Setting presets")
+    # close the management list to get back to the main UI
+    page.click("#dialog-ok")
     wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
 
     # applying toggles the sidebar checkboxes: SAG was actively disabled
@@ -382,7 +392,9 @@ def test_preset_groups_in_dropdown_and_dialog(page, server):
     box.locator("label").nth(0).locator("input").fill("New grouped")
     box.locator("label").nth(1).locator("input").fill("Outpaint 1440p")
     page.click("#dialog-ok")
-    wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+    # saving returns to the management list
+    wait_until(lambda: page.evaluate(
+        "document.getElementById('dialog-title').textContent") == "Setting presets")
     with httpx.Client(base_url=base, timeout=10) as c:
         p = c.get("/api/presets/new-grouped").json()["preset"]
     assert p["group"] == "Outpaint 1440p"

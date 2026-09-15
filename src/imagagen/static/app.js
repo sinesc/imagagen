@@ -114,12 +114,14 @@ const opt = (value, text) => {
 
 // ---------------- generic dialog ----------------
 let dialogOk = null;
-function openDialog(title, body, onOk, okText = "Save") {
+let dialogClose = null;
+function openDialog(title, body, onOk, okText = "Save", onClose = null) {
   $("dialog-title").textContent = title;
   const b = $("dialog-body");
   b.innerHTML = "";
   b.append(body);
   dialogOk = onOk;
+  dialogClose = onClose;
   $("dialog-ok").textContent = okText;
   $("dialog-ok").onclick = async () => {
     if (!dialogOk) { closeDialog(); return; }
@@ -130,7 +132,10 @@ function openDialog(title, body, onOk, okText = "Save") {
 }
 function closeDialog() {
   $("dialog").hidden = true;
+  const onClose = dialogClose;
   dialogOk = null;
+  dialogClose = null;
+  if (onClose) onClose(); // e.g. return to the management list dialog
 }
 $("dialog-cancel").onclick = closeDialog;
 $("dialog").onclick = (e) => { if (e.target === $("dialog")) closeDialog(); };
@@ -239,7 +244,7 @@ async function loadStyles() {
   schedulePromptTokens(); // a selected style's contents may have changed
 }
 
-function openStyleDialog(existing) {
+function openStyleDialog(existing, onClose = null) {
   const s = existing || {};
   const nameIn = el("input", { type: "text", maxlength: "120" });
   nameIn.value = s.name || "";
@@ -270,7 +275,7 @@ function openStyleDialog(existing) {
       dialogError(e.message);
       return false;
     }
-  });
+  }, "Save", onClose);
 }
 
 function openStyleManage() {
@@ -284,7 +289,8 @@ function openStyleManage() {
         s.name + (s.optgroup ? ` — ${s.optgroup}` : "") + (s.temporary ? " (temporary)" : ""));
       const edit = el("button", { class: "mini icon", type: "button", title: s.temporary ? "copy to styles.csv" : "edit" }, "✎");
       const del = el("button", { class: "mini icon", type: "button", title: s.temporary ? "drop (temporary styles are not in styles.csv)" : "delete" }, "✗");
-      edit.onclick = () => { closeDialog(); openStyleDialog(s); };
+      // saving/cancelling returns to this management list
+      edit.onclick = () => { closeDialog(); openStyleDialog(s, openStyleManage); };
       del.onclick = async () => {
         if (!confirm(`Delete style "${s.name}"?`)) return;
         try {
@@ -305,7 +311,7 @@ function openStyleManage() {
     list.append(newBtn);
   };
   render();
-  newBtn.onclick = () => { closeDialog(); openStyleDialog(null); };
+  newBtn.onclick = () => { closeDialog(); openStyleDialog(null, openStyleManage); };
   openDialog("Style configuration", el("div", { class: "preset-manage-wrap" }, list), null, "Close");
 }
 
@@ -685,7 +691,7 @@ function presetValueInput(kind, value, emptyLabel = "—") {
   return input;
 }
 
-function openPresetDialog(existing) {
+function openPresetDialog(existing, onClose = null) {
   const p = existing || {};
   const controls = p.controls || {};
   const nameIn = el("input", { type: "text", maxlength: "120" });
@@ -765,7 +771,7 @@ function openPresetDialog(existing) {
     }
     await loadPresets();
     scheduleSaveUiState(0);
-  });
+  }, "Save", onClose);
 }
 
 function openPresetManage() {
@@ -785,7 +791,8 @@ function openPresetManage() {
         try {
           preset = (await (await fetch(`/api/presets/${encodeURIComponent(name)}`)).json()).preset;
         } catch (e) { setStatus(e.message); return; }
-        openPresetDialog(preset);
+        // saving/cancelling returns to this management list
+        openPresetDialog(preset, openPresetManage);
       };
       del.onclick = async () => {
         if (!confirm(`Delete preset "${name}"?`)) return;
@@ -800,7 +807,7 @@ function openPresetManage() {
     list.append(newBtn);
   };
   render();
-  newBtn.onclick = () => { closeDialog(); openPresetDialog(null); };
+  newBtn.onclick = () => { closeDialog(); openPresetDialog(null, openPresetManage); };
   openDialog("Setting presets", el("div", { class: "preset-manage-wrap" }, list), null, "Close");
 }
 

@@ -140,13 +140,12 @@ def test_style_manage_create_edit_delete(page, server):
     page.locator(".style-prompt").first.fill("analog film photo {prompt}")
     page.locator(".style-prompt").nth(1).fill("clean")
     page.click("#dialog-ok")
-    wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+    # saving returns to the management list (re-rendered with the new style)
+    wait_until(lambda: page.evaluate(
+        "document.getElementById('dialog-title').textContent") == "Style configuration")
     text = (root / "styles.csv").read_text("utf-8")
     assert "Analog Film" in text and "Photo Styles" in text
 
-    # the management list is open again? No -- it was closed on Create; reopen
-    page.click("#style-manage")
-    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
     # edit the new style
     rows = page.locator(".preset-manage-row")
     idx = page.eval_on_selector_all(
@@ -160,12 +159,12 @@ def test_style_manage_create_edit_delete(page, server):
     assert page.locator(".style-prompt").first.input_value() == "analog film photo {prompt}"
     page.locator(".style-prompt").first.fill("vintage {prompt}")
     page.click("#dialog-ok")
-    wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+    # saving returns to the management list again
+    wait_until(lambda: page.evaluate(
+        "document.getElementById('dialog-title').textContent") == "Style configuration")
     assert "vintage {prompt}" in (root / "styles.csv").read_text("utf-8")
 
     # required name validation keeps the dialog open
-    page.click("#style-manage")
-    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
     page.click("text=+ New style")
     wait_until(
         lambda: page.evaluate("document.getElementById('dialog-title').textContent")
@@ -176,15 +175,16 @@ def test_style_manage_create_edit_delete(page, server):
     wait_until(lambda: page.locator(".dialog-error").count() >= 1)
     page.keyboard.press("Escape")
 
-    # delete (confirm() accepts)
+    # delete (confirm() accepts); the list is open again from the Escape above
     page.on("dialog", lambda d: d.accept())
-    page.click("#style-manage")
-    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
+    wait_until(lambda: page.evaluate(
+        "document.getElementById('dialog-title').textContent") == "Style configuration")
     idx = page.eval_on_selector_all(
         ".preset-manage-name", "els => els.map(e => e.textContent)"
     ).index("Plain")
     page.locator(".preset-manage-row").nth(idx).locator("button").nth(1).click()  # ✗
-    wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+    # the list stays open after a delete; "Plain" is gone from it (4 remain)
+    wait_until(lambda: page.locator(".preset-manage-name").count() == 4)
     assert "Plain" not in (root / "styles.csv").read_text("utf-8")
 
 
