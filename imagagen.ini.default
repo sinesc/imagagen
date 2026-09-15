@@ -18,9 +18,13 @@
 #                ~1.4 GiB VRAM permanently; costs ~1 s per generation
 #                (CPU fp16 encoding is ~0.6 s per prompt). No quality loss.
 #   vae-tiling          false (default) | true
-#                Tiled VAE decode: lower peak VRAM at 1024² (7.4 -> 4.3
-#                GiB combined with nf4+cpu above), slight quality risk
-#                from tile seams (not visible in practice at default size).
+#                true: force tiled VAE decode/encode at every size.
+#                false (default): automatic -- tiled for images above
+#                ~4 MP (the untiled path allocates full-resolution fp32
+#                conv buffers and OOMs on a 16 GB card past ~5 MP; at
+#                3440x1440 tiling is faster, peaks 7.4 vs 13.3 GiB, and
+#                differs by <= 1/255 per pixel), untiled below that.
+#                Tile-seam quality risk is negligible in practice.
 #
 #   Combined (all three on): 1024² generation peaks at ~4.3 GiB and runs
 #   in ~14 s -- SDXL fits on a 6 GB card or shares a GPU with a large LLM.

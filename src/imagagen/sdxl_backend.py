@@ -58,7 +58,11 @@ VRAM options (imagagen.ini, all optional, all off by default):
 - text-encoder-device = cpu: keeps the CLIP encoders in system RAM
   (saves ~1.4 GiB VRAM permanently); CPU fp16 encoding is only ~0.6 s per
   prompt, so the speed cost is ~1 s per generation.
-- vae-tiling = on: tiled VAE decode, lower peak at 1024².
+- vae-tiling = on: force tiled VAE decode/encode at every size. Off
+  (default) is automatic: tiled above ~4 MP of image (the untiled path
+  allocates full-resolution 32-channel fp32 conv buffers and OOMs on a
+  16 GB card past ~5 MP; at 3440x1440 tiling is faster, peaks at 7.4 GiB
+  instead of 13.3, and differs by <= 1/255 per pixel), untiled below.
 
 LoRAs (Phase 4):
 - applied via diffusers' `load_lora_weights` / `set_adapters`, which
@@ -342,11 +346,16 @@ class SdxlBackend(ModelBackend):
         self.pipe.vae.to(dtype=self.vae_dtype)
         # batch=1 slicing keeps VAE decode at batch-1 memory cost
         self.pipe.vae.enable_slicing()
-        # sliced attention: no quality change, lower peak VRAM at 1024²
-        try:
-            self.pipe.enable_attention_slicing()
-        except Exception:
-            pass  # not supported by this UNet variant; fall back to full attention
+        # SDPA attention (diffusers' default; Forge's default 'pytorch'
+        # attention is the same op): O(tokens) memory. Set explicitly --
+        # `enable_attention_slicing()` must NOT be used: in diffusers 0.40
+        # it installs SlicedAttnProcessor, which slices the *batch* dim,
+        # so at batch=1 every self-attention materializes a full heads×T×T
+        # score matrix (~14 GiB per layer at a 430x180 latent) and large
+        # images OOM in the first downblock.
+        from diffusers.models.attention_processor import AttnProcessor2_0
+
+        self.pipe.unet.set_attn_processor(AttnProcessor2_0())
 
         # --- VRAM options from imagagen.ini (all default off) ---
         self.text_encoder_device = self.device
@@ -358,8 +367,6 @@ class SdxlBackend(ModelBackend):
                 self.pipe.text_encoder.cpu()
                 if getattr(self.pipe, "text_encoder_2", None) is not None:
                     self.pipe.text_encoder_2.cpu()
-            if config.vae_tiling:
-                self.pipe.vae.enable_tiling()
             if config.unet_quantization == "nf4":
                 _quantize_unet_nf4(self.pipe.unet, self.device)
                 torch.cuda.empty_cache()
@@ -568,6 +575,16 @@ class SdxlBackend(ModelBackend):
         w = max(8, (request.width // 8) * 8)
         h = max(8, (request.height // 8) * 8)
         lh, lw = h // 8, w // 8
+
+        # VAE tiling: vae-tiling=true in imagagen.ini forces it; otherwise
+        # it is automatic for large images. The untiled decode/encode
+        # allocates full-resolution 32-channel fp32 conv buffers (~1.6 GiB
+        # per MP of image on top of the ~5 GiB of resident weights) and
+        # OOMs on a 16 GB card past ~5 MP; measured at 3440x1440 the tiled
+        # path is faster (3.6 s vs 4.3 s), peaks at 7.4 GiB instead of
+        # 13.3, and differs by <= 1/255 per pixel.
+        if self.config is not None:
+            pipe.vae.use_tiling = self.config.vae_tiling or w * h > 4_000_000
 
         self._apply_loras(request.loras)
 
