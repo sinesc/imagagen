@@ -158,7 +158,6 @@ button.mini.icon {
   flex-wrap: wrap;
   gap: 0.4rem;
   border-top: 1px solid #333;
-  margin-top: 0.6rem;
   padding-top: 0.6rem;
 }
 #thumbs[hidden] { display: none; }
@@ -245,7 +244,6 @@ button.danger:hover { background: #a33; }
   font-size: 0.8rem;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
 }
 #progress-bar {
   height: 8px;
@@ -265,6 +263,7 @@ button.danger:hover { background: #a33; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: right;
 }
 
 #stage {
