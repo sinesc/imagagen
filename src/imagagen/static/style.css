@@ -133,7 +133,10 @@ button.mini.icon {
 .loras { display: flex; flex-direction: column; gap: 0.25rem; }
 .lora-list { display: flex; flex-direction: column; gap: 0.2rem; }
 .lora-row { display: flex; gap: 0.25rem; align-items: center; }
-.lora-row select { flex: 1; min-width: 0; }
+/* width: 0 (with flex: 1) pins the select's min-content contribution so a
+   long LoRA filename can't widen ancestors (e.g. the model config dialog
+   fieldset); min-width: 0 lets it shrink in definite-width containers */
+.lora-row select { flex: 1; min-width: 0; width: 0; }
 .lora-row input { width: 4.2em; }
 .lora-row select, .lora-row input {
   background: #222; color: #eee; border: 1px solid #444;
