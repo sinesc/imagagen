@@ -52,7 +52,7 @@ def get_sigmas_exponential(n: int, sigma_min: float, sigma_max: float,
 
 def get_sigmas_polyexponential(n: int, sigma_min: float, sigma_max: float,
                                rho: float = 1.0, device: str = "cpu") -> torch.Tensor:
-    ramp = torch.linspace(1, 0, n) ** rho
+    ramp = torch.linspace(1, 0, n, device=device) ** rho
     sigmas = torch.exp(ramp * (math.log(sigma_max) - math.log(sigma_min)) + math.log(sigma_min))
     return append_zero(sigmas)
 
