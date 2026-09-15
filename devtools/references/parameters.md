@@ -1,3 +1,31 @@
+# woman-at-sunset.png
+
+prompt: cinematic film still woman walking at the beach, summer outfit, sunset, beautiful sky . shallow depth of field, vignette, highly detailed, high budget Hollywood movie, bokeh, cinemascope, moody, epic, gorgeous, film grain, grainy, highly dynamic shot, motion blur, strong depth of field, smooth blurry background, gaussian blur
+negative:
+seed: 1000164628
+model: epicrealismXL11.0.safetensors
+CFG: 7.5
+steps: 20
+sampler: DPM++ 2M
+scheduler: Polyexponential
+resolution: 1600x512
+SAG: false
+user description: woman walking on the beach at sunset, viewed from behind, her right hand is distorted/blurry
+
+# woman-at-sunset-sag.png
+
+prompt: cinematic film still woman walking at the beach, summer outfit, sunset, beautiful sky . shallow depth of field, vignette, highly detailed, high budget Hollywood movie, bokeh, cinemascope, moody, epic, gorgeous, film grain, grainy, highly dynamic shot, motion blur, strong depth of field, smooth blurry background, gaussian blur
+negative:
+seed: 1000164628
+model: epicrealismXL11.0.safetensors
+CFG: 7.5
+steps: 20
+sampler: DPM++ 2M
+scheduler: Polyexponential
+resolution: 1600x512
+SAG: true
+user description: woman walking on the beach at sunset, viewed from behind, both hands correct (given the limited resolution)
+
 # fantasy-island-lcm.png
 
 prompt: fairy tale a magical island floating in the sky, an endless ocean below. magical, fantastical, enchanting, storybook style, highly detailed
