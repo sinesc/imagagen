@@ -996,12 +996,16 @@ function openSoftInpaintDialog() {
   });
 }
 
-// The generate body's soft_inpainting field: null when off or in
-// "generate" mode (the backend only applies it with an init mask anyway)
+// The generate body's soft_inpainting field: null in "generate" mode (the
+// backend only applies it with an init mask anyway); in the inpaint modes
+// it is always sent, enabled or not, so the PNG metadata carries
+// "Soft inpainting enabled" unconditionally (like the Forge extension) and
+// a dropped image can restore the checkbox in both states.
 function softInpaintBody() {
-  if (!$("soft-inpaint").checked || $("mode").value === "generate") return null;
+  if ($("mode").value === "generate") return null;
   const s = state.soft;
   return {
+    enabled: $("soft-inpaint").checked,
     mask_blend_power: s.power,
     mask_blend_scale: s.scale,
     inpaint_detail_preservation: s.detail,
@@ -1047,13 +1051,19 @@ function openSagDialog() {
   });
 }
 
-// The generate body's sag field: null when off. All modes; the backend
-// needs cfg > 1 to apply it (skips it like Forge when there is no
-// unconditional pass)
+// The generate body's sag field: always sent (all modes), enabled or not,
+// so the PNG metadata carries sag_enabled unconditionally (like the Forge
+// extension) and a dropped image can restore the checkbox in both states.
+// The backend needs cfg > 1 to apply it (skips it like Forge when there
+// is no unconditional pass)
 function sagBody() {
-  if (!$("sag").checked) return null;
   const s = state.sag;
-  return { scale: s.scale, blur_sigma: s.blur, threshold: s.threshold };
+  return {
+    enabled: $("sag").checked,
+    scale: s.scale,
+    blur_sigma: s.blur,
+    threshold: s.threshold,
+  };
 }
 
 function wireToolbar() {
@@ -1186,9 +1196,12 @@ async function applyPngMeta(meta, width, height) {
       console.error("styles/temp:", e);
     }
   }
-  // soft inpainting (Forge extra parameters) round-trips through the PNG
-  if (meta["Soft inpainting enabled"]) {
-    $("soft-inpaint").checked = true;
+  // soft inpainting (Forge extra parameters) round-trips through the PNG;
+  // the enabled flag is written unconditionally, so a dropped image
+  // restores the checkbox in BOTH states (absent key = leave as-is)
+  if (meta["Soft inpainting enabled"] !== undefined
+      && meta["Soft inpainting enabled"] !== null) {
+    $("soft-inpaint").checked = String(meta["Soft inpainting enabled"]) === "True";
     const softMeta = {
       power: "Soft inpainting schedule bias",
       scale: "Soft inpainting preservation strength",
@@ -1203,9 +1216,11 @@ async function applyPngMeta(meta, width, height) {
     }
   }
   // self attention guidance (Forge SAG extra parameters) round-trips
-  // through the PNG under the extension's raw snake_case keys
-  if (meta.sag_enabled) {
-    $("sag").checked = true;
+  // through the PNG under the extension's raw snake_case keys; the
+  // enabled flag is written unconditionally, so a dropped image restores
+  // the checkbox in BOTH states (absent key = leave as-is)
+  if (meta.sag_enabled !== undefined && meta.sag_enabled !== null) {
+    $("sag").checked = String(meta.sag_enabled) === "True";
     for (const [key, label] of Object.entries({
       scale: "sag_scale",
       blur: "sag_blur_sigma",

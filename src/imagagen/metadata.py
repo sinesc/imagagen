@@ -86,7 +86,9 @@ def build_parameters(
     for name, weight in loras or []:
         tail.append(f"Lora: {name}@{weight:g}")
     if soft_inpainting is not None:
-        tail.append("Soft inpainting enabled: True")
+        # written unconditionally (like the Forge extension), so a dropped
+        # image can restore the checkbox in BOTH states
+        tail.append(f"Soft inpainting enabled: {soft_inpainting.enabled}")
         tail.append(
             f"Soft inpainting schedule bias: {soft_inpainting.mask_blend_power:g}"
         )
@@ -111,7 +113,9 @@ def build_parameters(
             f"{soft_inpainting.composite_difference_contrast:g}"
         )
     if sag is not None:
-        tail.append("sag_enabled: True")
+        # written unconditionally (like the Forge extension), so a dropped
+        # image can restore the checkbox in BOTH states
+        tail.append(f"sag_enabled: {sag.enabled}")
         tail.append(f"sag_scale: {sag.scale:g}")
         tail.append(f"sag_blur_sigma: {sag.blur_sigma:g}")
         tail.append(f"sag_threshold: {sag.threshold:g}")

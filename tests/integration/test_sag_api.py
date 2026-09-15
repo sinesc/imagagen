@@ -58,6 +58,26 @@ def test_generate_with_sag_roundtrips_metadata(tmp_path):
         assert meta["sag_threshold"] == "1.5"
 
 
+def test_generate_with_sag_disabled_writes_flag_false(tmp_path):
+    # a disabled SAG still writes the flag (like the Forge extension), so
+    # dropping such an image can switch the UI checkbox back off
+    with _client(tmp_path) as c:
+        with c.websocket_connect("/api/ws") as ws:
+            r = c.post("/api/generate", json={
+                "prompt": "test", "width": 64, "height": 64,
+                "sag": {"enabled": False, "scale": 1.25},
+            })
+            assert r.status_code == 200, r.text
+            _wait_done(ws, r.json()["job_id"])
+            meta = c.post("/api/png-meta",
+                          content=c.get("/api/thumb/1/0.png").content).json()["meta"]
+        assert meta["sag_enabled"] == "False"
+        assert meta["sag_scale"] == "1.25"
+        # values still default to the Forge sliders
+        assert meta["sag_blur_sigma"] == "2"
+        assert meta["sag_threshold"] == "1"
+
+
 def test_generate_without_sag_has_no_sag_metadata(tmp_path):
     with _client(tmp_path) as c:
         with c.websocket_connect("/api/ws") as ws:

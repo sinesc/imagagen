@@ -81,6 +81,25 @@ def test_generate_with_soft_inpainting_roundtrips_metadata(tmp_path):
             assert meta["Soft inpainting difference contrast"] == "4"
 
 
+def test_generate_with_soft_disabled_writes_flag_false(tmp_path):
+    # a disabled soft inpainting still writes the flag (like the Forge
+    # extension), so dropping such an image can switch the UI checkbox off
+    with _client(tmp_path) as c:
+        _setup_canvas(c)
+        with c.websocket_connect("/api/ws") as ws:
+            r = c.post("/api/generate", json={
+                "prompt": "test", "width": 64, "height": 64,
+                "mode": "inpaint_masked", "denoise": 0.6,
+                "soft_inpainting": {"enabled": False, "mask_blend_power": 3},
+            })
+            assert r.status_code == 200, r.text
+            _wait_done(ws, r.json()["job_id"])
+            meta = c.post("/api/png-meta",
+                          content=c.get("/api/thumb/1/0.png").content).json()["meta"]
+            assert meta["Soft inpainting enabled"] == "False"
+            assert meta["Soft inpainting schedule bias"] == "3"
+
+
 def test_generate_without_soft_has_no_soft_metadata(tmp_path):
     with _client(tmp_path) as c:
         _setup_canvas(c)

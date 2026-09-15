@@ -54,8 +54,16 @@ from pydantic import BaseModel, Field
 
 
 class SelfAttentionGuidance(BaseModel):
-    """SAG options; same names, ranges and defaults as the Forge sliders."""
+    """SAG options; same names, ranges and defaults as the Forge sliders.
 
+    ``enabled`` mirrors the UI checkbox. The client always sends the object
+    (not ``null``) so the PNG metadata carries ``sag_enabled`` in both
+    states -- like the Forge extension, which publishes all four parameters
+    unconditionally -- and dropping an SAG-off image can switch the
+    checkbox back off. The backend treats a disabled object as absent.
+    """
+
+    enabled: bool = True
     scale: float = Field(0.5, ge=-2.0, le=5.0)
     blur_sigma: float = Field(2.0, ge=0.0, le=10.0)
     threshold: float = Field(1.0, ge=0.0, le=4.0)

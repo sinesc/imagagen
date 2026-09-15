@@ -103,6 +103,7 @@ def forge_weighted_histogram_filter(img, kernel, kernel_center,
 
 def test_defaults_match_forge():
     s = SoftInpainting()
+    assert s.enabled is True  # client always sends the object; flag toggles
     assert (s.mask_blend_power, s.mask_blend_scale,
             s.inpaint_detail_preservation, s.composite_mask_influence,
             s.composite_difference_threshold, s.composite_difference_contrast

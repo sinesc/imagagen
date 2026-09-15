@@ -648,7 +648,8 @@ class SdxlBackend(ModelBackend):
             sag = request.sag
             sag_rec = (
                 SagRecorder()
-                if (sag is not None and request.cfg > 1.0 and min(lh, lw) > 4)
+                if (sag is not None and sag.enabled
+                        and request.cfg > 1.0 and min(lh, lw) > 4)
                 else None
             )
 
@@ -776,6 +777,8 @@ class SdxlBackend(ModelBackend):
             nmask4 = None  # (4, lh, lw): the inpaint region (1) as seen by
                            # soft inpainting (all four channels carry it)
             soft = request.soft_inpainting
+            if soft is not None and not soft.enabled:
+                soft = None  # a disabled object behaves exactly like absent
             sigma_sched = sigmas
             if request.init_image is not None:
                 init_latent = self._encode_init(pipe, request.init_image, device)

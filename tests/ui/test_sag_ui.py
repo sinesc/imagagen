@@ -5,7 +5,13 @@ SAG works in all modes), and the three-slider options dialog with
 persistence.
 """
 
+import io
+
+from PIL import Image
+
 from conftest import wait_until
+from imagagen import metadata as md
+from imagagen.sag import SelfAttentionGuidance
 
 
 def _open(page, base):
@@ -109,3 +115,62 @@ def test_sag_checkbox_and_options_persist_across_reload(page, server):
     assert wait_until(lambda: page.locator("#sag").is_checked())
     # SAG stays enabled in "generate" mode (no mode gating)
     assert not page.locator("#sag").is_disabled()
+
+
+def _sag_png(sag) -> bytes:
+    """A minimal PNG carrying the given sag object in its parameters chunk
+    (sag=None -> no sag keys at all, like a legacy/other-tool image)."""
+    img, info = md.attach_metadata(
+        Image.new("RGB", (64, 64), (9, 10, 11)),
+        md.build_parameters("a photo of a frog", "blurry", 20, "Euler a",
+                            "Karras", 7.0, 1, 64, 64, "some_model", "abc",
+                            sag=sag),
+    )
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", pnginfo=info)
+    return buf.getvalue()
+
+
+def _drop_png(page, selector: str, png: bytes, name="drop.png"):
+    import base64
+
+    page.evaluate(
+        """async ([selector, b64, name]) => {
+            const el = document.querySelector(selector);
+            const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+            const dt = new DataTransfer();
+            dt.items.add(new File([bytes], name, {type: "image/png"}));
+            el.dispatchEvent(new DragEvent("dragover",
+                {dataTransfer: dt, bubbles: true, cancelable: true}));
+            el.dispatchEvent(new DragEvent("drop",
+                {dataTransfer: dt, bubbles: true, cancelable: true}));
+        }""",
+        [selector, base64.b64encode(png).decode(), name],
+    )
+
+
+def test_dropped_image_restores_sag_checkbox_both_states(page, server):
+    """Regression: the sag_enabled flag is written unconditionally, so a
+    dropped image restores the checkbox in BOTH directions (and an image
+    without the key leaves the checkbox as-is)."""
+    base, _ = server
+    _open(page, base)
+
+    # SAG on -> drop an image generated with SAG off: the checkbox must
+    # turn off (and the image's option values are imported)
+    page.check("#sag")
+    _drop_png(page, "#prompt", _sag_png(SelfAttentionGuidance(enabled=False, scale=2.0)))
+    assert wait_until(lambda: not page.locator("#sag").is_checked(), timeout=5)
+    assert wait_until(lambda: _ui_state_key(page, "sag") is False, timeout=5)
+    assert wait_until(lambda: _ui_state_key(page, "sag_scale") == 2.0, timeout=5)
+
+    # the inverse: SAG off -> drop an image with SAG on
+    _drop_png(page, "#prompt", _sag_png(SelfAttentionGuidance()))
+    assert wait_until(lambda: page.locator("#sag").is_checked(), timeout=5)
+    assert wait_until(lambda: _ui_state_key(page, "sag_scale") == 0.5, timeout=5)
+
+    # an image without any sag keys (legacy / other tool) leaves the
+    # checkbox as-is
+    _drop_png(page, "#prompt", _sag_png(None))
+    page.wait_for_timeout(300)
+    assert page.locator("#sag").is_checked()

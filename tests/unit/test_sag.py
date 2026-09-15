@@ -47,9 +47,21 @@ def forge_mass(q, k, heads):
 
 def test_sag_defaults_match_forge_sliders():
     s = SelfAttentionGuidance()
+    assert s.enabled is True
     assert s.scale == 0.5
     assert s.blur_sigma == 2.0
     assert s.threshold == 1.0
+
+
+def test_sag_enabled_flag_roundtrips():
+    # the client always sends the object (like Forge always publishes the
+    # parameters), toggling only the flag; the backend treats a disabled
+    # object as absent
+    off = SelfAttentionGuidance(enabled=False, scale=2.0)
+    assert off.enabled is False
+    assert off.scale == 2.0
+    with pytest.raises(Exception):
+        SelfAttentionGuidance(enabled="maybe")
 
 
 def test_sag_ranges_match_forge_sliders():

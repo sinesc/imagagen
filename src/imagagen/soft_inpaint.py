@@ -33,8 +33,15 @@ DEFAULTS = (1, 0.5, 4, 0, 0.5, 2)
 
 
 class SoftInpainting(BaseModel):
-    """The six Forge soft-inpainting sliders."""
+    """The six Forge soft-inpainting sliders.
 
+    ``enabled`` mirrors the UI checkbox (see ``SelfAttentionGuidance``):
+    the client sends the object in both states so the PNG metadata carries
+    ``Soft inpainting enabled`` unconditionally and import can restore the
+    off state; the backend treats a disabled object as absent.
+    """
+
+    enabled: bool = True
     mask_blend_power: float = Field(DEFAULTS[0], ge=0, le=8)
     mask_blend_scale: float = Field(DEFAULTS[1], ge=0, le=8)
     inpaint_detail_preservation: float = Field(DEFAULTS[2], ge=1, le=32)
