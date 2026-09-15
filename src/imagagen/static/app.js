@@ -599,7 +599,8 @@ async function deleteConfig() {
 
 // ---------------- presets (Phase 4) ----------------
 const PRESET_KEYS = ["width", "height", "steps", "cfg", "seed", "batch",
-  "sampler", "scheduler", "mode", "denoise", "mask_padding", "loras"];
+  "sampler", "scheduler", "mode", "denoise", "mask_padding", "loras",
+  "soft_inpaint", "sag"]; // enable/disable of the sidebar checkboxes
 
 async function applyPreset(name) {
   if (!name) return false;
@@ -622,9 +623,10 @@ async function applyPreset(name) {
     else if (key === "mode") {
       $("mode").value = p[key];
       syncMode();
-    } else {
-      $(key).value = p[key];
     }
+    else if (key === "soft_inpaint") $("soft-inpaint").checked = p[key];
+    else if (key === "sag") $("sag").checked = p[key];
+    else $(key).value = p[key];
   }
   scheduleSaveUiState(0);
   setStatus(`preset "${name}" applied`);
@@ -672,6 +674,12 @@ function presetValueInput(kind, value, emptyLabel = "—") {
     input.append(opt("", emptyLabel));
     return input;
   }
+  if (kind === "bool") {
+    // second checkbox in the row: the enable/disable value itself
+    const input = el("input", { class: "preset-val", type: "checkbox" });
+    input.checked = value === true;
+    return input;
+  }
   const input = el("input", { class: "preset-val", type: "number" });
   if (value !== null && value !== undefined) input.value = value;
   return input;
@@ -698,13 +706,15 @@ function openPresetDialog(existing) {
     ["denoise", "denoise strength", "number", p.denoise],
     ["mask_padding", "mask padding", "number", p.mask_padding],
     ["loras", "LORAs", "loras", p.loras],
+    ["soft_inpaint", "soft inpainting", "bool", p.soft_inpaint],
+    ["sag", "self attention guidance", "bool", p.sag],
   ];
   const rows = el("div", { class: "preset-rows" });
   for (const [key, label, kind, value] of defs) {
     const cb = el("input", { type: "checkbox", class: "preset-cb" });
     cb.checked = !!controls[key];
     let input;
-    if (kind === "number" || kind === "loras") {
+    if (kind === "number" || kind === "loras" || kind === "bool") {
       input = presetValueInput(kind, value);
     } else {
       // sampler/scheduler: "" means "Model default" (applied on select);
@@ -737,6 +747,7 @@ function openPresetDialog(existing) {
       const key = input.dataset.presetKey;
       body.controls[key] = row.querySelector(".preset-cb").checked;
       if (input.dataset.presetKind === "loras") body[key] = readLoraList(input);
+      else if (input.dataset.presetKind === "bool") body[key] = input.checked;
       else if (input.dataset.presetKind === "select") {
         // sampler/scheduler: "" is a real value ("Model default", the
         // main UI's empty option); mode has no empty state, so "" -> null
