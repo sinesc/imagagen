@@ -122,6 +122,9 @@ function openDialog(title, body, onOk, okText = "Save", onClose = null) {
   b.append(body);
   dialogOk = onOk;
   dialogClose = onClose;
+  // a close-only dialog (no onOk) has the ok button as its single action,
+  // so the functionally identical Cancel button is hidden
+  $("dialog-cancel").hidden = !onOk;
   $("dialog-ok").textContent = okText;
   $("dialog-ok").onclick = async () => {
     if (!dialogOk) { closeDialog(); return; }

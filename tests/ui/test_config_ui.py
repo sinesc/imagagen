@@ -201,7 +201,8 @@ def test_preset_apply_and_manage(page, server):
     page.click("#preset-manage")
     wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
     assert page.locator(".preset-manage-row").count() == 1
-    # delete (confirm() auto-accept)
+    # the close-only list dialog has no redundant Cancel button
+    assert not page.locator("#dialog-cancel").is_visible()
     _dialogs(page, "")
     page.locator(".preset-manage-row .mini").last.click()
     wait_until(lambda: page.evaluate("state.presets.length === 0"))
@@ -308,6 +309,8 @@ def test_preset_soft_inpaint_sag_checkbox_rows(page, server):
         .locator(".mini").first.click()
     wait_until(lambda: page.evaluate(
         "document.getElementById('dialog-title').textContent") == "Edit preset")
+    # the edit dialog saves, so it keeps its Cancel button
+    assert page.locator("#dialog-cancel").is_visible()
     box = page.locator(".preset-dialog")
     srow = box.locator(".preset-row", has_text="soft inpainting")
     assert srow.locator(".preset-cb").is_checked()

@@ -128,6 +128,8 @@ def test_style_manage_create_edit_delete(page, server):
         "Cinematic — Photo Styles", "Dunes — Background",
         "Negs — Negatives", "Plain",
     ]
+    # the close-only list dialog has no redundant Cancel button
+    assert not page.locator("#dialog-cancel").is_visible()
 
     # create: name + group + prompt + negative
     page.click("text=+ New style")
@@ -135,6 +137,8 @@ def test_style_manage_create_edit_delete(page, server):
         lambda: page.evaluate("document.getElementById('dialog-title').textContent")
         == "New style"
     )
+    # the create dialog saves, so it keeps its Cancel button
+    assert page.locator("#dialog-cancel").is_visible()
     page.locator(".style-dialog input[type=text]").first.fill("Analog Film")
     page.locator(".style-dialog input[type=text]").nth(1).fill("Photo Styles")
     page.locator(".style-prompt").first.fill("analog film photo {prompt}")
