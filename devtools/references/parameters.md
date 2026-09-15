@@ -1,3 +1,18 @@
+# sunset-couple-style-decode.png
+
+prompt: cinematic film still a couple sitting on beach watching the sunset over the ocean, in the dunes at the beach, dune grass, white sand, the beautiful turquoise ocean in the distance . shallow depth of field, vignette, highly detailed, high budget Hollywood movie, bokeh, cinemascope, moody, epic, gorgeous, film grain, grainy
+negative: digital art, painting, drawing, sketch, cartoon, anime, manga, render, disney, airbrush, illustration, rendered, blender, 3d, video game
+styles: Realism Negatives, Dunes, Cinematic
+prompt without styles applied: a couple sitting on beach watching the sunset over the ocean
+seed: 1261832509
+model: epicrealismXL11.0.safetensors
+CFG: 7.5
+steps: 24
+sampler: DPM++ 2M SDE
+scheduler: Polyexponential
+resolution: 1024x1280
+SAG: false
+
 # woman-at-sunset.png
 
 prompt: cinematic film still woman walking at the beach, summer outfit, sunset, beautiful sky . shallow depth of field, vignette, highly detailed, high budget Hollywood movie, bokeh, cinemascope, moody, epic, gorgeous, film grain, grainy, highly dynamic shot, motion blur, strong depth of field, smooth blurry background, gaussian blur
