@@ -513,6 +513,9 @@ button.danger:hover { background: #a33; }
 .preset-row > select { width: 100%; }
 .preset-loras { width: 100%; }
 
+/* style dialog: same field spacing as the config/preset dialogs */
+.style-dialog { display: flex; flex-direction: column; gap: 0.55rem; }
+
 /* preset management list */
 .preset-manage { display: flex; flex-direction: column; gap: 0.35rem; }
 
