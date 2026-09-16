@@ -19,6 +19,7 @@ memory, use the "Session" optgroup, and are never written to the CSV.
 from __future__ import annotations
 
 import csv
+import re
 import threading
 from pathlib import Path
 
@@ -116,24 +117,32 @@ class StyleStore:
         :class:`Style` (empty when nothing matched).
         """
         with self._lock:
-            applicable = self._read() + list(self._temp.values())
+            raw_styles = self._read() + list(self._temp.values())
+        # canonical style texts so matching is tolerant of whitespace / comma
+        # formatting differences in the (expanded) import prompt
+        applicable = [
+            (normalize_prompt(s.prompt), normalize_prompt(s.negative_prompt), s)
+            for s in raw_styles
+        ]
+        prompt = normalize_prompt(prompt)
+        negative_prompt = normalize_prompt(negative_prompt)
         extracted: list[Style] = []
         while True:
             found = None
-            for style in applicable:
-                if not style.prompt and not style.negative_prompt:
+            for style_prompt, style_negative, style in applicable:
+                if not style_prompt and not style_negative:
                     continue
-                ok_pos, new_prompt = _extract_style_text(style.prompt, prompt)
+                ok_pos, new_prompt = _extract_style_text(style_prompt, prompt)
                 if not ok_pos:
                     continue
                 ok_neg, new_negative = _extract_style_text(
-                    style.negative_prompt, negative_prompt
+                    style_negative, negative_prompt
                 )
                 if not ok_neg:
                     continue
                 found = style
                 prompt, negative_prompt = new_prompt, new_negative
-                applicable.remove(style)
+                applicable.remove((style_prompt, style_negative, style))
                 break
             if found is None:
                 break
@@ -184,10 +193,24 @@ class StyleStore:
             )
 
 
+def normalize_prompt(text: str) -> str:
+    """Canonical form of a prompt for tolerant style matching.
+
+    Comma- and line-separated terms are split, whitespace inside each term is
+    collapsed, empty terms dropped, and everything re-joined with a single
+    ", " separator. This makes style identification (and the LoRA removal
+    that feeds it) indifferent to extra spaces, newlines, doubled or missing
+    commas, etc.
+    """
+    terms = [re.sub(r"\s+", " ", term).strip() for term in re.split(r"[,\n]+", text)]
+    return ", ".join(term for term in terms if term)
+
+
 def _extract_style_text(style_text: str, prompt: str) -> tuple[bool, str]:
-    """Inverse of :func:`_apply_one`. If ``style_text`` was applied last to
-    yield ``prompt`` (via :func:`apply_styles`), return ``(True, prompt
-    before it was applied)``; otherwise ``(False, prompt)`` unchanged.
+    """Inverse of :func:`_apply_one`, in canonical form (see
+    :func:`normalize_prompt`). If ``style_text`` was applied last to yield
+    ``prompt`` (via :func:`apply_styles`), return ``(True, prompt before it
+    was applied)``; otherwise ``(False, prompt)`` unchanged.
 
     Mirrors Forge's ``extract_style_text_from_prompt``: a style carrying a
     ``{prompt}`` placeholder must wrap the whole prompt (prefix + suffix

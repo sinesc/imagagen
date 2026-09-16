@@ -208,6 +208,22 @@ def test_png_meta_restores_forge_styles(client):
     assert m["negative_prompt"] == "ugly"
 
 
+def test_png_meta_extracts_prompt_loras(client):
+    _seed_csv(client)
+    # Forge baked the LoRAs into the prompt text (no Lora: meta lines) and the
+    # base prompt has no styles: the loras must be pulled out for the normal
+    # LoRA logic and the prompt reduced to the plain base
+    expanded = (
+        "photo of a fabulous christmas tree, sparkling christmas lights, "
+        "<lora:EnvyZoomSliderXL1.0:-2.0>,<lora:DMD2fp32XL1.0:0.7>"
+    )
+    data = _forge_png(client, expanded, "")
+    m = client.post("/api/png-meta", content=data).json()["meta"]
+    assert m["prompt"] == "photo of a fabulous christmas tree, sparkling christmas lights"
+    assert m["loras"] == ["EnvyZoomSliderXL1.0@-2", "DMD2fp32XL1.0@0.7"]
+    assert "styles" not in m  # nothing style-like to restore
+
+
 def test_png_meta_forge_unknown_styles_untouched(client):
     _seed_csv(client)
     # expanded by styles that are NOT in the CSV: nothing matches, so the

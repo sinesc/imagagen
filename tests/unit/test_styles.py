@@ -218,6 +218,42 @@ def test_extract_styles_ignores_empty_style(tmp_path):
     assert found == [] and prompt0 == "a frog"
 
 
+# ---------------- whitespace / comma tolerance ----------------
+
+def test_normalize_prompt_collapses_terms():
+    from imagagen.styles import normalize_prompt
+
+    assert normalize_prompt("a, b") == "a, b"
+    assert normalize_prompt("a,,  b ,c") == "a, b, c"
+    assert normalize_prompt("a,\n b\r\nc   ") == "a, b, c"
+    assert normalize_prompt("  a  b  ") == "a b"
+    assert normalize_prompt(",,  ,") == ""
+
+
+def test_extract_styles_tolerant_of_whitespace_and_commas(tmp_path):
+    store = StyleStore(tmp_path / "s.csv")
+    store.save(Style(name="Film",
+                     prompt="cinematic film still {prompt} . moody, grainy"))
+    store.save(Style(name="Dunes", prompt="in the dunes, white sand"))
+    store.save(Style(name="Negs", negative_prompt="digital art, cartoon"))
+
+    base, neg = apply_styles("a frog", "ugly", ["Negs", "Dunes", "Film"], store.get)
+    # the same styles, but the expanded prompt was re-formatted by hand:
+    # extra spaces, a doubled comma, a missing space after a comma, and a
+    # newline between comma-separated items -- all of which must still resolve
+    mangled = "cinematic film still  a frog ,  in the dunes\n white sand . moody , grainy"
+    mangled_neg = "ugly,  digital art, cartoon"
+    found, prompt0, negative0 = store.extract_styles(mangled, mangled_neg)
+    assert [s.name for s in found] == ["Negs", "Dunes", "Film"]
+    assert prompt0 == "a frog"
+    assert negative0 == "ugly"
+    # and it round-trips back to the (canonical) expanded prompt
+    p2, n2 = apply_styles(prompt0, negative0, [s.name for s in found], store.get)
+    from imagagen.styles import normalize_prompt
+    assert normalize_prompt(p2) == normalize_prompt(base)
+    assert normalize_prompt(n2) == normalize_prompt(neg)
+
+
 # ---------------- metadata round-trip ----------------
 
 def test_metadata_styles_roundtrip():

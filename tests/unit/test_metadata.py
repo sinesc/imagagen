@@ -72,3 +72,37 @@ def test_read_metadata_plain_png_none():
     buf = io.BytesIO()
     Image.fromarray(np.zeros((4, 4, 3), dtype=np.uint8)).save(buf, format="PNG")
     assert metadata.read_metadata(buf.getvalue()) is None
+
+
+# ---------------- LoRA tokens embedded in the prompt (A1111/Forge) ----------------
+
+def test_extract_prompt_loras_variants():
+    base = "photo of a fabulous christmas tree, sparkling christmas lights"
+    cases = [
+        f"{base}, <lora:EnvyZoomSliderXL1.0:-2.0>,<lora:DMD2fp32XL1.0:0.7>",
+        f"<lora:DMD2fp32XL1.0:0.7>, {base}, <lora:EnvyZoomSliderXL1.0:-2.0>",
+        f"{base}, <lora:EnvyZoomSliderXL1.0:-2.0>\n<lora:DMD2fp32XL1.0:0.7>",
+        f"{base}, <lora:EnvyZoomSliderXL1.0:-2.0>,\n<lora:DMD2fp32XL1.0:0.7>",
+    ]
+    for text in cases:
+        loras, remainder = metadata.extract_prompt_loras(text)
+        assert loras == [
+            ("EnvyZoomSliderXL1.0", -2.0), ("DMD2fp32XL1.0", 0.7),
+        ] or loras == [
+            ("DMD2fp32XL1.0", 0.7), ("EnvyZoomSliderXL1.0", -2.0),
+        ]
+        assert "<lora" not in remainder
+
+
+def test_extract_prompt_loras_preserves_order_and_weight():
+    loras, remainder = metadata.extract_prompt_loras(
+        "a cat <lora:Foo:1.0> and <lora:Bar:0.25> a dog"
+    )
+    assert loras == [("Foo", 1.0), ("Bar", 0.25)]
+    assert remainder == "a cat  and  a dog"
+
+
+def test_extract_prompt_loras_none():
+    loras, remainder = metadata.extract_prompt_loras("a plain prompt")
+    assert loras == []
+    assert remainder == "a plain prompt"

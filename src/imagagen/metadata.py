@@ -38,6 +38,25 @@ _FIELDS = (
     "Model hash",
 )
 
+# A1111/Forge embed LoRAs in the prompt text as ``<lora:NAME:WEIGHT>`` (unlike
+# imagagen, which records them on dedicated ``Lora:`` meta lines). The name is
+# everything up to the last colon; the weight is the (signed) number after it.
+_LORA_RE = re.compile(r"<lora:(.+?):(-?\d+(?:\.\d+)?)>")
+
+
+def extract_prompt_loras(prompt: str) -> tuple[list[tuple[str, float]], str]:
+    """Pull ``<lora:NAME:WEIGHT>`` tokens out of a (style-expanded) prompt.
+
+    A1111/Forge bake LoRAs into the prompt text instead of recording them, so
+    they must be recovered on import and handed to the normal LoRA selection
+    logic. Returns ``(loras, remainder)``: ``loras`` is a list of
+    ``(name, weight)`` in order of appearance, and ``remainder`` is the prompt
+    with the tokens removed (their surrounding separator commas / whitespace
+    are cleaned up by :func:`imagagen.styles.normalize_prompt` downstream).
+    """
+    loras = [(m.group(1).strip(), float(m.group(2))) for m in _LORA_RE.finditer(prompt)]
+    return loras, _LORA_RE.sub("", prompt)
+
 
 def build_parameters(
     prompt: str,

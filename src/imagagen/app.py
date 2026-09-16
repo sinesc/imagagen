@@ -629,11 +629,19 @@ def create_app(
         # metadata: it selects the recovered styles and shows the original
         # (unapplied) prompts. Meta-data save logic is untouched.
         if meta is not None and "styles" not in meta and meta.get("prompt"):
+            # A1111/Forge bake LoRAs into the prompt text (not meta lines); pull
+            # them out and hand them to the normal LoRA selection logic, then
+            # resolve the styles out of the remainder the same way Forge does
+            # (StyleStore.extract_styles). The prompt shown is the original
+            # un-applied, LoRA-free base. Meta-data save logic is untouched.
+            loras, no_lora_prompt = metadata.extract_prompt_loras(meta["prompt"])
+            if loras:
+                meta.setdefault("loras", []).extend(f"{n}@{w:g}" for n, w in loras)
             found, prompt, negative = app.state.style_store.extract_styles(
-                meta["prompt"], meta.get("negative_prompt", "")
+                no_lora_prompt, meta.get("negative_prompt", "")
             )
+            meta["prompt"] = prompt
             if found:
-                meta["prompt"] = prompt
                 meta["styles"] = [s.to_dict() for s in found]
                 if "negative_prompt" in meta:
                     meta["negative_prompt"] = negative
