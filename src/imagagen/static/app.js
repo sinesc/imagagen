@@ -25,6 +25,10 @@ const state = {
   // enabled flag lives on the checkbox. Defaults = Forge's built-in
   // defaults.
   sag: { scale: 0.5, blur: 2, threshold: 1 },
+  // the preset currently matching the form: {name, keys} where keys are its
+  // enabled control keys. While set, the preset stays selected; a user edit of
+  // any covered field clears it (clearActivePreset).
+  activePreset: null,
 };
 
 function setStatus(text) {
@@ -300,11 +304,16 @@ function readLoraList(listEl) {
     parseFloat(r.querySelector(".lora-weight").value) || 0,
   ]);
 }
-// the main form's LoRA list
+// the main form's LoRA list. Edits clear an active preset that covers LoRAs
+// (applyPreset sets these rows programmatically, so it doesn't fire this).
+function mainLoraChange() {
+  onUserFieldChange("loras");
+  scheduleSaveUiState();
+}
 function renderMainLoras(items) {
   const c = $("loras");
   c.innerHTML = "";
-  (items || []).forEach(([n, w]) => c.append(loraRow(n, w, scheduleSaveUiState)));
+  (items || []).forEach(([n, w]) => c.append(loraRow(n, w, mainLoraChange)));
 }
 const getLoras = () => readLoraList($("loras")).filter((x) => x[0]);
 
@@ -726,6 +735,20 @@ const PRESET_KEYS = ["width", "height", "steps", "cfg", "seed", "batch",
   "sampler", "scheduler", "mode", "denoise", "mask_padding", "loras",
   "soft_inpaint", "sag"]; // enable/disable of the sidebar checkboxes
 
+// The preset box keeps its selection while the form still matches the applied
+// preset. Programmatic changes (applyPreset itself, PNG import) don't fire
+// input/change events, so they never clear it by accident; the user-change
+// handlers below call onUserFieldChange for each field they touch.
+function clearActivePreset() {
+  state.activePreset = null;
+  $("preset").value = "";
+}
+function onUserFieldChange(id) {
+  if (!state.activePreset) return;
+  const key = id.replace(/-/g, "_"); // mask-padding -> mask_padding, etc.
+  if (state.activePreset.keys.includes(key)) clearActivePreset();
+}
+
 async function applyPreset(name) {
   if (!name) return false;
   let p;
@@ -735,6 +758,7 @@ async function applyPreset(name) {
     p = (await res.json()).preset;
   } catch (e) {
     setStatus(e.message);
+    $("preset").value = ""; // apply failed: don't leave a stale selection
     return false;
   }
   const controls = p.controls || {};
@@ -757,8 +781,12 @@ async function applyPreset(name) {
     }
   } catch (e) {
     setStatus(`preset "${name}": ${e.message}`);
+    $("preset").value = ""; // apply failed: don't leave a stale selection
     return false;
   }
+  // remember what we applied so later user edits of these fields clear the box
+  state.activePreset = { name, keys: Object.keys(controls).filter((k) => controls[k]) };
+  $("preset").value = name; // keep the selection: the form now matches it
   scheduleSaveUiState(0);
   setStatus(`preset "${name}" applied`);
   return true;
@@ -1235,15 +1263,15 @@ function wireToolbar() {
     Tools.save();
     syncToolbar();
   };
-  $("mode").onchange = () => syncMode(); // mode is not persisted
+  $("mode").onchange = () => { onUserFieldChange("mode"); syncMode(); }; // mode is not persisted
   $("mask-dilate").onclick = () => maskOp("dilate");
   $("mask-erode").onclick = () => maskOp("erode");
   $("mask-clear").onclick = () => maskOp("clear");
   $("seg-model").onchange = () => scheduleSaveUiState(0);
   $("seg-run").onclick = () => openSegDialog();
-  $("soft-inpaint").onchange = () => scheduleSaveUiState(0);
+  $("soft-inpaint").onchange = () => { onUserFieldChange("soft-inpaint"); scheduleSaveUiState(0); };
   $("soft-inpaint-cfg").onclick = openSoftInpaintDialog;
-  $("sag").onchange = () => scheduleSaveUiState(0);
+  $("sag").onchange = () => { onUserFieldChange("sag"); scheduleSaveUiState(0); };
   $("sag-cfg").onclick = openSagDialog;
   $("zoom-in").onclick = () => zoomCenter(1.25);
   $("zoom-out").onclick = () => zoomCenter(0.8);
@@ -1259,7 +1287,7 @@ function wireConfig() {
   };
   $("cfg-delete").onclick = deleteConfig;
   $("lora-add").onclick = () => {
-    const row = loraRow("", 1, scheduleSaveUiState);
+    const row = loraRow("", 1, mainLoraChange);
     $("loras").append(row);
     row.querySelector(".lora-name").focus();
   };
@@ -1271,12 +1299,9 @@ function wireConfig() {
     onStylesChanged();
   };
   $("style-manage").onclick = openStyleManage;
-  // apply on change, then reset to "—" so the same preset can be
-  // re-selected (change only fires on a different selection)
-  $("preset").onchange = (e) => {
-    const sel = e.target;
-    applyPreset(sel.value).then((ok) => { if (ok) sel.value = ""; });
-  };
+  // applying a preset keeps it selected (applyPreset); it clears on its own
+  // once the user edits one of the fields the preset covers
+  $("preset").onchange = (e) => applyPreset(e.target.value);
 }
 
 // ---------------- PNG drag&drop import (prompt / negative prompt) ----------------
@@ -1303,6 +1328,9 @@ async function importPng(file) {
 }
 
 async function applyPngMeta(meta, width, height) {
+  // importing replaces the form with the image's settings, so any active
+  // preset no longer describes it
+  clearActivePreset();
   if (!meta) {
     $("width").value = width;
     $("height").value = height;
@@ -1768,17 +1796,19 @@ window.addEventListener("resize", viewResize);
 connectWS();
 
 ["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch", "denoise", "mask-padding"].forEach((id) => {
-  $(id).addEventListener("input", () => scheduleSaveUiState());
+  $(id).addEventListener("input", () => { onUserFieldChange(id); scheduleSaveUiState(); });
 });
 $("prompt").addEventListener("input", schedulePromptTokens);
 $("swap-dims").onclick = () => {
   const w = $("width").value;
   $("width").value = $("height").value;
   $("height").value = w;
+  onUserFieldChange("width");
+  onUserFieldChange("height");
   scheduleSaveUiState();
 };
 ["sampler", "scheduler"].forEach((id) => {
-  $(id).onchange = () => scheduleSaveUiState(0);
+  $(id).onchange = () => { onUserFieldChange(id); scheduleSaveUiState(0); };
 });
 // last-ditch save on tab close (sendBeacon is fire-and-forget, always
 // delivered; the endpoint ignores content-type to accept its text/plain)
