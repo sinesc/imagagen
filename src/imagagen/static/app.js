@@ -168,7 +168,7 @@ function makeCombobox(root, options, cfg = {}) {
       }
       const li = el("li", { class: "combo-item", role: "option" }, o.text);
       li.dataset.value = o.value;
-      li.onclick = () => pick(o.value);
+      li.onclick = () => pick(o.value, true);
       list.append(li);
       any = true;
     }
@@ -196,15 +196,37 @@ function makeCombobox(root, options, cfg = {}) {
     active = -1;
   }
 
-  function pick(v) {
+  function pick(v, fromMouse = false) {
     value = v;
     input.value = v ? textFor(v) : "";
     close();
-    // a pick collapses this list, which can make the browser re-dispatch the
-    // trailing mouseup/click onto a neighbouring input; mark the time so that
-    // stray click is swallowed (see the click handler) instead of reopening it
-    comboRecentClose = Date.now();
     root.dispatchEvent(new Event("change"));
+    // Standard form behaviour: the combobox keeps focus after a selection.
+    input.focus();
+    if (!fromMouse) return;
+    // A mouse pick collapses the list; the browser then re-dispatches the
+    // trailing click onto a neighbouring input (always the first row, as the
+    // scrollable pane re-anchors). Mark the time so that stray click is
+    // swallowed (see the click handler) and, if focus lands on another combobox
+    // shortly after, pull it back here.
+    comboRecentClose = Date.now();
+    const steal = (ev) => {
+      const t = ev ? ev.target : null;
+      const other = t && t.closest ? t.closest(".combobox") : null;
+      if (!other || other === root) return; // our own focus / not a combobox
+      // a stray always lands on a *closed* box; if the sibling's list is open it
+      // is a genuine focus (e.g. a row that was just added), so leave it be
+      const otherList = other.querySelector ? other.querySelector(".combo-list") : null;
+      if (otherList && otherList.classList.contains("open")) { cleanup(); return; }
+      if (Date.now() - comboRecentClose < COMBO_REOPEN_GUARD_MS) input.focus();
+      cleanup();
+    };
+    const cleanup = () => {
+      removeEventListener("focusin", steal, true);
+      clearTimeout(timer);
+    };
+    const timer = setTimeout(cleanup, COMBO_REOPEN_GUARD_MS);
+    addEventListener("focusin", steal, true);
   }
 
   // NOTE: focus alone deliberately does NOT open the list. Opening is driven
@@ -249,10 +271,12 @@ function makeCombobox(root, options, cfg = {}) {
     if (list.classList.contains("open")) open(input.value);
   };
   root.focus = () => input.focus();
-  // focus the input AND show the list; used when a row is added so the new
+  // show the list AND focus the input; used when a row is added so the new
   // dropdown opens immediately. Kept separate from root.focus (which never
-  // opens) so that a plain focus can't pop the list back up.
-  root.open = (filter = "") => { input.focus(); open(filter); };
+  // opens) so that a plain focus can't pop the list back up. The list is opened
+  // *before* focus so that a focusin handler (see the post-pick focus guard in
+  // pick) can see this box is open and leave the new row's focus alone.
+  root.open = (filter = "") => { open(filter); input.focus(); };
 
   input.value = value ? textFor(value) : "";
   render();
