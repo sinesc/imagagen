@@ -16,7 +16,8 @@ The parallel folder `stable-diffusion-webui-forge` contains the branch `referenc
 
 ## Environment
 
-This environment has access to two GPUs that will be largely occupied by running you (your LLM model), but one of them should should have enough VRAM to spare for running stable diffusion. If you do need more VRAM let the user know.
+This environment has access to two GPUs. One of them should have enough free VRAM to run Stable Diffusion.
+Playwright is available in the project's uv environment. Chromium is available.
 
 ## Process monitoring
 
