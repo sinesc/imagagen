@@ -436,3 +436,33 @@ def _bytes_io(b: bytes):
     import io
 
     return io.BytesIO(b)
+
+
+def test_import_retains_post_idat_metadata():
+    """A foreign image whose tEXt chunk comes after the IDAT (Forge crops)
+    still keeps its text metadata in the canvas entity -- otherwise a
+    crop/save in imagagen would silently drop it."""
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(
+            ">I", zlib.crc32(body) & 0xFFFFFFFF
+        )
+
+    ihdr = struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0)
+    raw = b"".join(b"\x00" + b"\x00\x00\x00\xff" * 8 for _ in range(8))
+    idat = zlib.compress(raw)
+    text = b"parameters" + b"\x00" + b"prompt: a thing"
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", idat)
+        + chunk(b"tEXt", text)
+        + chunk(b"IEND", b"")
+    )
+    c = Canvas()
+    c.import_image(png)
+    info = c.png_info()
+    assert info.get("parameters") == "prompt: a thing"

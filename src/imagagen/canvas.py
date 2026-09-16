@@ -65,6 +65,12 @@ def _decode_mask(data: bytes) -> np.ndarray:
 
 def _png_text_chunks(data: bytes) -> dict:
     img = Image.open(BytesIO(data))
+    # text chunks after the image data (foreign tools, e.g. Forge crops) are
+    # only parsed on load, or they'd be silently dropped from this info
+    try:
+        img.load()
+    except Exception:
+        pass
     return {k: v for k, v in (img.info or {}).items() if isinstance(v, str)}
 
 

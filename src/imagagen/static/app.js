@@ -1188,6 +1188,11 @@ async function applyPngMeta(meta, width, height) {
     scheduleSaveUiState();
     return;
   }
+  // Importing a fresh image replaces the current LoRA/style selection: clear
+  // whatever was previously chosen first, so a prompt that resolves to no
+  // LoRAs/styles doesn't silently keep the user's old picks in the UI.
+  renderMainLoras([]);
+  renderMainStyles([]);
   if (meta.prompt !== undefined && meta.prompt !== null) $("prompt").value = meta.prompt;
   if (meta.negative_prompt !== undefined && meta.negative_prompt !== null) $("negative").value = meta.negative_prompt;
   updatePromptTokens(); // imported metadata may have set the prompt

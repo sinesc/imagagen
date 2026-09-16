@@ -106,3 +106,45 @@ def test_extract_prompt_loras_none():
     loras, remainder = metadata.extract_prompt_loras("a plain prompt")
     assert loras == []
     assert remainder == "a plain prompt"
+
+
+# --- PNG text chunk position -------------------------------------------------
+
+
+def _png_trailing_text(params_text: str) -> bytes:
+    """Build a minimal 2x2 RGB PNG whose ``parameters`` tEXt chunk is written
+    AFTER the IDAT, as external crop tools (and some Forge re-saves) do.
+    Pillow only parses such chunks once the image is decoded, which is the
+    case ``read_metadata`` must handle."""
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(
+            ">I", zlib.crc32(body) & 0xFFFFFFFF
+        )
+
+    ihdr = struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0)
+    raw = b"".join(b"\x00" + b"\x00\x00\x00\xff" * 2 for _ in range(2))
+    idat = zlib.compress(raw)
+    text = b"parameters" + b"\x00" + params_text.encode()
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", idat)
+        + chunk(b"tEXt", text)
+        + chunk(b"IEND", b"")
+    )
+
+
+def test_read_metadata_trailing_text_chunk():
+    """Metadata in a post-IDAT chunk is still found (regression: cropped
+    Forge images came back with no metadata at all)."""
+    params = "a thing\nNegative prompt: blurry\nSteps: 2, Sampler: LCM, Seed: 3, Size: 2x2"
+    meta = metadata.read_metadata(_png_trailing_text(params))
+    assert meta is not None
+    assert meta["prompt"] == "a thing"
+    assert meta["negative_prompt"] == "blurry"
+    assert meta["steps"] == 2
+    assert meta["width"] == 2 and meta["height"] == 2

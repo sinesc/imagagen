@@ -682,8 +682,8 @@ def test_drop_png_loras_skip_the_model_config_loras(page, server):
     _drop_png(page, "#prompt", _lora_png("Other Model", [("dmd2", 0.7), ("detail", 0.5)]))
     assert wait_until(lambda: page.evaluate("getLoras()") == [["detail", 0.5]])
 
-    # (pre-existing behavior) an image without any Lora lines leaves the
-    # UI selection untouched
+    # an image with no Lora lines clears the previous selection (a prompt
+    # that resolves to no LoRAs must not silently keep the user's old picks)
     _drop_png(page, "#prompt", _lora_png("Mock Model", []))
     page.wait_for_timeout(200)
-    assert page.evaluate("getLoras()") == [["detail", 0.5]]
+    assert page.evaluate("getLoras()") == []

@@ -263,10 +263,19 @@ def read_metadata(png_bytes: bytes) -> dict[str, Any] | None:
     from io import BytesIO
 
     img = Image.open(BytesIO(png_bytes))
+    # Text chunks written AFTER the image data (as A1111/Forge do) are only
+    # parsed into info/text when the image is decoded, so force a load first
+    # or the metadata is silently missing (e.g. on cropped re-saves).
+    try:
+        img.load()
+    except Exception:
+        pass  # truncated/corrupt: use whatever was already parsed
     info = img.info or {}
     params = info.get("parameters")
     if isinstance(params, bytes):
         params = params.decode("utf-8", "replace")
+    elif params is not None and not isinstance(params, str):
+        params = str(params)  # e.g. an iTXt chunk
     if params:
         return parse_parameters(params)
     # fall back to standalone chunks
