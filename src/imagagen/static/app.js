@@ -126,6 +126,13 @@ const opt = (value, text) => {
 //   options: array of {value, text, group?} (group => rendered as a sticky
 //            section header, e.g. a style optgroup)
 //   cfg: { placeholder, initial }
+// Shared across every combobox: when any list closes we record the time so a
+// stray click (e.g. the browser re-dispatching the trailing mouseup onto a
+// neighbouring input after a picked item's list collapses) can't immediately
+// reopen a sibling. A genuine click on another box happens well after this.
+let comboRecentClose = 0;
+const COMBO_REOPEN_GUARD_MS = 250;
+
 function makeCombobox(root, options, cfg = {}) {
   root.classList.add("combobox");
   root.innerHTML = "";
@@ -193,14 +200,29 @@ function makeCombobox(root, options, cfg = {}) {
     value = v;
     input.value = v ? textFor(v) : "";
     close();
+    // a pick collapses this list, which can make the browser re-dispatch the
+    // trailing mouseup/click onto a neighbouring input; mark the time so that
+    // stray click is swallowed (see the click handler) instead of reopening it
+    comboRecentClose = Date.now();
     root.dispatchEvent(new Event("change"));
   }
 
-  input.addEventListener("focus", () => open(""));
-  input.addEventListener("click", () => open(""));
+  // NOTE: focus alone deliberately does NOT open the list. Opening is driven
+  // by an explicit user action (click / typing / any key) or by the caller
+  // (root.open() when a row is added). Opening on mere focus made a
+  // previously-closed sibling pop back open, because after a pick the browser
+  // transiently moves focus onto a neighbouring combobox's input.
+  input.addEventListener("click", () => {
+    // swallow the trailing/ghost click that follows a pick on another row
+    if (Date.now() - comboRecentClose < COMBO_REOPEN_GUARD_MS) return;
+    open("");
+  });
   input.addEventListener("input", () => open(input.value));
   input.addEventListener("blur", () => setTimeout(close, 120));
   input.addEventListener("keydown", (e) => {
+    // keyboard: any key while focused shows the list (typing filters it,
+    // arrows/enter navigate) before handling the key
+    if (!list.classList.contains("open")) open(input.value);
     const items = itemEls();
     if (e.key === "ArrowDown") { e.preventDefault(); if (active < items.length - 1) setActive(active + 1); }
     else if (e.key === "ArrowUp") { e.preventDefault(); if (active > 0) setActive(active - 1); }
@@ -227,6 +249,10 @@ function makeCombobox(root, options, cfg = {}) {
     if (list.classList.contains("open")) open(input.value);
   };
   root.focus = () => input.focus();
+  // focus the input AND show the list; used when a row is added so the new
+  // dropdown opens immediately. Kept separate from root.focus (which never
+  // opens) so that a plain focus can't pop the list back up.
+  root.open = (filter = "") => { input.focus(); open(filter); };
 
   input.value = value ? textFor(value) : "";
   render();
@@ -293,7 +319,7 @@ function loraAddButton(listEl, onChange) {
   add.onclick = () => {
     const row = loraRow("", 1, onChange);
     listEl.append(row);
-    row.querySelector(".lora-name").focus();
+    row.querySelector(".lora-name").open();
     onChange && onChange();
   };
   return add;
@@ -1289,13 +1315,13 @@ function wireConfig() {
   $("lora-add").onclick = () => {
     const row = loraRow("", 1, mainLoraChange);
     $("loras").append(row);
-    row.querySelector(".lora-name").focus();
+    row.querySelector(".lora-name").open();
   };
   $("preset-manage").onclick = openPresetManage;
   $("style-add").onclick = () => {
     const row = styleRow("", onStylesChanged);
     $("styles").append(row);
-    row.querySelector(".style-name").focus();
+    row.querySelector(".style-name").open();
     onStylesChanged();
   };
   $("style-manage").onclick = openStyleManage;
