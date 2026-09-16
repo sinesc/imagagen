@@ -738,19 +738,26 @@ async function applyPreset(name) {
     return false;
   }
   const controls = p.controls || {};
-  for (const key of PRESET_KEYS) {
-    if (!controls[key] || p[key] === null || p[key] === undefined) continue;
-    // "" resets sampler/scheduler to "Model default" (the main UI's
-    // empty option); mode has no empty state
-    if (p[key] === "" && key !== "sampler" && key !== "scheduler") continue;
-    if (key === "loras") renderMainLoras(p[key]);
-    else if (key === "mode") {
-      $("mode").value = p[key];
-      syncMode();
+  try {
+    for (const key of PRESET_KEYS) {
+      if (!controls[key] || p[key] === null || p[key] === undefined) continue;
+      // "" resets sampler/scheduler to "Model default" (the main UI's
+      // empty option); mode has no empty state
+      if (p[key] === "" && key !== "sampler" && key !== "scheduler") continue;
+      if (key === "loras") renderMainLoras(p[key]);
+      else if (key === "mode") {
+        $("mode").value = p[key];
+        syncMode();
+      }
+      else if (key === "soft_inpaint") $("soft-inpaint").checked = p[key];
+      else if (key === "sag") $("sag").checked = p[key];
+      // sidebar ids are hyphenated but preset keys use underscores
+      // (e.g. mask_padding -> #mask-padding); the rest map 1:1
+      else $(key.replace(/_/g, "-")).value = p[key];
     }
-    else if (key === "soft_inpaint") $("soft-inpaint").checked = p[key];
-    else if (key === "sag") $("sag").checked = p[key];
-    else $(key).value = p[key];
+  } catch (e) {
+    setStatus(`preset "${name}": ${e.message}`);
+    return false;
   }
   scheduleSaveUiState(0);
   setStatus(`preset "${name}" applied`);
