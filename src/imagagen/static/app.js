@@ -112,6 +112,123 @@ const opt = (value, text) => {
   return o;
 };
 
+// ---------------- searchable combobox ----------------
+// Turns a plain element into a type-to-filter dropdown. The element keeps a
+// .value accessor (id/value = the option's value, display = the option's text)
+// and fires a `change` event on pick, so it drops in for the plain <select>s it
+// replaces. The option list is rendered in an absolutely positioned <ul> that
+// overlays the page, so it never changes the layout/footprint of the control.
+//   makeCombobox(root, options, cfg?)
+//   options: array of {value, text, group?} (group => rendered as a sticky
+//            section header, e.g. a style optgroup)
+//   cfg: { placeholder, initial }
+function makeCombobox(root, options, cfg = {}) {
+  root.classList.add("combobox");
+  root.innerHTML = "";
+  const input = el("input", {
+    class: "combo-input", type: "text", spellcheck: "false",
+    autocomplete: "off", placeholder: cfg.placeholder || "",
+  });
+  const list = el("ul", { class: "combo-list", role: "listbox" });
+  root.append(input, list);
+
+  let opts = options;
+  let value = cfg.initial || "";
+  let active = -1;
+
+  const curOpts = () => (typeof opts === "function" ? opts() : opts);
+  const itemEls = () => [...list.querySelectorAll(".combo-item")];
+  const textFor = (v) => {
+    const o = curOpts().find((x) => x.value === v);
+    return o ? o.text : v;
+  };
+
+  function render(filter = "") {
+    const f = filter.trim().toLowerCase();
+    list.replaceChildren();
+    active = -1;
+    let lastGroup = null;
+    let any = false;
+    for (const o of curOpts()) {
+      if (f && !String(o.text).toLowerCase().includes(f)) continue;
+      if (o.group && o.group !== lastGroup) {
+        list.append(el("li", { class: "combo-group" }, o.group));
+        lastGroup = o.group;
+      }
+      const li = el("li", { class: "combo-item", role: "option" }, o.text);
+      li.dataset.value = o.value;
+      li.onclick = () => pick(o.value);
+      list.append(li);
+      any = true;
+    }
+    if (!any) list.append(el("li", { class: "combo-empty" }, "no match"));
+    const idx = itemEls().findIndex((li) => li.dataset.value === value);
+    if (idx >= 0) setActive(idx);
+  }
+
+  function setActive(i) {
+    const items = itemEls();
+    items.forEach((li) => li.classList.remove("active"));
+    active = i;
+    if (i >= 0 && items[i]) {
+      items[i].classList.add("active");
+      items[i].scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function open(filter = "") {
+    render(filter);
+    list.classList.add("open");
+  }
+  function close() {
+    list.classList.remove("open");
+    active = -1;
+  }
+
+  function pick(v) {
+    value = v;
+    input.value = v ? textFor(v) : "";
+    close();
+    root.dispatchEvent(new Event("change"));
+  }
+
+  input.addEventListener("focus", () => open(""));
+  input.addEventListener("click", () => open(""));
+  input.addEventListener("input", () => open(input.value));
+  input.addEventListener("blur", () => setTimeout(close, 120));
+  input.addEventListener("keydown", (e) => {
+    const items = itemEls();
+    if (e.key === "ArrowDown") { e.preventDefault(); if (active < items.length - 1) setActive(active + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); if (active > 0) setActive(active - 1); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      if (active >= 0 && items[active]) pick(items[active].dataset.value);
+      else if (items.length === 1) pick(items[0].dataset.value);
+      else close();
+    } else if (e.key === "Escape") {
+      input.value = value ? textFor(value) : "";
+      close();
+    }
+  });
+
+  Object.defineProperty(root, "value", {
+    get: () => value,
+    set: (v) => {
+      value = v || "";
+      input.value = value ? textFor(value) : "";
+    },
+  });
+  root.setOptions = (o) => {
+    opts = o;
+    if (list.classList.contains("open")) open(input.value);
+  };
+  root.focus = () => input.focus();
+
+  input.value = value ? textFor(value) : "";
+  render();
+  return root;
+}
+
 // ---------------- generic dialog ----------------
 let dialogOk = null;
 let dialogClose = null;
@@ -151,26 +268,28 @@ function dialogError(text) {
 
 // ---------------- LoRA list rows (form + dialogs) ----------------
 function loraRow(name, weight, onChange) {
-  const sel = el("select", { class: "lora-name" });
-  state.loras.forEach((n) => sel.append(opt(n, n)));
-  if (name && !state.loras.includes(name)) sel.append(opt(name, name));
-  sel.value = name || "";
+  const root = el("span", { class: "lora-name" });
+  const names = state.loras.slice();
+  if (name && !names.includes(name)) names.push(name);
+  makeCombobox(root, names.map((n) => ({ value: n, text: n })), {
+    initial: name || "",
+  });
   const wt = el("input", {
     class: "lora-weight", type: "number", min: "-10", max: "10", step: "0.05",
   });
   wt.value = weight;
   const rm = el("button", { type: "button", class: "mini icon lora-rm", title: "remove" }, "−");
   rm.onclick = () => { rm.closest(".lora-row").remove(); onChange && onChange(); };
-  sel.onchange = () => onChange && onChange();
+  root.onchange = () => onChange && onChange();
   wt.oninput = () => onChange && onChange();
-  return el("div", { class: "lora-row" }, sel, wt, rm);
+  return el("div", { class: "lora-row" }, root, wt, rm);
 }
 function loraAddButton(listEl, onChange) {
   const add = el("button", { type: "button", class: "mini", title: "add a LoRA" }, "+ LoRA");
   add.onclick = () => {
     const row = loraRow("", 1, onChange);
     listEl.append(row);
-    row.querySelector("select").focus();
+    row.querySelector(".lora-name").focus();
     onChange && onChange();
   };
   return add;
@@ -193,41 +312,37 @@ const getLoras = () => readLoraList($("loras")).filter((x) => x[0]);
 // One dropdown per selected style (grouped by optgroup, everything sorted
 // alphabetically) + a "-" button, mirroring the LoRA rows. "Session" styles
 // are server-side temporaries (imported from image metadata, not in the CSV).
-function fillStyleOptions(sel, selected) {
-  sel.innerHTML = "";
+// one {value, text, group?} option per style, grouped/sorted as the old
+// <select> was ("" group = top level, first; named optgroups alphabetically).
+// `selected` (a style imported from image metadata but not in styles.csv) is
+// appended as a temporary entry so it stays selectable.
+function styleOptions(selected) {
   const groups = new Map(); // optgroup ("" = top level) -> [names]
   for (const s of state.styles) {
     const g = s.optgroup || "";
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push(s.name);
   }
+  const out = [];
   for (const [g, names] of [...groups.entries()].sort((a, b) =>
     a[0].localeCompare(b[0])
   )) {
     names.sort((a, b) => a.localeCompare(b));
-    if (!g) {
-      names.forEach((n) => sel.append(opt(n, n)));
-    } else {
-      const og = el("optgroup", { label: g });
-      names.forEach((n) => og.append(opt(n, n)));
-      sel.append(og);
-    }
+    names.forEach((n) => out.push({ value: n, text: n, group: g || undefined }));
   }
-  sel.value = selected || "";
-  if (selected && sel.value !== selected) {
-    // selected but (temporarily) absent from the list: keep it selectable
-    sel.append(opt(selected, `${selected} (temporary)`));
-    sel.value = selected;
+  if (selected && !state.styles.some((s) => s.name === selected)) {
+    out.push({ value: selected, text: `${selected} (temporary)` });
   }
+  return out;
 }
 
 function styleRow(name, onChange) {
-  const sel = el("select", { class: "style-name" });
-  fillStyleOptions(sel, name);
+  const root = el("span", { class: "style-name" });
+  makeCombobox(root, styleOptions(name), { initial: name || "" });
   const rm = el("button", { type: "button", class: "mini icon style-rm", title: "remove" }, "−");
   rm.onclick = () => { rm.closest(".style-row").remove(); onChange && onChange(); };
-  sel.onchange = () => onChange && onChange();
-  return el("div", { class: "style-row" }, sel, rm);
+  root.onchange = () => onChange && onChange();
+  return el("div", { class: "style-row" }, root, rm);
 }
 
 function renderMainStyles(names) {
@@ -472,10 +587,10 @@ async function refreshModels(keepSelection = true) {
   const sel = $("model");
   const cur = keepSelection ? sel.value : null;
   state.entries = m.models;
-  sel.innerHTML = "";
-  m.models.forEach((x) => {
-    sel.append(opt(x.id, x.is_default ? `${x.name} (default)` : x.name));
-  });
+  sel.setOptions(m.models.map((x) => ({
+    value: x.id,
+    text: x.is_default ? `${x.name} (default)` : x.name,
+  })));
   if (cur && m.models.some((x) => x.id === cur)) sel.value = cur;
   else if (m.current) sel.value = m.current;
 }
@@ -644,19 +759,18 @@ async function applyPreset(name) {
 
 // state.presets: [{name, group|null}] (name-sorted, from /api/presets)
 function fillPresetSelect(sel) {
-  sel.innerHTML = "";
-  sel.append(opt("", "—"));
-  // ungrouped presets first as plain options, then one optgroup per group
-  // (first-appearance order; within a group the name order is kept)
+  // ungrouped presets first, then one group section per group
+  // (first-appearance order; within a group the name order is kept). The
+  // empty ("—") state is the combobox's placeholder, not a real option.
+  const opts = [];
   state.presets.filter((p) => !p.group)
-    .forEach((p) => sel.append(opt(p.name, p.name)));
+    .forEach((p) => opts.push({ value: p.name, text: p.name }));
   const groups = [...new Set(state.presets.map((p) => p.group).filter(Boolean))];
   for (const g of groups) {
-    const og = el("optgroup", { label: g });
     state.presets.filter((p) => p.group === g)
-      .forEach((p) => og.append(opt(p.name, p.name)));
-    sel.append(og);
+      .forEach((p) => opts.push({ value: p.name, text: p.name, group: g }));
   }
+  sel.setOptions(opts);
 }
 
 async function loadPresets() {
@@ -1140,13 +1254,13 @@ function wireConfig() {
   $("lora-add").onclick = () => {
     const row = loraRow("", 1, scheduleSaveUiState);
     $("loras").append(row);
-    row.querySelector("select").focus();
+    row.querySelector(".lora-name").focus();
   };
   $("preset-manage").onclick = openPresetManage;
   $("style-add").onclick = () => {
     const row = styleRow("", onStylesChanged);
     $("styles").append(row);
-    row.querySelector("select").focus();
+    row.querySelector(".style-name").focus();
     onStylesChanged();
   };
   $("style-manage").onclick = openStyleManage;
@@ -1478,13 +1592,16 @@ async function init() {
   state.samplers = s.samplers;
   state.schedulers = s.schedulers;
   state.presets = pr.presets;
-  state.loras = lr.loras;  // [{name, group|null}]
+  state.loras = lr.loras;  // lora names (str) from /api/loras
   state.styles = sy.styles;
-  const sel = $("model");
-  sel.innerHTML = "";
-  m.models.forEach((x) => {
-    sel.append(opt(x.id, x.is_default ? `${x.name} (default)` : x.name));
-  });
+  // the preset and model fields are searchable comboboxes (makeCombobox):
+  // build them first so the .value / setOptions below work, then feed options
+  const sel = makeCombobox($("model"), [], {});
+  makeCombobox($("preset"), [], { placeholder: "—" });
+  sel.setOptions(m.models.map((x) => ({
+    value: x.id,
+    text: x.is_default ? `${x.name} (default)` : x.name,
+  })));
   if (m.current && m.models.some((x) => x.id === m.current)) sel.value = m.current;
   for (const id of ["sampler", "scheduler"]) {
     const s2 = $(id);

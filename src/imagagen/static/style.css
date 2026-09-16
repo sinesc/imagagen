@@ -129,6 +129,37 @@ button.mini.icon {
   justify-content: center;
 }
 
+/* searchable combobox (replaces the plain <select> for preset / model / LoRA /
+   style). The control itself is a text input; the option list is an
+   absolutely positioned <ul> that overlays the page, so the widget keeps the
+   exact footprint of the <select> it replaces. */
+.combobox { position: relative; display: block; }
+.combo-input {
+  width: 100%;
+  background: #222; color: #eee; border: 1px solid #444; border-radius: 4px;
+  padding: 0.3rem 0.4rem; font-size: 0.85rem; height: 1.75rem;
+}
+.combo-input:focus { border-color: #777; outline: none; }
+.combo-list {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 100;
+  margin: 2px 0 0; padding: 0; list-style: none;
+  background: #222; border: 1px solid #444; border-radius: 4px;
+  max-height: 16rem; overflow-y: auto; display: none;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+}
+.combo-list.open { display: block; }
+.combo-item {
+  padding: 0.3rem 0.5rem; font-size: 0.85rem; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.combo-item:hover, .combo-item.active { background: #333; }
+.combo-group {
+  padding: 0.2rem 0.5rem; font-size: 0.68rem; color: #888;
+  text-transform: uppercase; letter-spacing: 0.03em;
+  background: #1c1c1c; position: sticky; top: 0;
+}
+.combo-empty { padding: 0.3rem 0.5rem; color: #777; font-style: italic; }
+
 /* LoRA list: dropdown + weight + remove, one per row */
 .loras { display: flex; flex-direction: column; gap: 0.25rem; }
 .lora-list { display: flex; flex-direction: column; gap: 0.2rem; }
@@ -136,9 +167,9 @@ button.mini.icon {
 /* width: 0 (with flex: 1) pins the select's min-content contribution so a
    long LoRA filename can't widen ancestors (e.g. the model config dialog
    fieldset); min-width: 0 lets it shrink in definite-width containers */
-.lora-row select { flex: 1; min-width: 0; width: 0; }
-.lora-row input { width: 4.2em; }
-.lora-row select, .lora-row input {
+.lora-row .combobox { flex: 1; min-width: 0; width: 0; }
+.lora-row .lora-weight { width: 4.2em; }
+.lora-row .combo-input, .lora-row .lora-weight {
   background: #222; color: #eee; border: 1px solid #444;
   border-radius: 4px; padding: 0.2rem 0.3rem; font-size: 0.8rem;
 }
@@ -148,8 +179,8 @@ button.mini.icon {
 .styles { display: flex; flex-direction: column; gap: 0.25rem; }
 .style-list { display: flex; flex-direction: column; gap: 0.2rem; }
 .style-row { display: flex; gap: 0.25rem; align-items: center; }
-.style-row select {
-  flex: 1; min-width: 0;
+.style-row .combobox { flex: 1; min-width: 0; }
+.style-row .combo-input {
   background: #222; color: #eee; border: 1px solid #444;
   border-radius: 4px; padding: 0.2rem 0.3rem; font-size: 0.8rem;
 }
