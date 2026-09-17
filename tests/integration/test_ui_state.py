@@ -102,6 +102,29 @@ def test_corrupt_file_falls_back_to_defaults(tmp_path):
     assert state["steps"] == 25
 
 
+def test_disabled_saving_skips_file(tmp_path):
+    """save-ui-state = false: POSTs are validated but never written to disk."""
+    app = create_app(
+        config=Config(root=tmp_path, save_ui_state=False),
+        backend=MockBackend(),
+    )
+    with TestClient(app) as c:
+        r = c.post("/api/ui-state", json={"prompt": "not persisted"})
+        assert r.json() == {"ok": True}
+        assert not (tmp_path / "ui-state.json").exists()
+
+
+def test_disabled_saving_still_loads_existing_file(tmp_path):
+    (tmp_path / "ui-state.json").write_text(json.dumps({"prompt": "old"}))
+    app = create_app(
+        config=Config(root=tmp_path, save_ui_state=False),
+        backend=MockBackend(),
+    )
+    with TestClient(app) as c:
+        state = c.get("/api/ui-state").json()["state"]
+    assert state["prompt"] == "old"
+
+
 def test_sendbeacon_style_text_plain(tmp_path):
     """The tab-close path posts a text/plain Blob; content-type is ignored."""
     with _client(tmp_path) as c:

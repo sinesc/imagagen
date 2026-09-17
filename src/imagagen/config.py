@@ -28,6 +28,10 @@ class Config:
     # Development aid: no-store on all responses (see cache middleware in
     # app.py); without it responses are revalidated on every request.
     debug: bool = False
+    # Persist the UI's form state to <root>/ui-state.json on every save
+    # (true = default). Disable it to keep the file from being written;
+    # an existing file is still loaded on start.
+    save_ui_state: bool = True
 
     @property
     def models_dir(self) -> Path:
@@ -81,6 +85,7 @@ def load_config(root: Path | str | None = None) -> Config:
         text_encoder_device,
         vae_tiling,
         debug,
+        save_ui_state,
     ) = _parse_ini(root / "imagagen.ini")
     config = Config(
         root=root,
@@ -90,6 +95,7 @@ def load_config(root: Path | str | None = None) -> Config:
         text_encoder_device=text_encoder_device,
         vae_tiling=vae_tiling,
         debug=debug,
+        save_ui_state=save_ui_state,
     )
     # Must happen before huggingface_hub is imported (it reads these at
     # import time): cache hub files in the project, keep the console quiet.
@@ -109,20 +115,21 @@ def load_config(root: Path | str | None = None) -> Config:
 
 def _parse_ini(
     path: Path,
-) -> tuple[int | None, frozenset[int], str, str, bool, bool]:
+) -> tuple[int | None, frozenset[int], str, str, bool, bool, bool]:
     """Parse ``<root>/imagagen.ini``: GPU selection, VRAM options, debug.
 
-    A missing file yields the defaults (auto, none, off, gpu, False, False).
+    A missing file yields the defaults
+    (auto, none, off, gpu, False, False, True).
     """
     if not path.is_file():
-        return None, frozenset(), "off", "gpu", False, False
+        return None, frozenset(), "off", "gpu", False, False, True
     cp = configparser.ConfigParser()
     try:
         cp.read(path, encoding="utf-8")
     except configparser.Error as e:
         raise ValueError(f"cannot parse {path.name}: {e}") from e
     if not cp.has_section("imagagen"):
-        return None, frozenset(), "off", "gpu", False, False
+        return None, frozenset(), "off", "gpu", False, False, True
     sec = cp["imagagen"]
 
     raw = sec.get("primary-gpu", "auto").strip().lower()
@@ -168,7 +175,22 @@ def _parse_ini(
         raise ValueError(
             f"{path.name}: debug must be true/false, got {sec.get('debug')!r}"
         ) from None
-    return primary, frozenset(ignored), quant, te_dev, vae_tiling, debug
+    try:
+        save_ui_state = sec.getboolean("save-ui-state", True)
+    except ValueError:
+        raise ValueError(
+            f"{path.name}: save-ui-state must be true/false, "
+            f"got {sec.get('save-ui-state')!r}"
+        ) from None
+    return (
+        primary,
+        frozenset(ignored),
+        quant,
+        te_dev,
+        vae_tiling,
+        debug,
+        save_ui_state,
+    )
 
 
 def ensure_dirs(config: Config) -> None:

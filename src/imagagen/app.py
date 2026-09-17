@@ -571,7 +571,8 @@ def create_app(
             return JSONResponse(
                 {"error": f"invalid state: {e.errors()[:3]}"}, status_code=422
             )
-        app.state.ui_state.save(state)
+        if config.save_ui_state:
+            app.state.ui_state.save(state)
         return {"ok": True}
 
     # --- canvas ---

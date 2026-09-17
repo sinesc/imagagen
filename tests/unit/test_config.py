@@ -104,3 +104,18 @@ def test_bad_debug_raises(tmp_path):
     (tmp_path / "imagagen.ini").write_text("[imagagen]\ndebug = maybe\n")
     with pytest.raises(ValueError, match="debug"):
         load_config(tmp_path)
+
+
+def test_save_ui_state_flag(tmp_path):
+    # enabled by default (even with no ini file at all)
+    assert load_config(tmp_path).save_ui_state is True
+    (tmp_path / "imagagen.ini").write_text("[imagagen]\nsave-ui-state = false\n")
+    assert load_config(tmp_path).save_ui_state is False
+    (tmp_path / "imagagen.ini").write_text("[imagagen]\nsave-ui-state = true\n")
+    assert load_config(tmp_path).save_ui_state is True
+
+
+def test_bad_save_ui_state_raises(tmp_path):
+    (tmp_path / "imagagen.ini").write_text("[imagagen]\nsave-ui-state = maybe\n")
+    with pytest.raises(ValueError, match="save-ui-state"):
+        load_config(tmp_path)

@@ -26,6 +26,12 @@
 #                differs by <= 1/255 per pixel), untiled below that.
 #                Tile-seam quality risk is negligible in practice.
 #
+#   Misc:
+#   save-ui-state       true (default) | false
+#                false: never write <root>/ui-state.json (the UI's
+#                saved form inputs are not persisted). An existing
+#                file is still loaded on start.
+#
 #   Combined (all three on): 1024² generation peaks at ~4.3 GiB and runs
 #   in ~14 s -- SDXL fits on a 6 GB card or shares a GPU with a large LLM.
 #
@@ -42,4 +48,5 @@ ignore-gpus =
 #unet-quantization = off
 #text-encoder-device = gpu
 #vae-tiling = false
+#save-ui-state = true
 #debug = false
