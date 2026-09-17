@@ -410,6 +410,7 @@ button.danger:hover { background: #a33; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+#status-line.error { color: #e06c6c; }
 #canvas-holder {
   flex: 1;
   display: flex;

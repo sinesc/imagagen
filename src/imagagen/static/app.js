@@ -31,8 +31,10 @@ const state = {
   activePreset: null,
 };
 
-function setStatus(text) {
-  $("status-line").textContent = text || "";
+function setStatus(text, isError = false) {
+  const el = $("status-line");
+  el.textContent = text || "";
+  el.classList.toggle("error", isError);
 }
 
 // POST-only API helper. Every call is a POST; body-less endpoints simply
@@ -480,7 +482,7 @@ function openStyleManage() {
           }
           scheduleSaveUiState(0);
           schedulePromptTokens();
-        } catch (e) { setStatus(e.message); return; }
+        } catch (e) { setStatus(e.message, true); return; }
         render();
       };
       list.append(el("div", { class: "preset-manage-row" }, nameEl, edit, del));
@@ -551,7 +553,7 @@ function renderThumbs() {
       try {
         await restoreThumb(t);
       } catch (e) {
-        setStatus(e.message);
+        setStatus(e.message, true);
         return;
       }
       state.currentThumb = i;
@@ -621,7 +623,7 @@ async function generate() {
       setGenerating(true);
     }
   } catch (e) {
-    setStatus(`generate failed: ${e.message}`);
+    setStatus(`generate failed: ${e.message}`, true);
   }
 }
 
@@ -636,7 +638,7 @@ async function selectModel(id) {
     await api("/api/models/select", { id });
     setStatus("");
   } catch (e) {
-    setStatus(`model select failed: ${e.message}`);
+    setStatus(`model select failed: ${e.message}`, true);
   }
 }
 
@@ -732,7 +734,7 @@ function openConfigDialog(entry) {
     try {
       await refreshModels(true);
     } catch (e) {
-      setStatus(e.message);
+      setStatus(e.message, true);
     }
     scheduleSaveUiState(0);
   });
@@ -776,7 +778,7 @@ async function deleteConfig() {
     await refreshModels(false);
     scheduleSaveUiState(0);
   } catch (e) {
-    setStatus(`delete config failed: ${e.message}`);
+    setStatus(`delete config failed: ${e.message}`, true);
   }
 }
 
@@ -807,7 +809,7 @@ async function applyPreset(name) {
     if (!res.ok) throw new Error(`preset: ${res.status}`);
     p = (await res.json()).preset;
   } catch (e) {
-    setStatus(e.message);
+    setStatus(e.message, true);
     $("preset").value = ""; // apply failed: don't leave a stale selection
     return false;
   }
@@ -830,7 +832,7 @@ async function applyPreset(name) {
       else $(key.replace(/_/g, "-")).value = p[key];
     }
   } catch (e) {
-    setStatus(`preset "${name}": ${e.message}`);
+    setStatus(`preset "${name}": ${e.message}`, true);
     $("preset").value = ""; // apply failed: don't leave a stale selection
     return false;
   }
@@ -992,7 +994,7 @@ function openPresetManage() {
         let preset;
         try {
           preset = (await (await fetch(`/api/presets/${encodeURIComponent(name)}`)).json()).preset;
-        } catch (e) { setStatus(e.message); return; }
+        } catch (e) { setStatus(e.message, true); return; }
         // saving/cancelling returns to this management list
         openPresetDialog(preset, openPresetManage);
       };
@@ -1000,7 +1002,7 @@ function openPresetManage() {
         if (!confirm(`Delete preset "${name}"?`)) return;
         try {
           await api("/api/presets/delete", { name });
-        } catch (e) { setStatus(e.message); return; }
+        } catch (e) { setStatus(e.message, true); return; }
         await loadPresets();
         render();
       };
@@ -1099,7 +1101,7 @@ async function maskOp(op) {
     storeUndoFlags(r);
     await viewRefresh();
   } catch (e) {
-    setStatus(`mask ${op} failed: ${e.message}`);
+    setStatus(`mask ${op} failed: ${e.message}`, true);
   }
 }
 
@@ -1149,7 +1151,7 @@ function openSegDialog() {
       viewRefresh();
     } catch (e) {
       statusIsError = true;
-      setStatus(`segmentation failed: ${e.message}`);
+      setStatus(`segmentation failed: ${e.message}`, true);
       return false; // keep the dialog open so the class set can be fixed
     }
   }, "Generate");
@@ -1373,7 +1375,7 @@ async function importPng(file) {
     viewRefresh();
     setStatus(meta ? `imported ${file.name} (metadata applied)` : `loaded ${file.name} onto the canvas (no metadata)`);
   } catch (e) {
-    setStatus(`png import failed: ${e.message}`);
+    setStatus(`png import failed: ${e.message}`, true);
   }
 }
 
@@ -1519,7 +1521,7 @@ function wireCanvasDrop() {
       viewRefresh();
       setStatus(`loaded ${file.name} onto the canvas`);
     } catch (err) {
-      setStatus(`canvas drop failed: ${err.message}`);
+      setStatus(`canvas drop failed: ${err.message}`, true);
     }
   });
 }
@@ -1762,7 +1764,7 @@ function connectWS() {
         break;
       case "error":
         statusIsError = true;
-        setStatus(`error: ${msg.message}`);
+        setStatus(`error: ${msg.message}`, true);
         break;
     }
   };
@@ -1776,7 +1778,7 @@ $("btn-save").onclick = async () => {
     const r = await api("/api/save", { prompt: $("prompt").value });
     setStatus(`saved ${r.path}`);
   } catch (e) {
-    setStatus(`save failed: ${e.message}`);
+    setStatus(`save failed: ${e.message}`, true);
   }
 };
 function currentUndoTarget() {
@@ -1788,7 +1790,7 @@ $("btn-undo").onclick = async () => {
     storeUndoFlags(await api("/api/canvas/undo", { target: t }));
     await viewRefresh();
   } catch (e) {
-    setStatus(`undo failed: ${e.message}`);
+    setStatus(`undo failed: ${e.message}`, true);
   }
 };
 $("btn-redo").onclick = async () => {
@@ -1797,7 +1799,7 @@ $("btn-redo").onclick = async () => {
     storeUndoFlags(await api("/api/canvas/redo", { target: t }));
     await viewRefresh();
   } catch (e) {
-    setStatus(`redo failed: ${e.message}`);
+    setStatus(`redo failed: ${e.message}`, true);
   }
 };
 $("model").onchange = (e) => {

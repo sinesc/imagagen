@@ -316,7 +316,7 @@ function setupCanvasInput() {
       });
     } catch (err) {
       view.stroke = null;
-      setStatus(`stroke failed: ${err.message}`);
+      setStatus(`stroke failed: ${err.message}`, true);
       viewRedraw();
       return;
     }
