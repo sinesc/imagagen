@@ -101,9 +101,12 @@ def resolve_lora_names(
        prompt token's name differs from the basename (e.g. a LoRA with an
        internal display name).
 
-    Unresolvable names are returned unchanged. Note the hash is derived
-    from the file's basename, so two files sharing a name in different
-    subfolders are equally (un)distinguishable by hash.
+    Several LoRAs sharing a basename: the hash can tell them apart only
+    when the extensions differ (``Twin.safetensors`` vs ``Twin.ckpt`` --
+    different basenames, different hashes); identical basenames hash
+    identically and are equally (un)distinguishable, in which case the
+    FIRST candidate in registry order (sorted discovery) is picked so that
+    generation still works. Truly unknown names are returned unchanged.
     """
     _STRIP = str.maketrans("", "", ":,")  # what Forge strips from hash keys
     def _hash_for(name: str) -> str | None:
@@ -133,6 +136,12 @@ def resolve_lora_names(
             if len(matches) == 1:
                 out.append(matches[0])
                 continue
+        if cand:
+            # ambiguous (and the hash, derived from the basename, cannot
+            # tell them apart): pick the first in registry order rather
+            # than leaving the bare basename unresolvable
+            out.append(cand[0])
+            continue
         out.append(name)
     return out
 

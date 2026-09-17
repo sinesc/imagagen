@@ -256,12 +256,17 @@ def test_png_meta_resolves_lora_names_to_subfolders(client):
     from imagagen import metadata
 
     (client.root / "loras" / "sdxl" / "sub").mkdir(parents=True)
+    (client.root / "loras" / "sdxl" / "dup").mkdir()
     (client.root / "loras" / "sdxl" / "sub" / "Deep.safetensors").touch()
+    # same basename in a second folder: the hash cannot tell them apart,
+    # so the first in registry (sorted discovery) order must be picked
+    (client.root / "loras" / "sdxl" / "sub" / "Deep2.safetensors").touch()
+    (client.root / "loras" / "sdxl" / "dup" / "Deep2.safetensors").touch()
     (client.root / "loras" / "sdxl" / "Xylora.safetensors").touch()
 
     buf = io.BytesIO()
     params = (
-        "a cat, <lora:Deep:0.8>, <lora:Xy Lora:1.0>\n"
+        "a cat, <lora:Deep:0.8>, <lora:Deep2:0.5>, <lora:Xy Lora:1.0>\n"
         "Steps: 20, Sampler: Euler a, CFG scale: 7, Seed: 1, Size: 16x12, "
         "Model: some_model, Model hash: abc123, "
         f'Lora hashes: "Deep: '
@@ -274,6 +279,7 @@ def test_png_meta_resolves_lora_names_to_subfolders(client):
     )
     img.save(buf, format="PNG", pnginfo=info)
     m = client.post("/api/png-meta", content=buf.getvalue()).json()["meta"]
-    # subfolder LoRA resolved by unique basename; display-named one by hash
-    assert m["loras"] == ["sub/Deep@0.8", "Xylora@1"]
+    # subfolder LoRA by unique basename, duplicate by registry order
+    # (dup/ sorts before sub/), display-named one by hash
+    assert m["loras"] == ["sub/Deep@0.8", "dup/Deep2@0.5", "Xylora@1"]
     assert m["prompt"] == "a cat"

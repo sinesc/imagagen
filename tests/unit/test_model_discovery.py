@@ -104,6 +104,21 @@ def _lora_tree(root):
     return Config(root=root)
 
 
+def test_resolve_duplicate_basename_symlinked_folder(tmp_path):
+    """A duplicate in a symlinked folder is discovered too; the first
+    candidate in registry order wins (here the real file, which sorts
+    before the link)."""
+    from imagagen.models import resolve_lora_names
+
+    (tmp_path / "loras" / "sdxl" / "real").mkdir(parents=True)
+    (tmp_path / "loras" / "sdxl" / "real" / "Twin.safetensors").touch()
+    (tmp_path / "extra").mkdir()
+    (tmp_path / "extra" / "Twin.safetensors").touch()
+    (tmp_path / "loras" / "sdxl" / "zz-link").symlink_to(tmp_path / "extra")
+
+    assert resolve_lora_names(["Twin"], Config(root=tmp_path)) == ["real/Twin"]
+
+
 def test_resolve_lora_names(tmp_path):
     from imagagen.metadata import forge_lora_hash
     from imagagen.models import resolve_lora_names
@@ -114,11 +129,20 @@ def test_resolve_lora_names(tmp_path):
     assert resolve_lora_names(["sub/Deep"], cfg) == ["sub/Deep"]
     # unique basename: the subfolder path is found
     assert resolve_lora_names(["Deep"], cfg) == ["sub/Deep"]
-    # ambiguous basename without hashes: left as-is (generation will report it)
-    assert resolve_lora_names(["Twin"], cfg) == ["Twin"]
-    # same basename in two subfolders -> same hash, still ambiguous
+    # duplicate basename, no hashes: first in registry (sorted discovery)
+    # order is picked, so generation still works
+    assert resolve_lora_names(["Twin"], cfg) == ["sub/Twin"]
+    # identical basenames in two subfolders hash identically -> still
+    # ambiguous -> first in registry order
     h_twin = forge_lora_hash("Twin.safetensors")
-    assert resolve_lora_names(["Twin"], cfg, {"Twin": h_twin}) == ["Twin"]
+    assert resolve_lora_names(["Twin"], cfg, {"Twin": h_twin}) == ["sub/Twin"]
+    # different extensions = different basenames = different hashes:
+    # the hash picks the right one
+    (tmp_path / "loras" / "sdxl" / "sub2" / "Twin.ckpt").touch()
+    h_ckpt = forge_lora_hash("Twin.ckpt")
+    assert resolve_lora_names(
+        ["Twin"], cfg, {"Twin": h_ckpt}
+    ) == ["sub2/Twin"]
     # display name: token differs from the basename, but the Forge hash
     # (sha256 of the basename) links them
     h_xy = forge_lora_hash("Xylora.safetensors")
