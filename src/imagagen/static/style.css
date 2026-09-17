@@ -186,7 +186,7 @@ button.mini.icon {
   position: absolute; top: 100%; left: 0; right: 0; z-index: 100;
   margin: 2px 0 0; padding: 0; list-style: none;
   background: #222; border: 1px solid #444; border-radius: 4px;
-  max-height: 16rem; overflow-y: auto; display: none;
+  max-height: 32rem; overflow-y: auto; display: none;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
 }
 .combo-list.open { display: block; }
