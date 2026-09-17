@@ -6,28 +6,28 @@ spec and `PLAN.md` for the implementation plan.
 ## Setup (dev)
 
 ```bash
-uv sync --extra dev          # syncs into .venv3.13 (see below)
-.venv3.13/bin/python -m pytest   # run tests (mock backend, no GPU needed)
+uv sync --extra dev          # syncs into .venv (see below)
+.venv/bin/python -m pytest   # run tests (mock backend, no GPU needed)
 bash scripts/smoke.sh        # start mock server + hit endpoints
 ```
 
 ## Run
 
 ```bash
-.venv3.13/bin/python -m imagagen --root <project-root> --port 8080
+.venv/bin/python -m imagagen --root <project-root> --port 8080
 # --mock forces the CPU mock backend (automatic fallback when no CUDA/models)
 ```
 
-### Python environment (`.venv3.13`)
+### Python environment (`.venv`)
 
-The project uses a single self-contained venv: `.venv3.13` (venv) backed by a
+The project uses a single self-contained venv: `.venv` (venv) backed by a
 full CPython 3.13 install in `.python313/` (both in the shared workspace, both
 gitignored). It works both inside this container and from the host (whose
-Python is too old). Plain `uv sync` targets `.venv` by default, so always use:
+Python is too old). So the venv is always backed by the `.python313` CPython
+(rather than the container's system Python), sync with:
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.venv3.13 uv sync \
-  --python .python313/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13
+uv sync --python .python313/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13
 ```
 
 The rebuild rewrites two files with absolute container paths that only
@@ -35,9 +35,9 @@ resolve inside the container. Re-make them relative afterwards (the same
 commands originally used to create the venv):
 
 ```bash
-ln -sfn ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13 .venv3.13/bin/python
-sed -i 's|^home = .*|home = ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bin|' .venv3.13/pyvenv.cfg
-printf '../../../../src\n' > .venv3.13/lib/python3.13/site-packages/_editable_impl_imagagen.pth
+ln -sfn ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13 .venv/bin/python
+sed -i 's|^home = .*|home = ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bin|' .venv/pyvenv.cfg
+printf '../../../../src\n' > .venv/lib/python3.13/site-packages/_editable_impl_imagagen.pth
 ```
 
 Place SDXL weights in `models/sdxl/` and LoRAs in `loras/sdxl/` (subdirectories

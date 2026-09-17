@@ -18,7 +18,7 @@ project's, loras/ is a temp copy), so the script never writes into the
 project's data dirs.
 
 Usage (from the project root; needs GPU + models/sdxl/*.safetensors):
-    .venv3.13/bin/python devtools/smoke_sdxl_lora.py [gpu-index]
+    .venv/bin/python devtools/smoke_sdxl_lora.py [gpu-index]
 """
 import dataclasses
 import shutil

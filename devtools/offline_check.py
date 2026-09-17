@@ -6,7 +6,7 @@ image (structure check: a real image's 16x16-downscale std is far below its
 pixel std; pure noise / failed decode is not).
 
 Usage (from the project root):
-    .venv3.13/bin/python devtools/offline_check.py
+    .venv/bin/python devtools/offline_check.py
 """
 
 import os

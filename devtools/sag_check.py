@@ -15,7 +15,7 @@ UNet):
 Saves all images next to this script's run dir for a visual compare.
 
 Usage (from the project root):
-    .venv3.13/bin/python devtools/sag_check.py --out /tmp/sag
+    .venv/bin/python devtools/sag_check.py --out /tmp/sag
 """
 
 import argparse

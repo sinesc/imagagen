@@ -10,7 +10,7 @@ Same seed/prompt/CFG/steps/sampler for all three. Saves individual PNGs, a
 side-by-side composite, and prints a simple sharpness metric (Laplacian
 variance).
 
-Usage:  .venv3.13/bin/python devtools/softness_check.py
+Usage:  .venv/bin/python devtools/softness_check.py
 (No other server/model should be holding the GPU.)
 """
 

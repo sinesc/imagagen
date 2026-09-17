@@ -6,7 +6,7 @@ from all-noise output: pure noise has structure ~ std, a soft real image has
 structure << std.
 
 Usage (from the project root):
-    .venv3.13/bin/python devtools/gen.py "a red cube on a wooden table" \
+    .venv/bin/python devtools/gen.py "a red cube on a wooden table" \
         --width 1024 --height 1024 --steps 20 --cfg 5.5 --seed 7 \
         --sampler "DPM++ 2M" --scheduler Karras --model models/sdxl/sd_xl_base_1.0.safetensors \
         --out /tmp/cube.png
