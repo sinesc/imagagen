@@ -22,3 +22,7 @@ Playwright is available in the project's uv environment. Chromium is available.
 ## Process monitoring
 
 When monitoring a process (e.g. `pgrep`/`pkill`) be sure your monitoring script doesn't match itself (finds the monitoring string in its own process string).
+
+## Testing
+
+Full test suite is very slow, prefer running the specific tests you need. Redirect test outputs to a temporary file so you can inspect it multiple times if you need to.
