@@ -1583,6 +1583,8 @@ function readUiState() {
     // preset is not persisted either: the dropdown always starts at "—"
     seg_model: $("seg-model").value || null,
     seg_classes: state.segClasses,
+    // sidebar (control panel) width set by dragging its right border
+    sidebar_width: Math.round($("controls").getBoundingClientRect().width),
   };
 }
 
@@ -1628,6 +1630,8 @@ function applyUiState(st) {
   }
   // self attention guidance: enabled flag + the three options (JS state
   // object)
+  // sidebar width set by dragging its right border
+  if (typeof st.sidebar_width === "number") $("controls").style.width = `${st.sidebar_width}px`;
   if (typeof st.sag === "boolean") $("sag").checked = st.sag;
   for (const [key, k] of [
     ["sag_scale", "scale"],
@@ -1829,6 +1833,29 @@ document.addEventListener("keydown", (e) => {
   if (typing) return;
   if (e.key === "b" || e.key === "B") switchTool("brush");
   else if (e.key === "m" || e.key === "M") switchTool("mask");
+});
+
+// -------- sidebar resize: drag the border between the sidebar and stage --------
+const SIDEBAR_MIN_W = 280;
+const SIDEBAR_MAX_W = 800;
+$("sidebar-resizer").addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  const start = { x: e.clientX, w: $("controls").getBoundingClientRect().width };
+  const move = (ev) => {
+    const w = Math.round(
+      Math.min(SIDEBAR_MAX_W, Math.max(SIDEBAR_MIN_W, start.w + ev.clientX - start.x))
+    );
+    $("controls").style.width = `${w}px`;
+  };
+  const up = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    document.body.classList.remove("resizing-sidebar");
+    scheduleSaveUiState();
+  };
+  document.body.classList.add("resizing-sidebar");
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
 });
 
 // ---------------- boot ----------------

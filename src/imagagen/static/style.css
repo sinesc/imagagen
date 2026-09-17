@@ -19,13 +19,27 @@ body {
   min-height: 0;
 }
 #controls {
+  /* default width; overridden inline by dragging #sidebar-resizer */
   width: 300px;
+  flex: none;
   padding: 0.8rem;
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
   border-right: 1px solid #333;
   overflow-y: auto;
+}
+/* the sidebar's right border, made draggable */
+#sidebar-resizer {
+  flex: none;
+  width: 5px;
+  /* straddle the sidebar's border-right so the border itself is the grab area */
+  margin-left: -3px;
+  cursor: col-resize;
+}
+body.resizing-sidebar, body.resizing-sidebar * {
+  cursor: col-resize !important;
+  user-select: none;
 }
 #controls label {
   display: flex;

@@ -69,6 +69,9 @@ class UiState(BaseModel):
     # selection (empty = "all classes except background")
     seg_model: str | None = None
     seg_classes: list[str] = Field(default_factory=list)
+    # sidebar (control panel) width in px, set by dragging its right border;
+    # same clamped range as the UI's drag handler
+    sidebar_width: int = Field(default=300, ge=280, le=800)
 
     # The generation mode and the selected preset are deliberately NOT
     # persisted: the UI always starts in "generate" mode (there is nothing
