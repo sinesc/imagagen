@@ -90,3 +90,50 @@ def test_broken_symlink_is_ignored(tmp_path):
 def test_missing_dirs_yield_empty_lists(tmp_path):
     assert ModelRegistry(Config(root=tmp_path)).models == []
     assert list_loras(Config(root=tmp_path)) == []
+
+
+def _lora_tree(root):
+    (root / "loras" / "sdxl" / "sub").mkdir(parents=True)
+    (root / "loras" / "sdxl" / "sub2").mkdir(parents=True)
+    (root / "loras" / "sdxl" / "Top.safetensors").touch()
+    (root / "loras" / "sdxl" / "sub" / "Deep.safetensors").touch()
+    (root / "loras" / "sdxl" / "sub" / "Twin.safetensors").touch()
+    (root / "loras" / "sdxl" / "sub2" / "Twin.safetensors").touch()
+    # plain file whose prompt-token (display) name differs from the basename
+    (root / "loras" / "sdxl" / "Xylora.safetensors").touch()
+    return Config(root=root)
+
+
+def test_resolve_lora_names(tmp_path):
+    from imagagen.metadata import forge_lora_hash
+    from imagagen.models import resolve_lora_names
+
+    cfg = _lora_tree(tmp_path)
+    # exact match stays untouched
+    assert resolve_lora_names(["Top"], cfg) == ["Top"]
+    assert resolve_lora_names(["sub/Deep"], cfg) == ["sub/Deep"]
+    # unique basename: the subfolder path is found
+    assert resolve_lora_names(["Deep"], cfg) == ["sub/Deep"]
+    # ambiguous basename without hashes: left as-is (generation will report it)
+    assert resolve_lora_names(["Twin"], cfg) == ["Twin"]
+    # same basename in two subfolders -> same hash, still ambiguous
+    h_twin = forge_lora_hash("Twin.safetensors")
+    assert resolve_lora_names(["Twin"], cfg, {"Twin": h_twin}) == ["Twin"]
+    # display name: token differs from the basename, but the Forge hash
+    # (sha256 of the basename) links them
+    h_xy = forge_lora_hash("Xylora.safetensors")
+    assert resolve_lora_names(
+        ["Xy Lora"], cfg, {"Xy Lora": h_xy}
+    ) == ["Xylora"]
+    # Forge strips ":"/"," from hash keys: the stripped form still matches
+    assert resolve_lora_names(
+        ["Xy:Lora"], cfg, {"XyLora": h_xy}
+    ) == ["Xylora"]
+    # renamed file: the stored hash is of the OLD basename, so it matches
+    # nothing locally and the name is left as-is
+    h_old = forge_lora_hash("oldname.safetensors")
+    assert resolve_lora_names(
+        ["oldname"], cfg, {"oldname": h_old}
+    ) == ["oldname"]
+    # unknown name, no usable hash: unchanged
+    assert resolve_lora_names(["Mystery"], cfg, {"Mystery": "0" * 12}) == ["Mystery"]

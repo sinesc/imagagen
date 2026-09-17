@@ -245,3 +245,35 @@ def test_generate_no_styles_keeps_old_metadata(client):
         _wait_thumb(client, ws)
     png = Image.open(io.BytesIO(client.get("/api/thumb/1/0.png").content))
     assert "Styles:" not in png.info["parameters"]
+
+
+def test_png_meta_resolves_lora_names_to_subfolders(client):
+    """A Forge image names its LoRAs verbatim; when a LoRA sits in a
+    subfolder the name must be resolved to the discovered relative name
+    (the Forge hash covers the display-name case, where the token's name
+    differs from the file's basename)."""
+    import hashlib
+    from imagagen import metadata
+
+    (client.root / "loras" / "sdxl" / "sub").mkdir(parents=True)
+    (client.root / "loras" / "sdxl" / "sub" / "Deep.safetensors").touch()
+    (client.root / "loras" / "sdxl" / "Xylora.safetensors").touch()
+
+    buf = io.BytesIO()
+    params = (
+        "a cat, <lora:Deep:0.8>, <lora:Xy Lora:1.0>\n"
+        "Steps: 20, Sampler: Euler a, CFG scale: 7, Seed: 1, Size: 16x12, "
+        "Model: some_model, Model hash: abc123, "
+        f'Lora hashes: "Deep: '
+        f'{hashlib.sha256(b"Deep.safetensors").hexdigest()[:12]}, '
+        f'Xy Lora: {hashlib.sha256(b"Xylora.safetensors").hexdigest()[:12]}", '
+        "Version: f2.0.1"
+    )
+    img, info = metadata.attach_metadata(
+        Image.new("RGB", (16, 12), (5, 5, 5)), params
+    )
+    img.save(buf, format="PNG", pnginfo=info)
+    m = client.post("/api/png-meta", content=buf.getvalue()).json()["meta"]
+    # subfolder LoRA resolved by unique basename; display-named one by hash
+    assert m["loras"] == ["sub/Deep@0.8", "Xylora@1"]
+    assert m["prompt"] == "a cat"

@@ -14,7 +14,9 @@ ignore the extra trailing line.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 from typing import Any
 
@@ -42,6 +44,31 @@ _FIELDS = (
 # imagagen, which records them on dedicated ``Lora:`` meta lines). The name is
 # everything up to the last colon; the weight is the (signed) number after it.
 _LORA_RE = re.compile(r"<lora:(.+?):(-?\d+(?:\.\d+)?)>")
+
+# one entry of a Forge "Lora hashes" value: `name: <12-char hex>`
+_LORA_HASH_ENTRY_RE = re.compile(r"^(.*?):\s*([0-9a-fA-F]{12})$")
+
+
+def forge_lora_hash(filename: str) -> str:
+    """The hash Forge stores per LoRA in the `Lora hashes:` meta line.
+
+    Despite the name, Forge does NOT hash the file contents: it is the first
+    12 hex chars of the sha256 of the file's *basename* (extension included
+    -- LoRA shorthash, vs 10 chars for checkpoints) --
+    `forge_fake_calculate_sha256`, see
+    `extensions-builtin/sd_forge_lora/network.py::read_hash`.
+    """
+    return hashlib.sha256(os.path.basename(filename).encode("utf-8")).hexdigest()[:12]
+
+
+def _split_lora_hash_entries(text: str) -> list[tuple[str, str]]:
+    """Split a (quote-stripped) `Lora hashes` value into (name, hash) pairs."""
+    entries = []
+    for part in text.split(", "):
+        name, sep, h = part.rpartition(": ")
+        if sep and re.fullmatch(r"[0-9a-fA-F]{12}", h):
+            entries.append((name, h.lower()))
+    return entries
 
 
 def extract_prompt_loras(prompt: str) -> tuple[list[tuple[str, float]], str]:
@@ -184,7 +211,55 @@ def parse_parameters(text: str) -> dict[str, Any]:
         prompt = "\n".join(prompt_lines).strip()
     out["prompt"] = prompt
 
-    for part in meta_line.split(", "):
+    # "Lora hashes" (Forge): its value is one or more `name: <12-hex>`
+    # entries joined with the same ", " the meta line itself uses, so a
+    # multi-LoRA value is split across parts. Re-join the entry parts
+    # before the generic key:value split below (and mark them so the split
+    # doesn't misread the later parts as their own keys).
+    parts = meta_line.split(", ")
+    lora_hash_entries: list[tuple[str, str]] = []
+    skip: set[int] = set()
+    i = 0
+    while i < len(parts):
+        if parts[i].split(":", 1)[0].strip() != "Lora hashes":
+            i += 1
+            continue
+        value = parts[i].split(":", 1)[1].strip()
+        if value.startswith('"'):
+            # whole value quoted (some Forge versions)
+            buf, j = value[1:], i
+            while '"' not in buf and j + 1 < len(parts):
+                j += 1
+                buf = buf + ", " + parts[j]
+                skip.add(j)
+            close = buf.find('"')
+            found = _split_lora_hash_entries(
+                buf[:close] if close != -1 else buf
+            )
+            if found:
+                lora_hash_entries.extend(found)
+                skip.add(i)
+            i = j + 1
+            continue
+        m = _LORA_HASH_ENTRY_RE.match(value)
+        if m:
+            lora_hash_entries.append((m.group(1), m.group(2).lower()))
+            skip.add(i)
+            j = i + 1
+            while j < len(parts) and _LORA_HASH_ENTRY_RE.match(parts[j]):
+                hm = _LORA_HASH_ENTRY_RE.match(parts[j])
+                lora_hash_entries.append((hm.group(1), hm.group(2).lower()))
+                skip.add(j)
+                j += 1
+            i = j
+            continue
+        i += 1
+    if lora_hash_entries:
+        out["lora_hashes"] = {k: v for k, v in lora_hash_entries}
+
+    for idx, part in enumerate(parts):
+        if idx in skip:
+            continue
         if ":" not in part:
             continue
         key, value = part.split(":", 1)

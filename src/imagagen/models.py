@@ -12,6 +12,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from .metadata import forge_lora_hash
+
 
 _MODEL_SUFFIXES = (".safetensors", ".ckpt")
 
@@ -48,11 +50,12 @@ def _walk_files(base: Path) -> list[Path]:
     return out
 
 
-def list_loras(config) -> list[str]:
-    """All LoRAs under ``loras/<model-type>/`` (subdirectories included,
-    symlinked dirs followed), as names relative to the model-type directory,
-    without extension (e.g. ``"dmd2"``, ``"test-dir/FuturisticXL"``)."""
-    out: list[str] = []
+def _discover_loras(config) -> list[tuple[str, str]]:
+    """(name, filename) for all LoRAs under ``loras/<model-type>/``
+    (subdirectories included, symlinked dirs followed), name relative to
+    the model-type directory, without extension (e.g.
+    ``("test-dir/FuturisticXL", "FuturisticXL.safetensors")``)."""
+    out: list[tuple[str, str]] = []
     loras_dir = config.loras_dir
     if not loras_dir.is_dir():
         return out
@@ -63,7 +66,74 @@ def list_loras(config) -> list[str]:
         files = sorted(f for f in files if f.suffix == ".safetensors") + \
             sorted(f for f in files if f.suffix == ".ckpt")
         for f in files:
-            out.append(f.relative_to(sub).with_suffix("").as_posix())
+            out.append((f.relative_to(sub).with_suffix("").as_posix(), f.name))
+    return out
+
+
+def list_loras(config) -> list[str]:
+    """All LoRAs under ``loras/<model-type>/`` (subdirectories included,
+    symlinked dirs followed), as names relative to the model-type directory,
+    without extension (e.g. ``"dmd2"``, ``"test-dir/FuturisticXL"``)."""
+    return [name for name, _ in _discover_loras(config)]
+
+
+def lora_files(config) -> dict[str, str]:
+    """Discovered LoRA name -> file name (extension included)."""
+    return dict(_discover_loras(config))
+
+
+def resolve_lora_names(
+    names: list[str], config, hashes: dict[str, str] | None = None
+) -> list[str]:
+    """Map imported LoRA names to the names of the LoRAs on disk.
+
+    A1111/Forge record LoRAs by (base) name only, so when a LoRA lives in a
+    subfolder the imported name is not a discovered name and generation
+    would fail. Resolution order per name:
+
+    1. exact match with a discovered (relative) name,
+    2. unique basename match among the discovered LoRAs,
+    3. Forge's ``Lora hashes`` value (see
+       :func:`imagagen.metadata.forge_lora_hash`): matched against ALL
+       discovered LoRAs when the name matches no basename. The hash is
+       derived from the file's basename, so it is NOT a content fingerprint
+       (a locally renamed file won't match) -- it only helps when the
+       prompt token's name differs from the basename (e.g. a LoRA with an
+       internal display name).
+
+    Unresolvable names are returned unchanged. Note the hash is derived
+    from the file's basename, so two files sharing a name in different
+    subfolders are equally (un)distinguishable by hash.
+    """
+    _STRIP = str.maketrans("", "", ":,")  # what Forge strips from hash keys
+    def _hash_for(name: str) -> str | None:
+        if not hashes:
+            return None
+        h = hashes.get(name)
+        return h or hashes.get(name.translate(_STRIP))
+    files = lora_files(config)
+    by_base: dict[str, list[str]] = {}
+    for name in files:
+        by_base.setdefault(name.rsplit("/", 1)[-1], []).append(name)
+    out = []
+    for name in names:
+        if name in files:
+            out.append(name)
+            continue
+        cand = by_base.get(name, [])
+        if len(cand) == 1:
+            out.append(cand[0])
+            continue
+        h = _hash_for(name)
+        if h:
+            pool = cand if cand else list(files)
+            matches = [
+                c for c in pool if forge_lora_hash(files[c]) == h.lower()[:12]
+            ]
+            if len(matches) == 1:
+                out.append(matches[0])
+                continue
+        out.append(name)
     return out
 
 

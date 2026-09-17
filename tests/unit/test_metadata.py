@@ -148,3 +148,59 @@ def test_read_metadata_trailing_text_chunk():
     assert meta["negative_prompt"] == "blurry"
     assert meta["steps"] == 2
     assert meta["width"] == 2 and meta["height"] == 2
+
+
+def test_parse_lora_hashes_quoted_single():
+    # the form the reference Forge images use (whole value in quotes)
+    text = (
+        "a cat\nSteps: 12, Sampler: LCM, Model: m, "
+        'Lora hashes: "DMD2fp32XL1.0: 21251344fb41", Version: f2.0.1'
+    )
+    p = metadata.parse_parameters(text)
+    assert p["lora_hashes"] == {"DMD2fp32XL1.0": "21251344fb41"}
+    assert p["version"] == "f2.0.1"
+    assert "Lora hashes" not in p
+    assert p["model"] == "m"
+
+
+def test_parse_lora_hashes_bare_single():
+    p = metadata.parse_parameters(
+        "a cat\nSteps: 2, Sampler: LCM, Model: m, "
+        "Lora hashes: DMD2fp32XL1.0: 21251344fb41, Version: f2"
+    )
+    assert p["lora_hashes"] == {"DMD2fp32XL1.0": "21251344fb41"}
+    assert p["version"] == "f2"
+
+
+def test_parse_lora_hashes_bare_multiple():
+    # Forge joins entries with the same ", " as the meta line itself, so
+    # the value spans parts; the later entries must not leak as keys
+    p = metadata.parse_parameters(
+        "a cat\nSteps: 2, Sampler: LCM, "
+        "Lora hashes: Alpha: aaaaaaaaaaaa, Beta: bbbbbbbbbbbb, Version: f2"
+    )
+    assert p["lora_hashes"] == {
+        "Alpha": "aaaaaaaaaaaa",
+        "Beta": "bbbbbbbbbbbb",
+    }
+    assert p["version"] == "f2"
+    assert "Beta" not in p
+
+
+def test_parse_no_lora_hashes():
+    p = metadata.parse_parameters("a cat\nSteps: 2, Sampler: LCM, Model: m")
+    assert "lora_hashes" not in p
+
+
+def test_forge_lora_hash_is_sha256_of_basename():
+    import hashlib
+
+    # reference value: devtools/references/cute-kitten-dmd2.png
+    assert (
+        metadata.forge_lora_hash("DMD2fp32XL1.0.safetensors")
+        == hashlib.sha256(b"DMD2fp32XL1.0.safetensors").hexdigest()[:12]
+        == "21251344fb41"
+    )
+    # the path is ignored, the extension is part of the name
+    assert metadata.forge_lora_hash(
+        "/some/where/Deep.safetensors") == metadata.forge_lora_hash("Deep.safetensors")

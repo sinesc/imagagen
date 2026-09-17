@@ -27,7 +27,7 @@ from .model_configs import (
     ModelConfigUpsert,
     resolve_settings,
 )
-from .models import ModelRegistry, list_loras
+from .models import ModelRegistry, list_loras, resolve_lora_names
 from .paths import next_output_path
 from .sag import SelfAttentionGuidance
 from .soft_inpaint import SoftInpainting
@@ -636,7 +636,16 @@ def create_app(
             # un-applied, LoRA-free base. Meta-data save logic is untouched.
             loras, no_lora_prompt = metadata.extract_prompt_loras(meta["prompt"])
             if loras:
-                meta.setdefault("loras", []).extend(f"{n}@{w:g}" for n, w in loras)
+                # A1111/Forge record LoRAs by name only; when a LoRA lives in
+                # a subfolder the verbatim name is not a discovered one and
+                # generation would fail. Resolve to the on-disk name (subfolder
+                # by unique basename, display-named LoRAs via Forge's hashes).
+                resolved = resolve_lora_names(
+                    [n for n, _ in loras], config, meta.get("lora_hashes")
+                )
+                meta.setdefault("loras", []).extend(
+                    f"{n}@{w:g}" for n, (_, w) in zip(resolved, loras)
+                )
             found, prompt, negative = app.state.style_store.extract_styles(
                 no_lora_prompt, meta.get("negative_prompt", "")
             )
