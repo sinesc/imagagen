@@ -846,15 +846,19 @@ async function applyPreset(name) {
 
 // state.presets: [{name, group|null}] (name-sorted, from /api/presets)
 function fillPresetSelect(sel) {
-  // ungrouped presets first, then one group section per group
-  // (first-appearance order; within a group the name order is kept). The
-  // empty ("—") state is the combobox's placeholder, not a real option.
+  // ungrouped presets first as plain options, then one group section per
+  // group: groups alphabetical, names alphabetical within a group (same
+  // convention as the style dropdowns). The empty ("—") state is the
+  // combobox's placeholder, not a real option.
   const opts = [];
   state.presets.filter((p) => !p.group)
+    .sort((a, b) => a.name.localeCompare(b.name))
     .forEach((p) => opts.push({ value: p.name, text: p.name }));
-  const groups = [...new Set(state.presets.map((p) => p.group).filter(Boolean))];
+  const groups = [...new Set(state.presets.map((p) => p.group).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
   for (const g of groups) {
     state.presets.filter((p) => p.group === g)
+      .sort((a, b) => a.name.localeCompare(b.name))
       .forEach((p) => opts.push({ value: p.name, text: p.name, group: g }));
   }
   sel.setOptions(opts);
