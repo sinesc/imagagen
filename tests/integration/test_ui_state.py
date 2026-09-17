@@ -73,6 +73,29 @@ def test_invalid_values_rejected(tmp_path):
         assert c.post("/api/ui-state", content=b"").status_code == 200
 
 
+def test_invalid_model_falls_back_to_existing(tmp_path):
+    # a persisted model pointing at a deleted/renamed configuration must
+    # not be served: the UI would show an invalid dropdown value and
+    # generation would fail with "unknown model configuration"
+    configs = tmp_path / "model-configs"
+    configs.mkdir()
+    (configs / "my-model.json").write_text(json.dumps({
+        "name": "My Model",
+        "model": "models/sdxl/x.safetensors",
+    }))
+    (tmp_path / "ui-state.json").write_text(json.dumps({"model": "gone"}))
+    with _client(tmp_path) as c:
+        state = c.get("/api/ui-state").json()["state"]
+        ids = {m["id"] for m in c.get("/api/models").json()["models"]}
+    assert state["model"] != "gone"
+    assert state["model"] in ids
+    # a valid model id is kept as-is
+    (tmp_path / "ui-state.json").write_text(json.dumps({"model": "my-model"}))
+    with _client(tmp_path) as c:
+        state = c.get("/api/ui-state").json()["state"]
+    assert state["model"] == "my-model"
+
+
 def test_unknown_keys_ignored(tmp_path):
     (tmp_path / "ui-state.json").write_text(json.dumps({
         "prompt": "ok", "bogus-key": 42,

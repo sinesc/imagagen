@@ -550,7 +550,18 @@ def create_app(
     # --- UI state (persisted form inputs, restored on server start) ---
     @app.get("/api/ui-state")
     def get_ui_state() -> dict:
-        return {"state": app.state.ui_state.load().model_dump()}
+        state = app.state.ui_state.load()
+        # The persisted model may no longer exist (configuration deleted or
+        # renamed): the UI must always receive a selectable value, so fall
+        # back to the first configuration.
+        if state.model is not None:
+            try:
+                entries = app.state.config_store.entries()
+            except ConfigError:
+                entries = []
+            if entries and state.model not in {e.id for e in entries}:
+                state.model = entries[0].id
+        return {"state": state.model_dump()}
 
     @app.post("/api/ui-state")
     async def save_ui_state(request: Request) -> dict:
