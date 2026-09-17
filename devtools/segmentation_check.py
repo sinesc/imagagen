@@ -6,7 +6,7 @@ reference image (or a CLI image) and writes:
   - devtools/references/segmentation-mask-<model-stem>.png     (raw alpha)
 
 Usage:
-  .venv/bin/python devtools/segmentation_check.py [image.png]
+  .venv3.13/bin/python devtools/segmentation_check.py [image.png]
 """
 
 from __future__ import annotations

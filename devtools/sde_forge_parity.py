@@ -6,7 +6,7 @@ and runs both implementations on an identical deterministic model; the
 results must be bit-identical.
 
 Usage (from the project root):
-    .venv/bin/python devtools/sde_forge_parity.py
+    .venv3.13/bin/python devtools/sde_forge_parity.py
 """
 
 import sys

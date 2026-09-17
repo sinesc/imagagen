@@ -6,30 +6,24 @@ spec and `PLAN.md` for the implementation plan.
 ## Setup (dev)
 
 ```bash
-uv sync --extra dev          # creates .venv
-.venv/bin/python -m pytest   # run tests (mock backend, no GPU needed)
+uv sync --extra dev          # syncs into .venv3.13 (see below)
+.venv3.13/bin/python -m pytest   # run tests (mock backend, no GPU needed)
 bash scripts/smoke.sh        # start mock server + hit endpoints
 ```
 
 ## Run
 
 ```bash
-.venv/bin/python -m imagagen --root <project-root> --port 8080
+.venv3.13/bin/python -m imagagen --root <project-root> --port 8080
 # --mock forces the CPU mock backend (automatic fallback when no CUDA/models)
 ```
 
-### Running on the host system
+### Python environment (`.venv3.13`)
 
-The container's Python lives at container-only paths, so the host uses a
-self-contained venv: `.venv3.13` (venv) backed by a full CPython 3.13 install
-in `.python313/` (both in the shared workspace, both gitignored). From the
-host, run:
-
-```bash
-.venv3.13/bin/python -m imagagen --root <project-root> --port 8080
-```
-
-Rebuild after dependency changes (from the container):
+The project uses a single self-contained venv: `.venv3.13` (venv) backed by a
+full CPython 3.13 install in `.python313/` (both in the shared workspace, both
+gitignored). It works both inside this container and from the host (whose
+Python is too old). Plain `uv sync` targets `.venv` by default, so always use:
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv3.13 uv sync \

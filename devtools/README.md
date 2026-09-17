@@ -3,7 +3,7 @@
 Helper scripts for development sessions (not part of the package). Run from
 the project root with the venv interpreter, e.g.:
 
-    .venv/bin/python devtools/gen.py "a red cube on a table"
+    .venv3.13/bin/python devtools/gen.py "a red cube on a table"
 
 ## Scripts
 

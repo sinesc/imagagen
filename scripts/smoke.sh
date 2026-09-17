@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 
 ROOT=$(mktemp -d)
 PORT="${PORT:-8099}"
-PY=".venv/bin/python"
+PY=".venv3.13/bin/python"
 [[ -x "$PY" ]] || PY="python3"
 
 "$PY" -m imagagen --mock --root "$ROOT" --port "$PORT" &

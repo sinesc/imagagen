@@ -10,7 +10,7 @@ should match the stock pipeline's trajectory within fp16 noise
 Also saves both final images for visual (or ascii_view.py) comparison.
 
 Usage (from the project root; needs GPU + cached HF files):
-    .venv/bin/python devtools/pipeline_reference.py
+    .venv3.13/bin/python devtools/pipeline_reference.py
 """
 
 import torch
