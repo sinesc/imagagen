@@ -304,9 +304,11 @@ def _result_to_png(
 
     from . import metadata
 
-    # width/height describe the final (possibly blended/resized) image, not
-    # the raw generation size; the prompt/negative prompt are the user's
-    # raw ones (styles are recorded separately, not pre-applied)
+    # width/height are the requested generation size, like A1111/Forge
+    # (their inpaint PNGs carry the inpaint box size, not the final canvas
+    # size), so importing the PNG restores the generation settings; the
+    # prompt/negative prompt are the user's raw ones (styles are recorded
+    # separately, not pre-applied)
     params = metadata.build_parameters(
         prompt=job.meta_prompt if (job and job.meta_prompt is not None) else req.prompt,
         negative_prompt=(job.meta_negative if (job and job.meta_negative is not None)
@@ -316,8 +318,10 @@ def _result_to_png(
         scheduler=req.scheduler or backend.default_scheduler,
         cfg=req.cfg,
         seed=result.seed,
-        width=image.shape[1],
-        height=image.shape[0],
+        width=req.width,
+        height=req.height,
+        # A1111/Forge write the strength only for inpaint/img2img jobs
+        denoise=req.denoise if job is not None and job.plan is not None else None,
         model_name=backend.name,
         model_hash=backend.model_hash,
         loras=req.loras,

@@ -26,9 +26,9 @@ SDXL specifics (matching the k-diffusion / A1111 contract):
 - the UNet predicts EPSILON; the sampler wants an x0 estimate, so the model
   wrap returns x0 = x - sigma * eps (the exact inverse of diffusers' Euler)
 - txt2img initial noise is randn * sigma_max (the solver state x is the
-  noisy sample, not the unit-variance prior); img2img/inpaint instead build
-  a noise-scaled state blended from the init latent at the truncated start
-  sigma (A1111 noise_scaling)
+  noisy sample, not the unit-variance prior); img2img/inpaint instead start
+  from the init latent plus the noise at the truncated start sigma
+  (Forge's noise_scaling, max_denoise=False)
 - sampling runs in the VAE-scaled latent space; divide by
   vae.config.scaling_factor (0.13025 for SDXL) before decode
 - prompts are encoded Forge/A1111-style: split into 75-token windows (77
@@ -679,13 +679,10 @@ class SdxlBackend(ModelBackend):
                 if mask_t is not None:
                     # per-step lock (Forge's cfg_denoiser): before the model
                     # call, the protected region (mask_t == 1) is replaced by
-                    # fresh init-latent + noise at the current sigma level
-                    xsigma = init_latent * (sigma**2 + 1.0).sqrt()
+                    # init latent + fresh noise at the current sigma level
+                    # (Forge's noise_scaling, max_denoise=False)
                     xnoise = torch.randn_like(x) * sigma
-                    frac = ((sigma - model_wrap.min_sigma)
-                            / (model_wrap.max_sigma - model_wrap.min_sigma)).clamp(0, 1)
-                    xwork = x * (1.0 - mask_t) \
-                        + (xsigma + (xnoise - xsigma) * frac) * mask_t
+                    xwork = x * (1.0 - mask_t) + (init_latent + xnoise) * mask_t
                 # the UNet expects unit-variance input at each noise level
                 # (x / sqrt(sigma^2 + 1)); computed in fp32, cast to the
                 # UNet's fp16 dtype right before the call (like Forge's
@@ -804,15 +801,15 @@ class SdxlBackend(ModelBackend):
                 # -> the full schedule)
                 t_enc = int(min(request.denoise, 0.999) * request.steps)
                 sigma_sched = sigmas[request.steps - 1 - t_enc :]
-                # noise_scaling(sigma0, noise, init): the init latent scaled
-                # to the start sigma, blended with fresh noise according to
-                # where sigma0 sits in [sigma_min, sigma_max]
-                sigma0 = sigma_sched[0]
-                xsigma = init_latent * (sigma0**2 + 1.0).sqrt()
-                xnoise = noise * sigma0
-                frac = ((sigma0 - model_wrap.min_sigma)
-                        / (model_wrap.max_sigma - model_wrap.min_sigma)).clamp(0, 1)
-                noise = xsigma + (xnoise - xsigma) * frac
+                # Forge's noise_scaling at the truncated start sigma
+                # (max_denoise=False): init latent + fresh noise at that
+                # sigma level. The noise amplitude IS the denoise strength
+                # (denoise 0.55, 12 steps -> sigma0 0.88 -> the model sees
+                # ~0.75*init + ~0.66*noise in the region at step 1); the
+                # state must not be "almost clean init" there or the
+                # effective strength collapses to ~0 and the region comes
+                # out as a smoothed version of the init image
+                noise = init_latent + noise * sigma_sched[0]
                 if request.init_mask is not None:
                     # (1,1,H,W) -> bilinear to the latent grid; this shape
                     # broadcasts against the (1,4,lh,lw) solver tensors

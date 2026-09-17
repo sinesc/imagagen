@@ -1401,7 +1401,7 @@ async function applyPngMeta(meta, width, height) {
   if (meta.prompt !== undefined && meta.prompt !== null) $("prompt").value = meta.prompt;
   if (meta.negative_prompt !== undefined && meta.negative_prompt !== null) $("negative").value = meta.negative_prompt;
   updatePromptTokens(); // imported metadata may have set the prompt
-  for (const id of ["steps", "cfg", "seed", "width", "height"]) {
+  for (const id of ["steps", "cfg", "seed", "width", "height", "denoise"]) {
     if (meta[id] !== undefined && meta[id] !== null) $(id).value = meta[id];
   }
   for (const id of ["sampler", "scheduler"]) {

@@ -97,6 +97,7 @@ def build_parameters(
     height: int,
     model_name: str,
     model_hash: str,
+    denoise: float | None = None,
     loras: list[tuple[str, float]] | None = None,
     styles: list[dict] | None = None,
     soft_inpainting: SoftInpainting | None = None,
@@ -126,6 +127,11 @@ def build_parameters(
         f"CFG scale: {cfg:g}",
         f"Seed: {seed}",
         f"Size: {width}x{height}",
+    ]
+    if denoise is not None:
+        # A1111/Forge's inpaint strength: importing restores the slider
+        tail.append(f"Denoising strength: {denoise:g}")
+    tail += [
         f"Model: {model_name}",
         f"Model hash: {model_hash}",
     ]
@@ -276,6 +282,8 @@ def parse_parameters(text: str) -> dict[str, Any]:
             out["cfg"] = float(value)
         elif key == "Seed":
             out["seed"] = int(value)
+        elif key == "Denoising strength":
+            out["denoise"] = float(value)
         elif key == "Size":
             m = re.match(r"^(\d+)\s*[x×]\s*(\d+)$", value)
             if m:

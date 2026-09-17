@@ -35,6 +35,24 @@ def test_roundtrip_full():
     assert parsed["loras"] == ["sdxl/dmd2@0.8"]
 
 
+def test_denoise_roundtrip():
+    params = metadata.build_parameters(
+        prompt="p", negative_prompt="", steps=12, sampler="Euler a",
+        scheduler="Polyexponential", cfg=1.5, seed=1, width=1280,
+        height=1440, model_name="m", model_hash="h", denoise=0.55,
+    )
+    assert "Denoising strength: 0.55" in params
+    assert metadata.parse_parameters(params)["denoise"] == 0.55
+    # absent for generate-mode images (no denoise passed)
+    params = metadata.build_parameters(
+        prompt="p", negative_prompt="", steps=12, sampler="Euler a",
+        scheduler="Polyexponential", cfg=1.5, seed=1, width=64,
+        height=64, model_name="m", model_hash="h",
+    )
+    assert "Denoising strength" not in params
+    assert "denoise" not in metadata.parse_parameters(params)
+
+
 def test_parameters_format_like_forge():
     params = metadata.build_parameters(
         prompt="hello", negative_prompt="", steps=10, sampler="Euler a",
