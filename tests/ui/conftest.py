@@ -84,6 +84,45 @@ def page():
     pw.stop()
 
 
+# ---------------- searchable combobox (makeCombobox) helpers ----------------
+# #model / #preset / .lora-name / .style-name are not native <select>s: a
+# .combo-input inside the root opens a .combo-list of .combo-item entries
+# (grouped ones are separated by .combo-group header entries).
+
+def combo_open(page, root):
+    """Open the list of the combobox at `root` (a Playwright locator)."""
+    root.locator(".combo-input").click()
+    try:
+        root.locator(".combo-list.open").wait_for(timeout=500)
+    except Exception:
+        # a pick on another row may have just armed the 250ms ghost-click
+        # guard: one more click opens the list for sure
+        root.locator(".combo-input").click()
+        root.locator(".combo-list.open").wait_for(timeout=5000)
+
+
+def combo_pick(page, root, value: str):
+    """Pick the option whose value is `value` from the combobox."""
+    combo_open(page, root)
+    root.locator(f".combo-item[data-value='{value}']").click()
+
+
+def combo_seq(page, root):
+    """Open the list and return its children as [kind, text] pairs, where
+    kind is 'group' (section header) or 'item'. Closes the list again."""
+    combo_open(page, root)
+    seq = root.locator(".combo-list > li").evaluate_all(
+        "els => els.map(e => [e.classList.contains('combo-group') ? "
+        "'group' : 'item', e.textContent])")
+    page.keyboard.press("Escape")
+    return seq
+
+
+def combo_items(page, root):
+    """Open the list and return the item texts (headers excluded)."""
+    return [t for k, t in combo_seq(page, root) if k == "item"]
+
+
 # ---------------- canvas state helpers (server-side, authoritative) ----
 
 

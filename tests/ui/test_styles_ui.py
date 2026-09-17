@@ -7,7 +7,7 @@ by PNG metadata import. Uses the mock-backend server in a temp root.
 """
 
 import httpx
-from conftest import wait_until
+from conftest import combo_pick, combo_seq, wait_until
 
 CSV = "name,prompt,negative_prompt,optgroup"
 SEED_ROWS = "\n".join(
@@ -29,14 +29,18 @@ def _open(page, base, root, seed=True):
 
 
 def _options(page):
-    """The (optgroup label, option text) pairs of the first style row."""
-    sel = "#styles .style-row select"
-    return page.eval_on_selector_all(
-        f"{sel} optgroup, {sel} option",
-        "els => els.map(e => e.tagName === 'OPTGROUP'"
-        " ? ['\x00' + e.label, null]"
-        " : [e.closest('optgroup')?.label ?? '', e.textContent])",
-    )
+    """The (group, item text) pairs of the first style row's dropdown,
+    mirroring the old (optgroup label, option text) shape: a group header
+    is ['\x00' + group, None], an item is [its group, text]."""
+    g = ""
+    out = []
+    for kind, text in combo_seq(page, page.locator("#styles .style-row").first):
+        if kind == "group":
+            g = text
+            out.append(["\x00" + g, None])
+        else:
+            out.append([g, text])
+    return out
 
 
 # ---------------- rows ----------------
@@ -66,16 +70,16 @@ def test_style_add_remove_and_groups(page, server):
     ]
 
     # each row keeps its own selection; a second row starts unselected
-    row.first.locator("select").select_option("Cinematic")
+    combo_pick(page, row.first, "Cinematic")
     page.click("#style-add")
     assert row.count() == 2
-    row.nth(1).locator("select").select_option("Dunes")
-    assert row.nth(0).locator("select").input_value() == "Cinematic"
+    combo_pick(page, row.nth(1), "Dunes")
+    assert row.nth(0).locator(".style-name").evaluate("e => e.value") == "Cinematic"
 
     # − removes its own row only (the remaining row is the second one)
     row.first.locator("button").click()
     assert row.count() == 1
-    assert row.first.locator("select").input_value() == "Dunes"
+    assert row.first.locator(".style-name").evaluate("e => e.value") == "Dunes"
     # the surviving selection is read back as names for generate
     assert page.evaluate("getStyles()") == ["Dunes"]
 
@@ -97,16 +101,16 @@ def test_style_selection_restored_from_ui_state(page, server):
     base, root = server
     _open(page, base, root)
     page.click("#style-add")
-    page.locator("#styles .style-row select").select_option("Dunes")
+    combo_pick(page, page.locator("#styles .style-row"), "Dunes")
     page.click("#style-add")
-    page.locator("#styles .style-row").nth(1).locator("select").select_option("Negs")
+    combo_pick(page, page.locator("#styles .style-row").nth(1), "Negs")
     import time
 
     time.sleep(1.0)  # let the debounced ui-state save land
     page.reload()
     wait_until(lambda: page.locator("#styles .style-row").count() == 2)
     assert page.eval_on_selector_all(
-        "#styles .style-row select", "els => els.map(e => e.value)"
+        "#styles .style-row .style-name", "els => els.map(e => e.value)"
     ) == ["Dunes", "Negs"]
 
 
@@ -199,7 +203,7 @@ def test_generate_sends_selected_styles(page, server):
     base, root = server
     _open(page, base, root)
     page.click("#style-add")
-    page.locator("#styles .style-row select").select_option("Cinematic")
+    combo_pick(page, page.locator("#styles .style-row"), "Cinematic")
 
     seen = {}
 
@@ -232,14 +236,18 @@ def test_temporary_style_from_imported_metadata(page, server):
     assert ok
     # two rows appear, "Lost Style" is selectable as a temporary
     wait_until(lambda: page.locator("#styles .style-row").count() == 2)
-    vals = page.eval_on_selector_all("#styles .style-row select", "els => els.map(e => e.value)")
-    assert vals == ["Cinematic", "Lost Style"]
-    # until /api/styles/temp answers the unknown name shows as "(temporary)";
-    # afterwards it appears as a regular (Session-grouped) option
-    labels = page.eval_on_selector_all(
-        "#styles .style-row option", "els => els.map(e => e.textContent)"
-    )
-    assert "Lost Style" in labels
+    assert page.eval_on_selector_all(
+        "#styles .style-row .style-name", "els => els.map(e => e.value)"
+    ) == ["Cinematic", "Lost Style"]
+    # until /api/styles/temp answers the unknown name shows as
+    # "(temporary)"; afterwards it appears as a regular (Session-grouped)
+    # item
+    def lost_normal():
+        seq = combo_seq(page, page.locator("#styles .style-row").nth(1))
+        return ("item", "Lost Style") in [tuple(x) for x in seq] and \
+            ("item", "Lost Style (temporary)") not in [tuple(x) for x in seq]
+
+    wait_until(lost_normal)
     # server: temporary under "Session", not written to the CSV
     r = httpx.get(base + "/api/styles").json()["styles"]
     lost = [s for s in r if s["name"] == "Lost Style"]

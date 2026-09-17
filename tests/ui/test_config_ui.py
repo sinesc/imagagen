@@ -8,7 +8,7 @@ and preset select/application. Uses the mock-backend server in a temp root.
 import time
 
 import httpx
-from conftest import wait_until
+from conftest import combo_items, combo_open, combo_pick, combo_seq, wait_until
 
 
 def _open(page, base, extra="state.entries.length >= 1"):
@@ -36,8 +36,8 @@ def _dialogs(page, prompt_reply: str):
 def test_model_selector_lists_default_entry(page, server):
     base, _ = server
     _open(page, base)
-    texts = page.eval_on_selector_all("#model option", "els => els.map(e => e.textContent)")
-    assert texts == ["Mock Model (default)"]
+    # the model field is a searchable combobox: click opens its list
+    assert combo_items(page, page.locator("#model")) == ["Mock Model (default)"]
     # sampler/scheduler offer "Model default" first
     first = page.eval_on_selector_all("#sampler option", "els => els.map(e => e.textContent)")
     assert first[0] == "Model default"
@@ -105,8 +105,7 @@ def test_edit_default_model_config_materializes_it(page, server):
     assert on_disk["t2i"]["cfg"] == 4.5
     # the default entry is replaced by the file configuration (same name,
     # no more "(default)" suffix) and the selector follows the new id
-    texts = page.eval_on_selector_all("#model option", "els => els.map(e => e.textContent)")
-    assert texts == ["Mock Model"]
+    assert combo_items(page, page.locator("#model")) == ["Mock Model"]
     assert page.evaluate("document.getElementById('model').value") == "mock-model"
 
 
@@ -123,8 +122,7 @@ def test_delete_model_config(page, server):
     _dialogs(page, "")  # confirm(delete)
     page.click("#cfg-delete")
     wait_until(lambda: not (root / "model-configs" / "to-delete.json").exists())
-    texts = page.eval_on_selector_all("#model option", "els => els.map(e => e.textContent)")
-    assert texts == ["Mock Model (default)"]
+    assert combo_items(page, page.locator("#model")) == ["Mock Model (default)"]
 
 
 # ---------------- LoRAs ----------------
@@ -138,7 +136,7 @@ def test_lora_rows(page, server):
 
     # add a row, pick the discovered LoRA, set a weight
     page.click("#lora-add")
-    page.locator("#loras .lora-row").locator(".lora-name").select_option("dmd2")
+    combo_pick(page, page.locator("#loras .lora-row .lora-name"), "dmd2")
     page.locator("#loras .lora-row").locator(".lora-weight").fill("0.8")
     assert page.evaluate("getLoras()") == [["dmd2", 0.8]]
 
@@ -191,7 +189,7 @@ def test_preset_apply_and_manage(page, server):
     _open(page, base, "state.presets.length >= 1")
 
     # selecting the preset applies only its checked settings
-    page.select_option("#preset", "Small")
+    combo_pick(page, page.locator("#preset"), "Small")
     wait_until(lambda: page.evaluate("document.getElementById('width').value") == "512")
     wait_until(lambda: page.evaluate("document.getElementById('steps').value") == "30")
     # unchecked settings untouched
@@ -208,7 +206,7 @@ def test_preset_apply_and_manage(page, server):
     wait_until(lambda: page.evaluate("state.presets.length === 0"))
 
 
-def test_preset_dropdown_resets_after_apply_and_not_persisted(page, server):
+def test_preset_selection_kept_cleared_on_edit_and_not_persisted(page, server):
     base, _ = server
     with httpx.Client(base_url=base, timeout=10) as c:
         r = c.post("/api/presets", json={
@@ -220,21 +218,26 @@ def test_preset_dropdown_resets_after_apply_and_not_persisted(page, server):
         r = c.post("/api/ui-state", json={"preset": "Small", "width": 777})
         assert r.status_code == 200
     _open(page, base, "state.presets.length >= 1")
-    # the dropdown starts at "—" even though the persisted state named one
-    assert page.input_value("#preset") == ""
+    # the box starts at "—" even though the persisted state named one
+    assert page.evaluate("document.getElementById('preset').value") == ""
     # width was persisted, so the restore happened (sanity)
     wait_until(lambda: page.input_value("#width") == "777")
 
-    # selecting applies the preset AND resets the dropdown to "—"
-    page.select_option("#preset", "Small")
+    # selecting applies the preset AND keeps the selection (the form now
+    # matches it)
+    combo_pick(page, page.locator("#preset"), "Small")
     wait_until(lambda: page.input_value("#width") == "512")
-    wait_until(lambda: page.input_value("#preset") == "")
+    assert page.evaluate("document.getElementById('preset').value") == "Small"
 
-    # the same preset can be selected again straight away (change fires
-    # because the dropdown was reset, not stuck on "Small")
-    page.select_option("#preset", "Small")
-    wait_until(lambda: page.input_value("#preset") == "")
+    # the same preset can be selected again straight away (a pick always
+    # fires change, even for the already-selected value)
+    combo_pick(page, page.locator("#preset"), "Small")
     assert page.input_value("#width") == "512"
+
+    # editing a field the preset covers clears the selection
+    page.fill("#width", "400")
+    wait_until(lambda: page.evaluate(
+        "document.getElementById('preset').value") == "")
 
     # the selection itself was not persisted
     wait_until(lambda: (
@@ -267,9 +270,13 @@ def test_preset_dialog_sampler_use_model_default(page, server):
     assert p["sampler"] == "Euler a"
     assert p["scheduler"] == ""
 
+    # close the management list to get back to the main UI
+    page.click("#dialog-ok")
+    wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+
     # applying resets a concrete scheduler to "Model default"
     page.select_option("#scheduler", "Karras")
-    page.select_option("#preset", "Reset sampler")
+    combo_pick(page, page.locator("#preset"), "Reset sampler")
     wait_until(lambda: page.input_value("#scheduler") == "")
     assert page.locator("#scheduler option:checked").text_content() == "Model default"
     assert page.input_value("#sampler") == "Euler a"
@@ -330,7 +337,7 @@ def test_preset_soft_inpaint_sag_checkbox_rows(page, server):
     # (checked -> off), soft inpainting enabled (off -> checked, even
     # though it is disabled in "generate" mode)
     page.check("#sag")
-    page.select_option("#preset", "Enable SAG")
+    combo_pick(page, page.locator("#preset"), "Enable SAG")
     wait_until(lambda: not page.is_checked("#sag"))
     wait_until(lambda: page.is_checked("#soft-inpaint"))
 
@@ -350,7 +357,7 @@ def test_preset_multiword_name_select(page, server):
     page.on("console", lambda m: console_errors.append(m.text)
             if m.type == "error" else None)
     page.on("pageerror", lambda e: console_errors.append(str(e)))
-    page.select_option("#preset", "Set defaults")
+    combo_pick(page, page.locator("#preset"), "Set defaults")
     wait_until(lambda: page.evaluate("document.getElementById('steps').value") == "-1")
     wait_until(lambda: page.evaluate("document.getElementById('cfg').value") == "-1")
     time.sleep(0.3)
@@ -374,14 +381,14 @@ def test_preset_groups_in_dropdown_and_dialog(page, server):
             assert r.status_code == 200, r.text
     _open(page, base, "state.presets.length >= 3")
 
-    # "Loose" is a plain option (not in an optgroup); the group's presets
-    # sit under the optgroup in name order
-    loose = page.locator("#preset > option", has_text="Loose")
-    assert loose.count() == 1
-    og = page.locator('#preset optgroup[label="Outpaint 1440p"]')
-    assert og.count() == 1
-    assert og.locator("option").count() == 2
-    assert og.locator("option").all_inner_texts() == ["Outpaint A", "Outpaint B"]
+    # "Loose" is a plain item (no group header); the group's presets sit
+    # under their group header in name order
+    assert combo_seq(page, page.locator("#preset")) == [
+        ["item", "Loose"],
+        ["group", "Outpaint 1440p"],
+        ["item", "Outpaint A"],
+        ["item", "Outpaint B"],
+    ]
 
     # the dialog offers the group field under the name; saving stores it
     page.click("#preset-manage")
@@ -401,6 +408,14 @@ def test_preset_groups_in_dropdown_and_dialog(page, server):
     with httpx.Client(base_url=base, timeout=10) as c:
         p = c.get("/api/presets/new-grouped").json()["preset"]
     assert p["group"] == "Outpaint 1440p"
-    # it now shows up in the existing optgroup
-    wait_until(lambda: page.locator(
-        '#preset optgroup[label="Outpaint 1440p"] option').count() == 3)
+    # close the management list to get back to the main UI
+    page.click("#dialog-ok")
+    wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+    # it now shows up in the existing group (name order inside)
+    wait_until(lambda: combo_seq(page, page.locator("#preset")) == [
+        ["item", "Loose"],
+        ["group", "Outpaint 1440p"],
+        ["item", "New grouped"],
+        ["item", "Outpaint A"],
+        ["item", "Outpaint B"],
+    ])

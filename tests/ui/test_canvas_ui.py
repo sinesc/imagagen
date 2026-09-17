@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 from conftest import (
     canvas_px,
+    combo_pick,
     dot,
     mask_arr,
     set_canvas,
@@ -664,7 +665,7 @@ def test_drop_png_loras_skip_the_model_config_loras(page, server):
     (root / "model-configs" / "mock-model.json").write_text(
         json.dumps(cfg), "utf-8")
     _open(page, base)
-    page.select_option("#model", "mock-model")
+    combo_pick(page, page.locator("#model"), "mock-model")
     assert wait_until(lambda: page.evaluate("currentEntry()?.name") == "Mock Model")
 
     # the image was made with the config LoRA (dmd2@0.7, prepended) plus a
