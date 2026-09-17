@@ -30,9 +30,11 @@ Python is too old). So the venv is always backed by the `.python313` CPython
 uv sync --python .python313/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13
 ```
 
-The rebuild rewrites two files with absolute container paths that only
+The rebuild rewrites three files with absolute container paths that only
 resolve inside the container. Re-make them relative afterwards (the same
-commands originally used to create the venv):
+commands originally used to create the venv). `launch.sh` does this
+automatically before every start, so host usage self-heals; the commands
+below are only needed if you don't start via `launch.sh`:
 
 ```bash
 ln -sfn ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13 .venv/bin/python
