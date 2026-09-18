@@ -289,8 +289,44 @@ function makeCombobox(root, options, cfg = {}) {
 // ---------------- generic dialog ----------------
 let dialogOk = null;
 let dialogClose = null;
-function openDialog(title, body, onOk, okText = "Save", onClose = null) {
+// quick-filter widget for the dialog title row. `onFilter` gets the trimmed,
+// lowercased query (debounced); the x clears it, Escape in the input does too
+// (without closing the dialog).
+function makeFilterInput(onFilter) {
+  const input = el("input", { type: "text", placeholder: "filter", title: "filter the list" });
+  const clear = el("button", { type: "button", class: "dialog-filter-clear", title: "clear filter" }, "×");
+  clear.hidden = true;
+  let t = null;
+  const apply = () => {
+    clear.hidden = !input.value;
+    onFilter(input.value.trim().toLowerCase());
+  };
+  input.addEventListener("input", () => {
+    clearTimeout(t);
+    t = setTimeout(apply, 150); // short debounce: live-filter while typing
+  });
+  clear.onclick = () => {
+    input.value = "";
+    clearTimeout(t);
+    apply();
+    input.focus();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.stopPropagation(); // clear the filter, don't close the dialog
+      input.value = "";
+      clearTimeout(t);
+      apply();
+    }
+  });
+  return el("div", { class: "dialog-filter" }, input, clear);
+}
+function openDialog(title, body, onOk, okText = "Save", onClose = null, onFilter = null) {
   $("dialog-title").textContent = title;
+  const f = $("dialog-filter");
+  f.innerHTML = "";
+  f.hidden = !onFilter;
+  if (onFilter) f.append(makeFilterInput(onFilter));
   const b = $("dialog-body");
   b.innerHTML = "";
   b.append(body);
@@ -306,6 +342,7 @@ function openDialog(title, body, onOk, okText = "Save", onClose = null) {
     if (r !== false) closeDialog();
   };
   $("dialog").hidden = false;
+  if (onFilter) f.querySelector("input").focus(); // list dialogs: ready to type
 }
 function closeDialog() {
   $("dialog").hidden = true;
@@ -468,10 +505,14 @@ function openStyleDialog(existing, onClose = null) {
 function openStyleManage() {
   const list = el("div", { class: "preset-manage" });
   const newBtn = el("button", { class: "mini", type: "button" }, "+ New style");
+  let filter = "";
   const render = () => {
-    list.querySelectorAll(".preset-manage-row").forEach((r) => r.remove());
+    list.querySelectorAll(".preset-manage-row, .muted").forEach((r) => r.remove());
+    const shown = state.styles.filter((s) =>
+      !filter || (s.name + " " + (s.optgroup || "")).toLowerCase().includes(filter));
     if (!state.styles.length) list.append(el("div", { class: "muted" }, "no styles yet"));
-    state.styles.forEach((s) => {
+    else if (!shown.length) list.append(el("div", { class: "muted" }, "no matches"));
+    shown.forEach((s) => {
       const nameEl = el("span", { class: "preset-manage-name" },
         s.name + (s.optgroup ? ` — ${s.optgroup}` : "") + (s.temporary ? " (temporary)" : ""));
       const edit = el("button", { class: "mini icon", type: "button", title: s.temporary ? "copy to styles.csv" : "edit" }, "✎");
@@ -499,7 +540,8 @@ function openStyleManage() {
   };
   render();
   newBtn.onclick = () => { closeDialog(); openStyleDialog(null, openStyleManage); };
-  openDialog("Style configuration", el("div", { class: "preset-manage-wrap" }, list), null, "Close");
+  openDialog("Style configuration", el("div", { class: "preset-manage-wrap" }, list), null, "Close",
+    null, (q) => { filter = q; render(); });
 }
 
 // ---------------- LoRA settings (the .json next to each .safetensors) --------
@@ -548,10 +590,13 @@ function openLoraDialog(name, onClose = null) {
 
 function openLoraManage() {
   const list = el("div", { class: "preset-manage" });
+  let filter = "";
   const render = () => {
-    list.querySelectorAll(".preset-manage-row").forEach((r) => r.remove());
+    list.querySelectorAll(".preset-manage-row, .muted").forEach((r) => r.remove());
+    const shown = state.loras.filter((n) => !filter || n.toLowerCase().includes(filter));
     if (!state.loras.length) list.append(el("div", { class: "muted" }, "no LoRAs yet"));
-    state.loras.forEach((n) => {
+    else if (!shown.length) list.append(el("div", { class: "muted" }, "no matches"));
+    shown.forEach((n) => {
       const nameEl = el("span", { class: "preset-manage-name" }, n);
       const edit = el("button", { class: "mini icon", type: "button", title: "edit" }, "✎");
       edit.onclick = () => { closeDialog(); openLoraDialog(n, openLoraManage); };
@@ -559,7 +604,8 @@ function openLoraManage() {
     });
   };
   render();
-  openDialog("LoRA configuration", el("div", { class: "preset-manage-wrap" }, list), null, "Close");
+  openDialog("LoRA configuration", el("div", { class: "preset-manage-wrap" }, list), null, "Close",
+    null, (q) => { filter = q; render(); });
 }
 
 // ---------------- thumbnails ----------------
@@ -1053,10 +1099,13 @@ function openPresetDialog(existing, onClose = null) {
 function openPresetManage() {
   const list = el("div", { class: "preset-manage" });
   const newBtn = el("button", { class: "mini", type: "button" }, "+ New preset");
+  let filter = "";
   const render = () => {
-    list.querySelectorAll(".preset-manage-row").forEach((r) => r.remove());
+    list.querySelectorAll(".preset-manage-row, .muted").forEach((r) => r.remove());
+    const shown = state.presets.filter((p) => !filter || p.name.toLowerCase().includes(filter));
     if (!state.presets.length) list.append(el("div", { class: "muted" }, "no presets yet"));
-    state.presets.forEach((p) => {
+    else if (!shown.length) list.append(el("div", { class: "muted" }, "no matches"));
+    shown.forEach((p) => {
       const name = p.name;
       const nameEl = el("span", { class: "preset-manage-name" }, name);
       const edit = el("button", { class: "mini icon", type: "button", title: "edit" }, "✎");
@@ -1084,7 +1133,8 @@ function openPresetManage() {
   };
   render();
   newBtn.onclick = () => { closeDialog(); openPresetDialog(null, openPresetManage); };
-  openDialog("Setting presets", el("div", { class: "preset-manage-wrap" }, list), null, "Close");
+  openDialog("Setting presets", el("div", { class: "preset-manage-wrap" }, list), null, "Close",
+    null, (q) => { filter = q; render(); });
 }
 
 // ---------------- toolbar: tools, brushes, mask ops, zoom ----------------

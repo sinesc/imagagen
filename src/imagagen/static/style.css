@@ -494,6 +494,37 @@ button.danger:hover { background: #a33; }
   gap: 0.7rem;
 }
 #dialog-box h3 { margin: 0; font-size: 0.95rem; }
+#dialog-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+/* quick-filter in the title row of the list dialogs
+   (setting presets, LoRA configuration, style configuration) */
+.dialog-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex: none;
+}
+.dialog-filter input {
+  width: 9rem;
+  box-sizing: border-box;
+  background: #222; color: #eee; border: 1px solid #444; border-radius: 4px;
+  padding: 0 0.4rem; font-size: 0.8rem; height: 1.55rem;
+}
+.dialog-filter input:focus { border-color: #777; outline: none; }
+.dialog-filter input::placeholder { color: #666; }
+.dialog-filter-clear {
+  flex: none;
+  width: 1.55rem; height: 1.55rem; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: #222; color: #888; border: 1px solid #444; border-radius: 4px;
+  font-size: 0.8rem; line-height: 1; cursor: pointer;
+}
+.dialog-filter-clear:hover { color: #eee; border-color: #777; }
+.dialog-filter-clear[hidden] { display: none; }
 #dialog-body label {
   display: flex;
   flex-direction: column;
