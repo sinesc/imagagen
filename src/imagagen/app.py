@@ -28,6 +28,7 @@ from .model_configs import (
     resolve_settings,
 )
 from .models import ModelRegistry, list_loras, resolve_lora_names
+from .lora_settings import LoraSettings, all_settings, save_settings
 from .paths import next_output_path
 from .sag import SelfAttentionGuidance
 from .soft_inpaint import SoftInpainting
@@ -118,6 +119,17 @@ class _MockRegistry:
 
 
 # ---------------- request bodies ----------------
+
+class LoraSettingsBody(BaseModel):
+    # name = the discovered LoRA name (fixed by its .safetensors; the UI's
+    # name field is readonly)
+    name: str
+    description: str = ""
+    preferred_weight: float = Field(default=0.0, ge=-10, le=10)
+    activation_text: str = ""
+    negative_text: str = ""
+    notes: str = ""
+
 
 class GenerateBody(BaseModel):
     prompt: str
@@ -304,7 +316,21 @@ def create_app(
 
     @app.get("/api/loras")
     def loras() -> dict:
-        return {"loras": list_loras(config)}
+        return {"loras": list_loras(config), "settings": all_settings(config)}
+
+    @app.post("/api/loras/settings")
+    def lora_settings_save(body: LoraSettingsBody) -> dict:
+        # name is fixed by the LoRA file (the UI's name field is readonly)
+        try:
+            s = LoraSettings.model_validate(
+                body.model_dump(exclude={"name"}))
+            settings = save_settings(body.name, s, config)
+        except KeyError:
+            return JSONResponse(
+                {"error": f"unknown LoRA: {body.name!r}"}, status_code=404)
+        except ValidationError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {"ok": True, "settings": settings}
 
     @app.post("/api/prompt-tokens")
     def prompt_tokens(body: dict) -> dict:

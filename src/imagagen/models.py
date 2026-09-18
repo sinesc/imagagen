@@ -50,12 +50,14 @@ def _walk_files(base: Path) -> list[Path]:
     return out
 
 
-def _discover_loras(config) -> list[tuple[str, str]]:
-    """(name, filename) for all LoRAs under ``loras/<model-type>/``
-    (subdirectories included, symlinked dirs followed), name relative to
-    the model-type directory, without extension (e.g.
-    ``("test-dir/FuturisticXL", "FuturisticXL.safetensors")``)."""
-    out: list[tuple[str, str]] = []
+def _discover_loras(config) -> list[tuple[str, str, Path]]:
+    """(name, filename, path) for all LoRAs under
+    ``loras/<model-type>/`` (subdirectories included, symlinked dirs
+    followed), name relative to the model-type directory, without
+    extension (e.g.
+    ``("test-dir/FuturisticXL", "FuturisticXL.safetensors", <path>)``).
+    """
+    out: list[tuple[str, str, Path]] = []
     loras_dir = config.loras_dir
     if not loras_dir.is_dir():
         return out
@@ -66,7 +68,8 @@ def _discover_loras(config) -> list[tuple[str, str]]:
         files = sorted(f for f in files if f.suffix == ".safetensors") + \
             sorted(f for f in files if f.suffix == ".ckpt")
         for f in files:
-            out.append((f.relative_to(sub).with_suffix("").as_posix(), f.name))
+            out.append((f.relative_to(sub).with_suffix("").as_posix(),
+                        f.name, f))
     return out
 
 
@@ -74,12 +77,18 @@ def list_loras(config) -> list[str]:
     """All LoRAs under ``loras/<model-type>/`` (subdirectories included,
     symlinked dirs followed), as names relative to the model-type directory,
     without extension (e.g. ``"dmd2"``, ``"test-dir/FuturisticXL"``)."""
-    return [name for name, _ in _discover_loras(config)]
+    return [name for name, _, _ in _discover_loras(config)]
 
 
 def lora_files(config) -> dict[str, str]:
     """Discovered LoRA name -> file name (extension included)."""
-    return dict(_discover_loras(config))
+    return {name: fname for name, fname, _ in _discover_loras(config)}
+
+
+def lora_paths(config) -> dict[str, Path]:
+    """Discovered LoRA name -> its file path (e.g. for the settings .json
+    stored next to the .safetensors)."""
+    return {name: path for name, _, path in _discover_loras(config)}
 
 
 def resolve_lora_names(

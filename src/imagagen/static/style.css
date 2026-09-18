@@ -228,7 +228,7 @@ button.mini.icon {
 }
 /* the "+ Style" / gear row spans the full list width: "+ Style" stretches
    so the gear's right edge sits under the rows' remove (−) buttons */
-#style-add { flex: 1; }
+#style-add, #lora-add { flex: 1; }
 
 /* thumbnails: below the parameter box in the sidebar, wrapping rows */
 #thumbs {

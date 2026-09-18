@@ -14,6 +14,7 @@ const state = {
   samplers: [],
   schedulers: [],
   loras: [], // lora names from /api/loras
+  loraSettings: {}, // name -> settings .json next to the .safetensors ({"preferred weight", ...})
   presets: [], // preset names
   styles: [], // styles from /api/styles ({name, prompt, negative_prompt, optgroup, temporary})
   segModels: [], // segmentation models from /api/segmentation/models
@@ -336,7 +337,14 @@ function loraRow(name, weight, onChange) {
   wt.value = weight;
   const rm = el("button", { type: "button", class: "mini icon lora-rm", title: "remove" }, "−");
   rm.onclick = () => { rm.closest(".lora-row").remove(); onChange && onChange(); };
-  root.onchange = () => onChange && onChange();
+  root.onchange = () => {
+    // selecting a LoRA defaults the weight to its preferred weight
+    // (the settings .json stored next to the .safetensors)
+    const s = state.loraSettings[root.value];
+    if (s && typeof s["preferred weight"] === "number")
+      wt.value = s["preferred weight"];
+    onChange && onChange();
+  };
   wt.oninput = () => onChange && onChange();
   return el("div", { class: "lora-row" }, root, wt, rm);
 }
@@ -492,6 +500,66 @@ function openStyleManage() {
   render();
   newBtn.onclick = () => { closeDialog(); openStyleDialog(null, openStyleManage); };
   openDialog("Style configuration", el("div", { class: "preset-manage-wrap" }, list), null, "Close");
+}
+
+// ---------------- LoRA settings (the .json next to each .safetensors) --------
+// Informational per-LoRA settings (Forge-compatible files); the UI uses only
+// "preferred weight" so far (the weight default on LoRA selection).
+function openLoraDialog(name, onClose = null) {
+  const s = state.loraSettings[name] || {};
+  const nameIn = el("input", { type: "text" });
+  nameIn.value = name;
+  nameIn.readOnly = true;
+  const descIn = el("textarea", { class: "style-prompt", rows: "4" });
+  descIn.value = s.description || "";
+  const wtIn = el("input", { type: "number", min: "-10", max: "10", step: "0.05" });
+  wtIn.value = s["preferred weight"] ?? 0;
+  const actIn = el("textarea", { class: "style-prompt", rows: "3" });
+  actIn.value = s["activation text"] || "";
+  const negIn = el("textarea", { class: "style-prompt", rows: "3" });
+  negIn.value = s["negative text"] || "";
+  const notesIn = el("textarea", { class: "style-prompt", rows: "3" });
+  notesIn.value = s.notes || "";
+  const box = el("div", { class: "style-dialog" },
+    el("label", {}, "name", nameIn),
+    el("label", {}, "description", descIn),
+    el("label", {}, "preferred weight", wtIn),
+    el("label", {}, "activation text", actIn),
+    el("label", {}, "negative text", negIn),
+    el("label", {}, "notes", notesIn));
+  openDialog("Edit LoRA", box, async () => {
+    const body = {
+      name,
+      description: descIn.value,
+      preferred_weight: parseFloat(wtIn.value) || 0,
+      activation_text: actIn.value,
+      negative_text: negIn.value,
+      notes: notesIn.value,
+    };
+    try {
+      const r = await api("/api/loras/settings", body);
+      state.loraSettings[name] = r.settings;
+    } catch (e) {
+      dialogError(e.message);
+      return false;
+    }
+  }, "Save", onClose);
+}
+
+function openLoraManage() {
+  const list = el("div", { class: "preset-manage" });
+  const render = () => {
+    list.querySelectorAll(".preset-manage-row").forEach((r) => r.remove());
+    if (!state.loras.length) list.append(el("div", { class: "muted" }, "no LoRAs yet"));
+    state.loras.forEach((n) => {
+      const nameEl = el("span", { class: "preset-manage-name" }, n);
+      const edit = el("button", { class: "mini icon", type: "button", title: "edit" }, "✎");
+      edit.onclick = () => { closeDialog(); openLoraDialog(n, openLoraManage); };
+      list.append(el("div", { class: "preset-manage-row" }, nameEl, edit));
+    });
+  };
+  render();
+  openDialog("LoRA configuration", el("div", { class: "preset-manage-wrap" }, list), null, "Close");
 }
 
 // ---------------- thumbnails ----------------
@@ -1347,6 +1415,7 @@ function wireConfig() {
     $("loras").append(row);
     row.querySelector(".lora-name").open();
   };
+  $("lora-manage").onclick = openLoraManage;
   $("preset-manage").onclick = openPresetManage;
   $("style-add").onclick = () => {
     const row = styleRow("", onStylesChanged);
@@ -1688,6 +1757,7 @@ async function init() {
   state.schedulers = s.schedulers;
   state.presets = pr.presets;
   state.loras = lr.loras;  // lora names (str) from /api/loras
+  state.loraSettings = lr.settings || {};  // name -> settings (file .jsons)
   state.styles = sy.styles;
   // the preset and model fields are searchable comboboxes (makeCombobox):
   // build them first so the .value / setOptions below work, then feed options

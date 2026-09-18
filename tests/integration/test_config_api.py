@@ -8,6 +8,7 @@ metadata the queue writes into the generated thumbnails.
 """
 
 import io
+import json
 import time
 
 import pytest
@@ -241,12 +242,52 @@ def test_inpaint_mode_uses_i2i_section(client, tmp_path):
 
 def test_lora_discovery(client, tmp_path):
     client, _ = client
-    assert client.get("/api/loras").json() == {"loras": []}
+    assert client.get("/api/loras").json() == {"loras": [], "settings": {}}
     (tmp_path / "loras" / "sdxl").mkdir(parents=True)
     (tmp_path / "loras" / "sdxl" / "dmd2.safetensors").write_bytes(b"")
     (tmp_path / "loras" / "sd15").mkdir()
     (tmp_path / "loras" / "sd15" / "x.ckpt").write_bytes(b"")
-    assert client.get("/api/loras").json() == {"loras": ["x", "dmd2"]}
+    assert client.get("/api/loras").json() == {"loras": ["x", "dmd2"],
+                                               "settings": {}}
+
+
+def test_lora_settings(client, tmp_path):
+    client, _ = client
+    (tmp_path / "loras" / "sdxl").mkdir(parents=True)
+    f = tmp_path / "loras" / "sdxl" / "dmd2.safetensors"
+    f.write_bytes(b"")
+    j = f.with_suffix(".json")
+
+    # no settings file yet: the LoRA is listed, settings stay absent
+    assert client.get("/api/loras").json()["settings"] == {}
+
+    # a Forge-style file is read (missing fields default, extra fields
+    # like "sd version" are ignored)
+    j.write_text(json.dumps({
+        "description": "", "sd version": "SDXL",
+        "activation text": "foo", "preferred weight": 0.7,
+        "notes": "n"}))
+    got = client.get("/api/loras").json()["settings"]["dmd2"]
+    assert got["preferred weight"] == 0.7
+    assert got["activation text"] == "foo"
+    assert got["negative text"] == ""
+
+    # saving writes the .json next to the .safetensors and preserves the
+    # unknown extra fields
+    r = client.post("/api/loras/settings", json={
+        "name": "dmd2", "description": "d", "preferred_weight": 0.5,
+        "activation_text": "a", "negative_text": "n", "notes": "m"})
+    assert r.status_code == 200, r.text
+    data = json.loads(j.read_text())
+    assert data == {"description": "d", "sd version": "SDXL",
+                    "activation text": "a", "preferred weight": 0.5,
+                    "negative text": "n", "notes": "m"}
+    assert client.get("/api/loras").json()["settings"]["dmd2"]["description"] == "d"
+
+    # unknown LoRA name -> 404; weight out of range -> 422
+    assert client.post("/api/loras/settings", json={"name": "nope"}).status_code == 404
+    assert client.post("/api/loras/settings",
+                       json={"name": "dmd2", "preferred_weight": 99}).status_code == 422
 
 
 # ---------------------------------------------------------------- presets --
