@@ -1882,6 +1882,14 @@ connectWS();
   $(id).addEventListener("input", () => { onUserFieldChange(id); scheduleSaveUiState(); });
 });
 $("prompt").addEventListener("input", schedulePromptTokens);
+$("seed-from-image").onclick = () => {
+  const t = state.thumbs[state.currentThumb];
+  // no image selected, or a source image (restored from the canvas, no seed)
+  if (!t || typeof t.seed !== "number") return;
+  $("seed").value = String(t.seed);
+  onUserFieldChange("seed");
+  scheduleSaveUiState();
+};
 $("swap-dims").onclick = () => {
   const w = $("width").value;
   $("width").value = $("height").value;

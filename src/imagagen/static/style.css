@@ -85,7 +85,7 @@ body.resizing-sidebar, body.resizing-sidebar * {
 .row > label.dims { flex: 0 0 68px; }
 /* flex-end (not center): the row's height includes the Width/Height label
    captions, so bottom align is what puts the button in line with the inputs */
-#swap-dims { align-self: flex-end; }
+#swap-dims, #seed-from-image { align-self: flex-end; }
 /* the mode/denoise row: mode keeps its original half width, the new
    "mask pad" field and denoise share the other half */
 .row > label.mode-label { flex: 2; }
