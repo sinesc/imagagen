@@ -203,13 +203,18 @@ def test_canvas_set_mask_replaces_and_undoes():
     assert (c.image == 9).all()
 
 
-def test_set_mask_accepts_any_size_without_image():
-    # the mask is image-independent: settable with or without a canvas image
-    # and at any size (it is scaled for display/use against the image)
+def test_set_mask_requires_image_at_image_size():
+    # the mask is per-image: it cannot exist without an image, and must be
+    # at the image's size (1:1 with the canvas)
     c = Canvas()
-    assert c.set_mask(np.zeros((3, 3), np.uint8))
-    assert c.mask.shape == (3, 3)
+    with pytest.raises(ValueError):
+        c.set_mask(np.zeros((3, 3), np.uint8))
     c.import_image(_png(np.full((8, 8, 3), 5, np.uint8)))
-    # mask native size is preserved, displayed at the image size
-    assert c.mask.shape == (3, 3)
-    assert c.mask_scaled().shape == (8, 8)
+    with pytest.raises(ValueError):
+        c.set_mask(np.zeros((3, 3), np.uint8))
+    # setting the (fresh, empty) mask to the identical zero mask: no change
+    assert not c.set_mask(np.zeros((8, 8), np.uint8))
+    m = np.zeros((8, 8), np.uint8)
+    m[4, 4] = 255
+    assert c.set_mask(m)
+    assert c.mask.shape == (8, 8)

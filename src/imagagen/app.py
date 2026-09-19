@@ -788,10 +788,9 @@ def create_app(
         except SegmentationError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         # union with the existing mask (element-wise max of the alpha);
-        # a user who wants a fresh mask clears it first. The mask is
-        # image-independent, so union in the current image's pixel space.
-        existing = canvas.mask_scaled()
-        merged = seg if existing is None else np.maximum(existing, seg)
+        # a user who wants a fresh mask clears it first. The mask is at
+        # the current image's size, so union in that pixel space directly.
+        merged = np.maximum(canvas.mask, seg)
         changed = canvas.set_mask(merged)
         return {
             "ok": True,

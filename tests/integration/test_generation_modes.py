@@ -302,6 +302,34 @@ def test_inpaint_not_masked_outpaint_resizes_canvas_and_mask(client):
     assert (m > 128).sum() >= (m0 > 128).sum()
 
 
+def test_masks_are_per_image_after_outpaint(client):
+    """Regression for the global-mask bug: the mask belongs to each image.
+    After an outpaint (which resizes the canvas and with it the inherited
+    mask), selecting the source image (the green-bordered source thumbnail)
+    again must show the source's own mask at its own size — not the
+    result's resized mask."""
+    _set_canvas(client, 32, 24, 7)
+    _mask_dot(client, 16, 12, 8)
+    m0 = _mask(client)
+    assert m0 is not None and m0[12, 16] == 255
+
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, mode="inpaint_not_masked")
+    # the result inherits the mask, scaled 2x and centered along with the
+    # image (32x24 -> 64x48 at oy=8 on a 64x64 canvas: 12*2+8 = 32)
+    r = client.post("/api/canvas/thumb",
+                    json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    m1 = _mask(client)
+    assert m1.shape == (64, 64) and m1[32, 32] == 255
+    # back to the source image: its own mask at its own size, intact
+    r = client.post("/api/canvas/select", json={"id": "upload:0"})
+    assert r.status_code == 200
+    m2 = _mask(client)
+    assert m2 is not None and m2.shape == (24, 32)
+    np.testing.assert_array_equal(m2, m0)
+
+
 def test_inpaint_unknown_mode_rejected(client):
     r = client.post("/api/generate", json={"prompt": "x", "mode": "bogus"})
     assert r.status_code == 400

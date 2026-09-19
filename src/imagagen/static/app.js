@@ -1187,10 +1187,11 @@ function switchTool(t) {
   syncUndoButtons();
 }
 
-// ---------------- undo / redo (per-image draw + global mask) ----------------
+// ---------------- undo / redo (per-image draw + per-image mask) ---------
 // The server reports, on every canvas-mutating response, how far each of
-// the two independent stacks can go: the per-image draw stack of the
-// CURRENT image, and the image-independent global mask. One toolbar
+// the two independent stacks of the CURRENT image can go: its draw stack
+// and its mask stack (each image owns its mask, at the image's size;
+// new images inherit the source image's mask state). One toolbar
 // undo/redo pair follows the active tool: "mask" drives the mask stack, any
 // other tool drives the draw stack.
 let undoFlags = { undo_mask: false, redo_mask: false,
@@ -1872,12 +1873,10 @@ function connectWS() {
         renderThumbs();
         break;
       case "canvas_set":
-        // the canvas auto-set to a fresh result entity: its draw history
-        // is empty (only the global mask is retained), so reset the draw
-        // flags before re-syncing the buttons
-        undoFlags.undo_draw = false;
-        undoFlags.redo_draw = false;
-        syncUndoButtons();
+        // the canvas auto-set to a fresh result entity: its draw history is
+        // empty and its mask history was inherited from the source image;
+        // re-sync both flag pairs from the event
+        storeUndoFlags(msg);
         viewRefresh();
         break;
       case "done":

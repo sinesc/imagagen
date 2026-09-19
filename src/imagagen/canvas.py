@@ -1,20 +1,25 @@
-"""Server-authoritative canvas: per-image draw history + a global mask.
+"""Server-authoritative canvas: per-image draw history + per-image mask.
 
 Every canvas image is a persistent ``CanvasImage`` entity: a cold PNG store
 plus (while it is the displayed image) a hot numpy cache, and its own
-*draw* undo/redo stack of pre-stroke PNG snapshots. Image selection is not
-an undoable change — selecting a different entity just switches which draw
-stack is active, and its history is restored with it.
+*draw* and *mask* undo/redo stacks of pre-change PNG snapshots. Image
+selection is not an undoable change — selecting a different entity just
+switches which history is active, and its state is restored with it.
 
-The mask is a single, image-independent object with its own native size and
-a global undo/redo stack. When it is displayed (``/api/mask.png``) or used
-for inpainting while the canvas image has a different size, it is scaled to
-fit within the image (aspect preserved, centered) — ``fit_ar`` geometry.
-Mask strokes arrive in canvas-pixel coordinates and are remapped into the
-mask's native space.
+Every entity owns a mask at its own image's size (always present; zero
+when nothing is masked): it is served/displayed directly and mask strokes
+map 1:1 (the whole canvas is maskable). A new entity (generation result,
+upload) inherits the mask state of the image it derives from — the
+result's source image (the green-bordered source thumbnail), for uploads
+the currently displayed image: current mask plus both history stacks. The
+current mask is materialized at creation, transformed to the new image's
+size (aspect fit within, centered — the same mapping the image itself
+receives); inherited history frames stay cold PNG bytes at the source
+image's size and are transformed on first use. A new entity without a
+source (empty canvas) starts with a fresh empty mask.
 
-History entries are PNG-compressed bytes (not raw numpy): a 1024x1024 entry
-is ~100–300 KB instead of ~3.2 MB, so deep stacks stay affordable.
+History entries are PNG-compressed bytes (not raw numpy): a 1024x1024
+entry is ~100–300 KB instead of ~3.2 MB, so deep stacks stay affordable.
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ from PIL import Image, ImageOps, PngImagePlugin
 
 from .generation import fit_ar, resize_shift_mask
 
-MASK_HISTORY = 200  # global mask undo/redo depth
+MASK_HISTORY = 200  # per-image mask undo/redo depth
 DRAW_HISTORY = 50  # per-image draw undo depth
 STAMP_SPACING_FRACTION = 1 / 12  # stamps at least size/12 px apart (>= 1 px)
 
@@ -74,6 +79,17 @@ def _png_text_chunks(data: bytes) -> dict:
     return {k: v for k, v in (img.info or {}).items() if isinstance(v, str)}
 
 
+def _transform_mask(mask: np.ndarray, W: int, H: int) -> np.ndarray:
+    """mask (any size) -> (H, W) uint8: aspect fit within, centered — the
+    same mapping the image itself receives in "inpaint not masked".
+    Copied unchanged when the size already matches."""
+    h, w = mask.shape[:2]
+    if (w, h) == (W, H):
+        return mask.copy()
+    sw, sh, ox, oy = fit_ar(w, h, W, H)
+    return resize_shift_mask(mask, sw, sh, ox, oy, W, H)
+
+
 # -------------------------------------------------------------------- entity --
 
 
@@ -81,11 +97,17 @@ def _png_text_chunks(data: bytes) -> dict:
 class CanvasImage:
     id: str
     png: bytes  # cold store (always present, in sync with `image` when hot)
+    # Per-image mask: at this image's own size (always present; zero when
+    # nothing is masked), plus its own undo/redo stacks of PNG bytes.
+    # Frames inherited from the source image stay at the source image's
+    # size and are transformed to this image's size on first use.
+    mask: np.ndarray
     info: dict = field(default_factory=dict)  # PNG text chunks (metadata)
-    plan_mask: bytes | None = None  # new mask to apply when set (inpaint-not-masked)
     image: np.ndarray | None = None  # hot cache: only while on the canvas
     undo: list[bytes] = field(default_factory=list)  # pre-stroke PNG snapshots
     redo: list[bytes] = field(default_factory=list)
+    mask_undo: list[bytes] = field(default_factory=list)
+    mask_redo: list[bytes] = field(default_factory=list)
 
 
 class Canvas:
@@ -94,9 +116,6 @@ class Canvas:
         self._images: dict[str, CanvasImage] = {}
         self._current: str | None = None
         self._anchored: set[str] = set()  # entity ids referenced by a live job
-        self._mask: np.ndarray | None = None  # native size (image-independent)
-        self._mask_undo: list[bytes | None] = []
-        self._mask_redo: list[bytes | None] = []
         self._upload_counter = 0
         self._brushes_dir = brushes_dir
         self._brush_cache: dict[str, np.ndarray] = {}  # name -> float32 L array 0..1
@@ -112,41 +131,12 @@ class Canvas:
 
     @property
     def mask(self) -> np.ndarray | None:
-        """Native mask alpha (0..255) or None when there is no mask."""
+        """The displayed image's mask (at its size), or None when there is
+        no image."""
         with self._lock:
-            return None if self._mask is None else self._mask.copy()
-
-    def mask_scaled(self) -> np.ndarray | None:
-        """The mask at the current image's size (fit-within, centered), or
-        None when there is no mask or no displayed image."""
-        with self._lock:
-            return self._mask_scaled_locked()
-
-    def _mask_scaled_locked(self) -> np.ndarray | None:
-        if self._mask is None or self._current is None:
-            return None
-        img = self._images[self._current].image
-        if img is None:
-            return None
-        H, W = img.shape[:2]
-        mh, mw = self._mask.shape[:2]
-        if (mw, mh) == (W, H):
-            return self._mask.copy()
-        sw, sh, ox, oy = fit_ar(mw, mh, W, H)
-        return resize_shift_mask(self._mask, sw, sh, ox, oy, W, H)
-
-    def _mask_fit_params_locked(self) -> tuple[float, int, int] | None:
-        """(scale, ox, oy) mapping mask-native -> current image pixels; None
-        when there is no displayed image. scale is image-px per native-px."""
-        if self._mask is None or self._current is None:
-            return None
-        img = self._images[self._current].image
-        if img is None:
-            return None
-        H, W = img.shape[:2]
-        mh, mw = self._mask.shape[:2]
-        sw, sh, ox, oy = fit_ar(mw, mh, W, H)
-        return (sw / mw, ox, oy)
+            if self._current is None:
+                return None
+            return self._images[self._current].mask.copy()
 
     def has_image(self) -> bool:
         with self._lock:
@@ -167,34 +157,69 @@ class Canvas:
             return self._current
 
     # --- entity management ---
-    def add_result(self, job_id: int, index: int, png: bytes, info: dict | None,
-                   plan_mask: np.ndarray | None = None) -> str:
+    def _inherit_mask_state_locked(
+        self, src_id: str | None, W: int, H: int
+    ) -> tuple[np.ndarray, list, list]:
+        """(mask, mask_undo, mask_redo) for a new entity of image size
+        (W, H). Inherits the source image's mask state: the current mask
+        transformed to the new size (aspect fit within, centered; identity
+        when the size matches) plus both history stacks by reference (cold
+        PNG bytes at the source image's size, transformed on first use).
+        No source -> fresh empty (zero) mask."""
+        if src_id is None or src_id not in self._images:
+            return np.zeros((H, W), dtype=np.uint8), [], []
+        src = self._images[src_id]
+        return (
+            _transform_mask(src.mask, W, H),
+            list(src.mask_undo),
+            list(src.mask_redo),
+        )
+
+    def add_result(
+        self, job_id: int, index: int, png: bytes, info: dict | None,
+        source_id: str | None = None,
+    ) -> str:
         """Register a generation result as a (cold) entity; returns its id.
 
-        ``plan_mask`` is the mask that belongs to this result (inpaint
-        not-masked); it is applied when the result is set. A result entity is
+        The result inherits its mask state (current mask + history) from
+        ``source_id`` (the job's source image, the green-bordered source
+        thumbnail); see ``_inherit_mask_state_locked``. A result entity is
         always referenced by its (still live) job, so it is anchored
         immediately and won't be evicted until the job is dropped.
         """
         eid = f"job:{job_id}:{index}"
         with self._lock:
+            w, h = Image.open(BytesIO(png)).size
+            mask, m_undo, m_redo = self._inherit_mask_state_locked(source_id, w, h)
             self._images[eid] = CanvasImage(
                 id=eid,
                 png=png,
                 info=dict(info or {}),
-                plan_mask=_encode_mask(plan_mask) if plan_mask is not None else None,
+                mask=mask,
+                mask_undo=m_undo,
+                mask_redo=m_redo,
             )
             self._anchored.add(eid)
         return eid
 
     def import_image(self, data: bytes) -> str:
-        """Upload / drag&drop: create an ``upload:{n}`` entity and set it."""
+        """Upload / drag&drop: create an ``upload:{n}`` entity and set it.
+
+        The new entity inherits the displayed image's mask state (the
+        upload replaces it); see ``_inherit_mask_state_locked``."""
         arr = _decode_png(data)
         info = _png_text_chunks(data)
         with self._lock:
             eid = f"upload:{self._upload_counter}"
             self._upload_counter += 1
-            self._images[eid] = CanvasImage(id=eid, png=data, info=info, image=arr)
+            h, w = arr.shape[:2]
+            mask, m_undo, m_redo = self._inherit_mask_state_locked(
+                self._current, w, h
+            )
+            self._images[eid] = CanvasImage(
+                id=eid, png=data, info=info, image=arr,
+                mask=mask, mask_undo=m_undo, mask_redo=m_redo,
+            )
             self._enter_entity_locked(eid)
         return eid
 
@@ -214,14 +239,6 @@ class Canvas:
         if ent.image is None:
             ent.image = _decode_png(ent.png)
         self._current = id
-        # the mask is image-independent: keep the existing one, only create
-        # an (empty, image-sized) mask when there is none yet
-        h, w = ent.image.shape[:2]
-        if self._mask is None:
-            self._mask = np.zeros((h, w), dtype=np.uint8)
-        # an "inpaint not masked" result carries the mask that belongs to it
-        if ent.plan_mask is not None:
-            self._set_mask_locked(_decode_mask(ent.plan_mask))
         self._evict_stale_locked()
 
     def anchor(self, ids: set[str]) -> None:
@@ -271,53 +288,71 @@ class Canvas:
         ent.png = nxt
         return True
 
-    # --- mask history ---
+    # --- mask history (per image) ---
     def can_undo_mask(self) -> bool:
         with self._lock:
-            return bool(self._mask_undo)
+            return bool(self._current and self._images[self._current].mask_undo)
 
     def can_redo_mask(self) -> bool:
         with self._lock:
-            return bool(self._mask_redo)
+            return bool(self._current and self._images[self._current].mask_redo)
 
-    def _mask_snapshot_locked(self) -> bytes | None:
-        return None if self._mask is None else _encode_mask(self._mask)
+    def _mask_snapshot_locked(self, ent: CanvasImage) -> bytes:
+        return _encode_mask(ent.mask)
+
+    def _materialize_mask_locked(self, ent: CanvasImage, data: bytes) -> np.ndarray:
+        """History frame (PNG bytes) -> mask at the entity's image size.
+        Frames pushed on this entity are already at its size; frames
+        inherited from the source image are at the source's size and get
+        transformed (aspect fit within, centered) here, on first use."""
+        m = _decode_mask(data)
+        h, w = ent.image.shape[:2]
+        if m.shape[:2] == (h, w):
+            return m
+        return _transform_mask(m, w, h)
 
     def _undo_mask_locked(self) -> bool:
-        if not self._mask_undo:
+        if self._current is None:
             return False
-        self._mask_redo.append(self._mask_snapshot_locked())
-        prev = self._mask_undo.pop()
-        self._mask = _decode_mask(prev) if prev is not None else None
+        ent = self._images[self._current]
+        if not ent.mask_undo:
+            return False
+        ent.mask_redo.append(self._mask_snapshot_locked(ent))
+        prev = ent.mask_undo.pop()
+        ent.mask = self._materialize_mask_locked(ent, prev)
         return True
 
     def _redo_mask_locked(self) -> bool:
-        if not self._mask_redo:
+        if self._current is None:
             return False
-        self._mask_undo.append(self._mask_snapshot_locked())
-        nxt = self._mask_redo.pop()
-        self._mask = _decode_mask(nxt) if nxt is not None else None
+        ent = self._images[self._current]
+        if not ent.mask_redo:
+            return False
+        ent.mask_undo.append(self._mask_snapshot_locked(ent))
+        nxt = ent.mask_redo.pop()
+        ent.mask = self._materialize_mask_locked(ent, nxt)
         return True
 
-    def _set_mask_locked(self, mask: np.ndarray) -> bool:
-        """Replace the native mask, recording one history step unless it is
-        unchanged. The mask may be any size (it is scaled for display/use)."""
-        if (
-            self._mask is not None
-            and mask.shape == self._mask.shape
-            and np.array_equal(mask, self._mask)
-        ):
+    def _set_mask_locked(self, ent: CanvasImage, mask: np.ndarray) -> bool:
+        """Replace the entity's mask (at the image's size), recording one
+        history step unless it is unchanged."""
+        if mask.shape == ent.mask.shape and np.array_equal(mask, ent.mask):
             return False
-        self._mask_undo.append(self._mask_snapshot_locked())
-        if len(self._mask_undo) > MASK_HISTORY:
-            self._mask_undo.pop(0)
-        self._mask_redo.clear()
-        self._mask = np.ascontiguousarray(mask)
+        ent.mask_undo.append(self._mask_snapshot_locked(ent))
+        if len(ent.mask_undo) > MASK_HISTORY:
+            ent.mask_undo.pop(0)
+        ent.mask_redo.clear()
+        ent.mask = np.ascontiguousarray(mask)
         return True
 
     def set_mask(self, mask: np.ndarray) -> bool:
         with self._lock:
-            return self._set_mask_locked(mask)
+            if self._current is None or self._images[self._current].image is None:
+                raise ValueError("cannot set a mask on an empty canvas")
+            ent = self._images[self._current]
+            if mask.shape[:2] != ent.image.shape[:2]:
+                raise ValueError("mask must be at the image's size")
+            return self._set_mask_locked(ent, mask)
 
     def undo(self, target: str = "image") -> bool:
         with self._lock:
@@ -466,17 +501,11 @@ class Canvas:
     def _stroke_mask_locked(self, points, size, opacity, brush, erase) -> bool:
         if self._current is None or self._images[self._current].image is None:
             raise ValueError("cannot stroke an empty canvas")
-        if self._mask is None:
-            h, w = self._images[self._current].image.shape[:2]
-            self._mask = np.zeros((h, w), dtype=np.uint8)
-        fit = self._mask_fit_params_locked()
-        if fit is None:
-            raise ValueError("cannot stroke an empty canvas")
-        scale, ox, oy = fit
-        npts = [((x - ox) / scale, (y - oy) / scale) for (x, y) in points]
-        return self._stamp_mask(npts, size / scale, opacity, brush, erase)
+        ent = self._images[self._current]
+        # canvas-pixel coordinates are mask-native coordinates (1:1)
+        return self._stamp_mask(ent, points, size, opacity, brush, erase)
 
-    def _stamp_mask(self, points, size, opacity, brush, erase) -> bool:
+    def _stamp_mask(self, ent, points, size, opacity, brush, erase) -> bool:
         shape = self.brush_shape(brush, size)
         spacing = max(1.0, size * STAMP_SPACING_FRACTION)
         centers = self.stamp_positions(points, spacing)
@@ -485,9 +514,9 @@ class Canvas:
         # mask strokes are hard alpha (no soft blending); opacity still
         # scales the added/removed alpha
         a = shape
-        mh, mw = self._mask.shape[:2]
+        mh, mw = ent.mask.shape[:2]
         sh, sw = shape.shape
-        m = self._mask.astype(np.float32)
+        m = ent.mask.astype(np.float32)
         for cx, cy in centers:
             x0, y0 = int(round(cx - sw / 2)), int(round(cy - sh / 2))
             sx0, sy0 = max(-x0, 0), max(-y0, 0)
@@ -500,9 +529,9 @@ class Canvas:
                 region - patch if erase else region + patch, 0, 255
             )
         new_mask = m.astype(np.uint8)
-        return self._set_mask_locked(new_mask)
+        return self._set_mask_locked(ent, new_mask)
 
-    # --- mask operations (run on the native mask) ---
+    # --- mask operations (run on the displayed image's mask) ---
     @staticmethod
     def _disk(px: float) -> np.ndarray | None:
         r = int(round(px))
@@ -521,7 +550,10 @@ class Canvas:
         from scipy import ndimage
 
         with self._lock:
-            if self._mask is None or not self._mask.any():
+            if self._current is None:
+                return False
+            ent = self._images[self._current]
+            if not ent.mask.any():
                 return False
             se = self._disk(px)
             if se is None:
@@ -533,17 +565,20 @@ class Canvas:
             # (the feather just shifts to the outer edge). For a binary mask
             # this equals binary dilation/erosion.
             out = (
-                ndimage.maximum_filter(self._mask, footprint=se)
+                ndimage.maximum_filter(ent.mask, footprint=se)
                 if dilate
-                else ndimage.minimum_filter(self._mask, footprint=se)
+                else ndimage.minimum_filter(ent.mask, footprint=se)
             )
-            return self._set_mask_locked(out)
+            return self._set_mask_locked(ent, out)
 
     def mask_clear(self) -> bool:
         with self._lock:
-            if self._mask is None or not self._mask.any():
+            if self._current is None:
                 return False
-            return self._set_mask_locked(np.zeros_like(self._mask))
+            ent = self._images[self._current]
+            if not ent.mask.any():
+                return False
+            return self._set_mask_locked(ent, np.zeros_like(ent.mask))
 
     # --- (de)serialization ---
     def to_png_bytes(self) -> bytes | None:
@@ -553,13 +588,12 @@ class Canvas:
             return self._images[self._current].png
 
     def to_mask_png_bytes(self) -> bytes | None:
-        """The *scaled* mask (at the displayed image's size) as a greyscale
-        PNG, or None when there is no mask or no image."""
+        """The displayed image's mask as a greyscale PNG, or None when
+        there is no image."""
         with self._lock:
-            m = self._mask_scaled_locked()
-            if m is None:
+            if self._current is None:
                 return None
-            return _encode_mask(m)
+            return _encode_mask(self._images[self._current].mask)
 
     def png_info(self) -> dict:
         with self._lock:

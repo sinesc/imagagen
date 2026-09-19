@@ -1,5 +1,5 @@
-"""Canvas v2: per-image draw history, global image-independent mask, mask
-morphology, mask scaling, entity eviction.
+"""Canvas v2: per-image draw history, per-image mask (inherited from the
+source image), mask morphology, entity eviction.
 
 Pure-Python (numpy/PIL/scipy) -- no GPU, no model.
 """
@@ -188,7 +188,7 @@ def test_mask_dilate_closes_feather_dip():
     m = np.zeros((9, 9), dtype=np.uint8)
     m[2:7, 2:7] = 255
     m[1:8, 1:8] = np.where(m[1:8, 1:8] == 0, 50, m[1:8, 1:8])
-    c._mask = m.copy()
+    c.set_mask(m)
 
     assert c.mask_dilate(1)
     # the 255 contour grew 1 px (7x7 solid), the 50 feather shifted out
@@ -213,52 +213,47 @@ def test_mask_clear():
 
 def test_morphology_noop_on_empty_mask():
     c = blank_canvas()
-    n = len(c._mask_undo)
+    n = len(c._images[c.current_id()].mask_undo)
     assert not c.mask_dilate(5)
     assert not c.mask_erode(5)
-    assert len(c._mask_undo) == n  # no-ops record no undo step
+    assert len(c._images[c.current_id()].mask_undo) == n  # no-ops push nothing
 
 
-# ---------------- mask scaling (image-independent) ----------------
+# ---------------- mask is at the image's size (1:1) ----------------
 
-def test_mask_scaled_follows_image_size():
-    # native 100x100 mask, displayed over a 200x100 image -> fit-within,
-    # centered: scale = min(200/100, 100/100) = 1, offset x = (200-100)//2 = 50
+def test_mask_is_at_image_size_and_served_directly():
     c = blank_canvas(200, 100)
-    m = np.zeros((100, 100), dtype=np.uint8)
-    m[40:60, 40:60] = 255
-    c.set_mask(m)
-    scaled = c.mask_scaled()
-    assert scaled.shape == (100, 200)  # (H, W) of the image
-    assert scaled[40:60, 90:110].max() == 255  # mask sits at x = 50..150
-    assert scaled[40:60, 0:49].max() == 0  # left remainder unmasked
-    # the served mask.png is at the image size
+    m = np.zeros((100, 200), dtype=np.uint8)
+    m[40:60, 90:110] = 255
+    assert c.set_mask(m)
+    np.testing.assert_array_equal(c.mask, m)
+    # the served mask.png is the mask itself (at the image's size)
     import io
 
     png = Image.open(io.BytesIO(c.to_mask_png_bytes()))
     assert png.size == (200, 100)
 
 
-def test_mask_stroke_remaps_to_native():
-    # image 200x100, native mask 100x100 (scale 1, ox=50): a stroke at canvas
-    # x=100 (centre) lands on native x=50
+def test_mask_stroke_is_1_to_1_with_canvas():
+    # no remap: a stroke at canvas (x, y) lands on mask pixel (x, y);
+    # the whole canvas is maskable, edges included (the regression this
+    # fixes: with a drifting native size the top/bottom bands were not)
     c = blank_canvas(200, 100)
-    m = np.zeros((100, 100), dtype=np.uint8)
-    c.set_mask(m)
     c.stroke([(100.0, 50.0)], size=10, target="mask")
-    assert c.mask.shape == (100, 100)  # native size unchanged
-    assert c.mask[50, 50] == 255  # remapped from canvas (100,50) to native (50,50)
-    assert c.mask[50, 90] == 0  # canvas x=140 is native x=90, untouched
+    assert c.mask.shape == (100, 200)
+    assert c.mask[50, 100] == 255
+    c.stroke([(100.0, 1.0)], size=4, target="mask")
+    assert c.mask[0, 100] >= 128
 
 
-def test_dilate_runs_on_native_resolution():
+def test_dilate_runs_on_image_pixels():
     c = blank_canvas(200, 100)
-    m = np.zeros((100, 100), dtype=np.uint8)
+    m = np.zeros((100, 200), dtype=np.uint8)
     m[48:52, 48:52] = 255
     c.set_mask(m)
     before = (c.mask > 0).sum()
     c.mask_dilate(3)
-    assert (c.mask > 0).sum() > before  # dilated in native px
+    assert (c.mask > 0).sum() > before
 
 
 def test_set_mask_identical_pushes_no_step():
@@ -266,12 +261,13 @@ def test_set_mask_identical_pushes_no_step():
     m = np.zeros((48, 64), dtype=np.uint8)
     m[10:20, 10:20] = 255
     assert c.set_mask(m)
-    n = len(c._mask_undo)
+    ent = c._images[c.current_id()]
+    n = len(ent.mask_undo)
     assert not c.set_mask(m.copy())  # identical -> no step
-    assert len(c._mask_undo) == n
+    assert len(ent.mask_undo) == n
 
 
-# ---------------- undo/redo: per-image draw + global mask ----------------
+# ---------------- undo/redo: per-image draw + per-image mask ----------------
 
 def _two_images(c):
     a = c.import_image(_png(np.full((24, 32, 3), 100, np.uint8)))
@@ -342,13 +338,89 @@ def test_selection_is_not_an_undo_step():
     assert c.can_undo_draw()  # A's stack is restored, not reset
 
 
-def test_mask_retained_across_image_switch():
-    c = blank_canvas()
-    c.stroke([(32.0, 24.0)], size=10, target="mask")
-    assert c.mask[24, 32] == 255
-    # switching to a differently-sized image keeps (scales) the mask
-    c.import_image(_png(np.zeros((32, 24, 3), dtype=np.uint8)))
-    assert (c.mask_scaled() > 0).any()
+def test_new_image_inherits_source_mask_and_history():
+    # a new image (upload / result) inherits the source image's mask state:
+    # the current mask transformed to the new size plus both history
+    # stacks (cold frames at the source's size, transformed on first use)
+    c = blank_canvas(64, 48)
+    c.stroke([(32.0, 24.0)], size=20, target="mask")
+    ma = c.mask.copy()
+    src = c.current_id()
+    c.anchor({src})  # keep the source alive across the import
+    b = c.import_image(_png(np.zeros((24, 32, 3), dtype=np.uint8)))
+    c.anchor({src, b})
+    # inherited current mask: fit-within, centered (2x downscale -> 1:1)
+    assert c.mask is not None and c.mask.shape == (24, 32)
+    assert c.mask[12, 16] == 255  # the dot, at the 2x-downscaled position
+    # history inherited: undo walks back through the source's strokes
+    assert c.can_undo_mask()
+    c.undo("mask")
+    assert c.mask is not None and c.mask.shape == (24, 32)
+    assert (c.mask == 0).all()
+    c.redo("mask")
+    assert c.mask[12, 16] == 255
+    # ...and the source's mask state is untouched
+    c.set_current(src)
+    np.testing.assert_array_equal(c.mask, ma)
+
+
+def test_add_result_inherits_mask_from_source():
+    c = blank_canvas(64, 48)
+    c.stroke([(32.0, 24.0)], size=20, target="mask")
+    src = c.current_id()
+    # same-size result: the mask is copied 1:1
+    eid = c.add_result(1, 0, _png(np.full((48, 64, 3), 7, np.uint8)), None,
+                      source_id=src)
+    ent = c._images[eid]
+    np.testing.assert_array_equal(ent.mask, c._images[src].mask)
+    assert len(ent.mask_undo) == 1 and len(ent.mask_redo) == 0
+    # larger result (outpaint): the mask is transformed to the new size
+    eid2 = c.add_result(1, 1, _png(np.full((96, 128, 3), 7, np.uint8)), None,
+                       source_id=src)
+    m2 = c._images[eid2].mask
+    assert m2.shape == (96, 128)
+    assert m2[48, 64] == 255  # the dot, at 2x
+
+
+def test_add_result_without_source_has_empty_mask():
+    c = Canvas()
+    eid = c.add_result(1, 0, _png(np.full((16, 16, 3), 1, np.uint8)), None)
+    ent = c._images[eid]
+    assert ent.mask.shape == (16, 16) and (ent.mask == 0).all()
+    assert ent.mask_undo == [] and ent.mask_redo == []
+    # the mask still exists (empty): once displayed, mask.png is 200, not 404
+    c.set_current(eid)
+    assert c.to_mask_png_bytes() is not None
+
+
+def test_mask_per_image_isolation():
+    # the regression this rework fixes: a mask painted on one image must
+    # not be clobbered by, nor leak into, another image of a different size
+    c = Canvas()
+    a = c.import_image(_png(np.full((24, 32, 3), 100, np.uint8)))  # 32x24
+    c.anchor({a})
+    c.stroke([(8.0, 6.0)], size=8, target="mask")
+    ma = c.mask.copy()
+    assert (ma > 0).any()
+    # a differently-sized image is imported: it inherits A's mask...
+    b = c.import_image(_png(np.full((48, 64, 3), 50, np.uint8)))  # 64x48
+    c.anchor({a, b})
+    assert c.mask is not None and (c.mask > 0).any()  # the blob, scaled 2x
+    # ...which B may now edit independently
+    assert c.mask_clear()
+    # ...without touching A: back on A its mask and history are intact
+    c.set_current(a)
+    np.testing.assert_array_equal(c.mask, ma)
+    assert len(c._images[a].mask_undo) == 1
+    # ...and B's edited mask and (longer, inherited+own) history too
+    c.set_current(b)
+    assert (c.mask == 0).all()
+    assert len(c._images[b].mask_undo) == 2
+    # undo on B walks back through the inherited frame (lazy transform)
+    c.undo("mask")
+    assert (c.mask > 0).any()  # the inherited blob, at B's size
+    c.undo("mask")
+    assert (c.mask == 0).all()
 
 
 def test_upload_png_info_survives_strokes():
@@ -378,7 +450,7 @@ def test_mask_history_capped():
     for i in range(MASK_HISTORY + 20):
         # alternate paint/erase at the same spot -> every stroke changes
         c.stroke([(32.0, 32.0)], size=8, target="mask", erase=(i % 2 == 1))
-    assert len(c._mask_undo) == MASK_HISTORY
+    assert len(c._images[c.current_id()].mask_undo) == MASK_HISTORY
 
 
 # ---------------- entity eviction ----------------

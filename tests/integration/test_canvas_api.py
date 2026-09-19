@@ -222,9 +222,9 @@ def test_mask_retained_across_same_size_image(tmp_path):
         assert _mask(c)[12, 16] == 255
 
 
-def test_mask_scaled_on_size_change(tmp_path):
-    """The mask is image-independent: changing the image size scales the
-    mask to fit (not reset it)."""
+def test_new_image_inherits_mask_scaled_to_new_size(tmp_path):
+    """The mask is per-image: a new image inherits the previous one's mask,
+    scaled (fit-within, centered) to the new size (not reset)."""
     with _client(tmp_path) as c:
         _set_canvas(c)  # 32x24
         c.post("/api/canvas/stroke", json={

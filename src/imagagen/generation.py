@@ -164,9 +164,10 @@ class InpaintPlan:
     bbox: tuple[int, int, int, int] | None = None  # inpaint_masked
     new_mask: np.ndarray | None = None  # inpaint_not_masked
 
-    def postprocess(self, gen: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
-        """Backend output -> (canvas_image, mask). ``mask`` None = keep the
-        current mask when it fits the (possibly new) canvas size."""
+    def postprocess(self, gen: np.ndarray) -> np.ndarray:
+        """Backend output -> canvas image (the inpaint_masked blend, or the
+        resized whole-canvas result). The canvas mask is owned by the result
+        entity (inherited from the source image)."""
         if self.mode == "inpaint_masked":
             assert self.bbox is not None
             x0, y0, w, h = self.bbox
@@ -184,14 +185,14 @@ class InpaintPlan:
                     reg * (1 - aa) + patch * aa, 0, 255
                 ).astype(np.uint8)
             # mask is retained (possibly user-edited in the meantime)
-            return out, None
+            return out
         # inpaint_not_masked: the generation is the whole new canvas
         assert self.new_mask is not None
         if gen.shape[:2] != self.new_mask.shape[:2]:
             # the backend may round the generation size (SDXL: multiples of
             # 8); the canvas must come out exactly at the requested size
             gen = resize_image(gen, self.new_mask.shape[1], self.new_mask.shape[0])
-        return gen, self.new_mask
+        return gen
 
 
 def with_inpaint(
@@ -218,11 +219,11 @@ def with_inpaint(
     image = canvas.image
     if image is None:
         raise GenerationError("canvas is empty")
-    # the mask is image-independent; use it at the canvas image's size
-    mask = canvas.mask_scaled()
+    # the displayed image's own mask (at the canvas image's size)
+    mask = canvas.mask
 
     if mode == "inpaint_masked":
-        if mask is None or not (mask > 0).any():
+        if not (mask > 0).any():
             raise GenerationError("mask is empty")
         # context ring, capped so a tiny mask never gets a huge box
         rows = np.where((mask > 0).any(axis=1))[0]
@@ -246,7 +247,7 @@ def with_inpaint(
     target = paste_centered(resize_image(image, sw, sh), request.width, request.height)
     new_mask = (
         resize_shift_mask(mask, sw, sh, ox, oy, request.width, request.height)
-        if mask is not None and mask.any()
+        if mask.any()
         else np.zeros((request.height, request.width), dtype=np.uint8)
     )
     request.init_image = target

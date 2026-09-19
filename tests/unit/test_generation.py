@@ -176,20 +176,21 @@ def _canvas(w=64, h=48):
     return c
 
 
-def test_inpaint_masked_with_differently_sized_mask():
-    # the native mask (32x32) is smaller than the image (64x48): for
-    # inpainting it is scaled (fit-within) to the image, not used raw
+def test_inpaint_masked_mask_is_at_image_size():
+    # the mask is at the canvas image's size (1:1): inpaint uses it as-is
     c = _canvas(64, 48)
-    m = np.zeros((32, 32), dtype=np.uint8)
+    m = np.zeros((48, 64), dtype=np.uint8)
     m[10:22, 10:22] = 255
     c.set_mask(m)
     req = GenerateRequest(prompt="x", width=64, height=64)
     plan = with_inpaint(req, "inpaint_masked", c, 0.8, padding=0)
     assert isinstance(plan, InpaintPlan)
-    # the plan's base mask is at the image size, not the native 32x32
+    # the plan's base mask is the mask itself (image size)
     assert plan.base_mask.shape == (48, 64)
+    # the bbox crop is fully inside the mask blob
     assert req.init_mask is not None
-    assert req.init_mask.max() == 255 and req.init_mask.min() == 0
+    assert req.init_mask.shape == (64, 64) and req.init_mask.max() == 255
+    assert req.init_mask[32, 32] == 255
 
 
 def test_generate_mode_is_noop():
@@ -275,14 +276,13 @@ def test_inpaint_masked_postprocess_blends_only_mask_region():
     req = GenerateRequest(prompt="x", width=20, height=10)
     plan = with_inpaint(req, "inpaint_masked", c, 1.0)
     gen = np.full((10, 20, 3), 250, dtype=np.uint8)
-    out, new_mask = plan.postprocess(gen)
+    out = plan.postprocess(gen)
     assert out.shape == (48, 64, 3)
     # mask region: fully replaced (alpha 255)
     assert (out[10:20, 12:32] == 250).all()
     # everything else untouched
     assert (np.delete(out, list(range(10, 20)), axis=0) == 100).all()
-    # mask retained
-    assert new_mask is None
+    # the mask itself is untouched (the result inherits the source's)
 
 
 def test_inpaint_not_masked_populates_request():
@@ -321,6 +321,5 @@ def test_inpaint_not_masked_postprocess_resizes_rounded_output():
     plan = InpaintPlan("inpaint_not_masked", c.image, None,
                        new_mask=np.zeros((100, 100), dtype=np.uint8))
     gen = np.full((96, 96, 3), 42, dtype=np.uint8)
-    out, mask = plan.postprocess(gen)
+    out = plan.postprocess(gen)
     assert out.shape == (100, 100, 3)
-    assert mask.shape == (100, 100)

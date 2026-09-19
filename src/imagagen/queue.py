@@ -247,16 +247,17 @@ class GenerationQueue:
         # "inpaint not masked"). Thumbnails show the resulting canvas state,
         # so clicking one puts it on the canvas.
         if job.plan is not None:
-            out_image, new_mask = job.plan.postprocess(result.image)
+            out_image = job.plan.postprocess(result.image)
         else:
-            out_image, new_mask = result.image, None
+            out_image = result.image
         png, info = _result_to_png(backend, req, result, out_image, job)
         job.results[task.index] = png
         # register the result as a persistent canvas entity (a new image with
-        # an empty draw history); an inpaint-not-masked result carries the
-        # mask that belongs to it
-        plan_mask = job.plan.new_mask if job.plan is not None else None
-        eid = self.canvas.add_result(job.id, task.index, png, info, plan_mask)
+        # an empty draw history); it inherits its mask state (current mask
+        # + history) from the job's source image (the green-bordered
+        # source thumbnail)
+        eid = self.canvas.add_result(job.id, task.index, png, info,
+                                     source_id=job.source_image_id)
         self.emit({"type": "image", "job": job.id, "index": task.index,
                    "seed": result.seed, "image_id": eid,
                    "url": f"/api/thumb/{job.id}/{task.index}.png"})
@@ -270,7 +271,11 @@ class GenerationQueue:
             if job.source_png is None:
                 self.canvas.set_current(eid)
                 self.emit({"type": "canvas_set", "job": job.id,
-                           "index": task.index})
+                           "index": task.index,
+                           "undo_mask": self.canvas.can_undo_mask(),
+                           "redo_mask": self.canvas.can_redo_mask(),
+                           "undo_draw": self.canvas.can_undo_draw(),
+                           "redo_draw": self.canvas.can_redo_draw()})
         self._settle(job, task.index)
 
     def _settle(self, job: Job, index: int) -> None:
