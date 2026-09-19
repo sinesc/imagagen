@@ -82,7 +82,10 @@ function viewRedraw() {
   ctx.translate(view.ox, view.oy);
   ctx.scale(view.scale, view.scale);
   if (view.img) ctx.drawImage(view.img, 0, 0);
-  if (view.mask) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
+  // an active erase stroke draws its own punched copy of the mask; the base
+  // mask would show through underneath it (double opacity)
+  const erasing = view.stroke && view.stroke.erase;
+  if (view.mask && !erasing) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
   if (view.stroke) drawPreview(ctx);
   drawCursor(ctx);
   $("zoom-label").textContent = `${Math.round(view.scale * 100)}%`;
@@ -202,13 +205,50 @@ function drawCursor(ctx) {
   ctx.restore();
 }
 
+// scratch canvas for the erase preview (punched-out mask overlay)
+const eraseLayer = {
+  canvas: document.createElement("canvas"),
+  w: 0,
+  h: 0,
+};
+
 function drawPreview(ctx) {
   const st = Tools.get();
   const s = view.stroke;
-  if (s.tool === "mask" && s.erase) return; // erasing: committed state is truth
   const pts = stampPositions(s.points, Math.max(1, s.size / 12));
   const r = Math.max(s.size / 2, 0.5);
   ctx.globalAlpha = st.opacity;
+  if (s.tool === "mask" && s.erase) {
+    // erasing removes the grey overlay: copy it into a scratch canvas, punch
+    // out the stamped spots (destination-out), draw it over the image
+    if (view.mask) {
+      let L = eraseLayer;
+      if (L.w !== view.w || L.h !== view.h) {
+        L.canvas.width = view.w;
+        L.canvas.height = view.h;
+        L.w = view.w;
+        L.h = view.h;
+      }
+      const lctx = L.canvas.getContext("2d");
+      lctx.globalCompositeOperation = "source-over";
+      lctx.globalAlpha = 1;
+      lctx.clearRect(0, 0, L.canvas.width, L.canvas.height);
+      lctx.drawImage(view.mask, 0, 0);
+      lctx.globalCompositeOperation = "destination-out";
+      lctx.globalAlpha = st.opacity; // the server scales removal by opacity
+      lctx.fillStyle = "#000";
+      for (const [x, y] of pts) {
+        lctx.beginPath();
+        lctx.arc(x, y, r, 0, Math.PI * 2);
+        lctx.fill();
+      }
+      lctx.globalCompositeOperation = "source-over";
+      lctx.globalAlpha = 1;
+      ctx.drawImage(L.canvas, 0, 0);
+    }
+    ctx.globalAlpha = 1;
+    return;
+  }
   ctx.fillStyle = s.tool === "mask" ? "rgba(128,128,128,0.9)" : st.color;
   for (const [x, y] of pts) {
     ctx.beginPath();
