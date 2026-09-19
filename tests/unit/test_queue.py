@@ -3,6 +3,7 @@ import time
 import numpy as np
 from PIL import Image
 
+from imagagen import metadata
 from imagagen.backends import GenerateRequest, MockBackend
 from imagagen.canvas import Canvas
 from imagagen.generation import InpaintPlan
@@ -39,9 +40,12 @@ class FakeRegistry:
         return self._b
 
 
-def _queue(backend, events):
+def _queue(backend, events, wildcards_dir=None):
     canvas = Canvas()
-    q = GenerationQueue(registry=FakeRegistry(backend), canvas=canvas, emit=events.append)
+    q = GenerationQueue(
+        registry=FakeRegistry(backend), canvas=canvas, emit=events.append,
+        wildcards_dir=wildcards_dir,
+    )
     q.start()
     return q, canvas
 
@@ -213,6 +217,52 @@ def test_finished_jobs_dropped_on_next_submit():
     # the in-flight/finished-but-newest job stays
     assert j1.id not in q.jobs()
     assert j2.id in q.jobs()
+
+
+def test_wildcards_resolved_per_seed_and_stored_in_metadata(tmp_path):
+    # with a wildcards_dir, each task's prompt is resolved with its own seed;
+    # the resolved text (not the raw prompt) is what lands in the PNG metadata
+    (tmp_path / "mood.txt").write_text("sunny\nstormy\n", encoding="utf-8")
+    backend = MockBackend()
+    events = []
+    q, _ = _queue(backend, events, wildcards_dir=tmp_path)
+    job = q.submit(
+        "m",
+        GenerateRequest(prompt="a __mood__ day", width=8, height=8, steps=1, seed=10),
+        2,
+    )
+    _wait_done(q, job.id)
+    prompts = []
+    for i in (0, 1):
+        meta = metadata.read_metadata(job.results[i])
+        assert meta["prompt"].startswith("a ") and meta["prompt"].endswith(" day")
+        assert meta["prompt"].split()[1] in {"sunny", "stormy"}
+        assert "__mood__" not in meta["prompt"]  # fully resolved, not raw
+        prompts.append(meta["prompt"])
+    # the two tasks used different seeds -> they may (and across many runs do)
+    # resolve to different lines; at minimum both are valid resolutions
+    assert all(p in ("a sunny day", "a stormy day") for p in prompts)
+
+
+def test_wildcard_error_settles_task_with_error_event(tmp_path):
+    # a per-task WildcardError (shouldn't normally reach the worker, since it
+    # is validated at submit) is surfaced as an error event, not a crash
+    backend = MockBackend()
+    events = []
+    q, _ = _queue(backend, events, wildcards_dir=tmp_path)
+    job = q.submit(
+        "m",
+        GenerateRequest(prompt="a __ghost__ day", width=8, height=8, steps=1, seed=1),
+        1,
+    )
+    # an error settles the task (finished) without producing a result, so
+    # wait on done_emitted rather than completed==batch_size
+    deadline = time.time() + 10
+    while time.time() < deadline and not job.done_emitted:
+        time.sleep(0.02)
+    assert job.done_emitted
+    assert any(e["type"] == "error" and "not found" in e["message"] for e in events)
+    assert job.results == {}
 
 
 def test_live_image_ids_contains_results_and_source():

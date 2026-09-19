@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from io import BytesIO
 from pathlib import Path
@@ -15,11 +16,12 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel, Field, ValidationError
 
-from . import metadata
+from . import metadata, wildcards
 from .backends import DEFAULT_CFG, GenerateRequest, ModelBackend
 from .canvas import Canvas
 from .config import Config, ensure_dirs, load_config
 from .generation import INPAINT_PADDING, GenerationError, with_inpaint
+from .lora_settings import LoraSettings, all_settings, save_settings
 from .model_configs import (
     ConfigError,
     ConfigStore,
@@ -28,16 +30,16 @@ from .model_configs import (
     resolve_settings,
 )
 from .models import ModelRegistry, list_loras, resolve_lora_names
-from .lora_settings import LoraSettings, all_settings, save_settings
 from .paths import next_output_path
-from .sag import SelfAttentionGuidance
-from .soft_inpaint import SoftInpainting
 from .presets import Preset, PresetError, PresetStore
 from .queue import GenerationQueue
+from .sag import SelfAttentionGuidance
 from .segmentation import SegmentationError, SegmentationService
+from .soft_inpaint import SoftInpainting
 from .styles import Style, StyleStore, apply_styles
 from .uistate import UiState, UiStateStore
 
+log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 
@@ -242,7 +244,8 @@ def create_app(
         registry = ModelRegistry(config, emit=hub.emit,
                                  gpu=select_gpu(config.primary_gpu,
                                                 config.ignore_gpus))
-    queue = GenerationQueue(registry=registry, canvas=canvas, emit=hub.emit)
+    queue = GenerationQueue(registry=registry, canvas=canvas, emit=hub.emit,
+                            wildcards_dir=config.wildcards_dir)
     queue.start()
 
     app = FastAPI(title="imagagen", lifespan=_lifespan(segmentation))
@@ -506,6 +509,16 @@ def create_app(
             body.prompt, body.negative_prompt, body.styles,
             app.state.style_store.get,
         )
+        # Wildcards are validated up front (seed-independent structural
+        # errors: a missing file or a recursion) so the whole job is rejected
+        # with a clear message instead of failing per-image; the actual
+        # per-seed line picks happen later, in the queue.
+        try:
+            wildcards.validate(prompt, config.wildcards_dir)
+            wildcards.validate(negative_prompt, config.wildcards_dir)
+        except wildcards.WildcardError as e:
+            log.error("generate: %s", e)
+            return JSONResponse({"error": str(e)}, status_code=400)
         meta_styles = [
             {
                 "name": name,

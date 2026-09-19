@@ -12,15 +12,20 @@ Interrupting a job drops its pending tasks and cancels any in-flight image
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
+from . import wildcards
 from .backends import GenerateRequest, ModelBackend
 from .generation import InpaintPlan
 from .gpus import available_gpus
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,10 +63,19 @@ class _Task:
 
 
 class GenerationQueue:
-    def __init__(self, registry, canvas, emit: Callable[[dict], None]) -> None:
+    def __init__(
+        self,
+        registry,
+        canvas,
+        emit: Callable[[dict], None],
+        wildcards_dir: Path | None = None,
+    ) -> None:
         self.registry = registry
         self.canvas = canvas
         self.emit = emit
+        # when set, each task's prompt / negative prompt is wildcard-resolved
+        # per seed before generation (None = no wildcard processing)
+        self._wildcards_dir = wildcards_dir
         self._jobs: dict[int, Job] = {}
         self._pending: list[_Task] = []
         self._pending_lock = threading.Lock()
@@ -222,6 +236,32 @@ class GenerationQueue:
         d.update(seed=task.seed, model_id=backend.model_id, model_name=backend.name)
         req = GenerateRequest.model_validate(d)
 
+        # Wildcards are resolved per task, using this task's seed: each image
+        # of a batch may pick different wildcard lines. The resolved text is
+        # what the model sees AND what the image metadata stores (the raw
+        # prompt can't be re-rolled to reproduce the pick). A structural
+        # error (missing file / recursion) was already rejected at submit
+        # time, so this is a defensive guard only.
+        meta_prompt = job.meta_prompt
+        meta_negative = job.meta_negative
+        # only touch the request / metadata when a reference is actually
+        # present: without wildcards the (raw + styles) round-trip behaviour
+        # is left exactly as before
+        if self._wildcards_dir is not None and (
+            wildcards.has_wildcards(req.prompt)
+            or wildcards.has_wildcards(req.negative_prompt)
+        ):
+            try:
+                prompt = wildcards.resolve(req.prompt, self._wildcards_dir, task.seed)
+                negative = wildcards.resolve(req.negative_prompt, self._wildcards_dir, task.seed)
+            except wildcards.WildcardError as e:
+                log.error("job %s task %d: %s", job.id, task.index, e)
+                self.emit({"type": "error", "job": job.id, "message": str(e)})
+                self._settle(job, task.index)
+                return
+            req = req.model_copy(update={"prompt": prompt, "negative_prompt": negative})
+            meta_prompt, meta_negative = prompt, negative
+
         def progress(fraction: float, message: str) -> None:
             if not job.interrupted:
                 self.emit({"type": "progress", "job": job.id, "index": task.index,
@@ -250,7 +290,10 @@ class GenerationQueue:
             out_image = job.plan.postprocess(result.image)
         else:
             out_image = result.image
-        png, info = _result_to_png(backend, req, result, out_image, job)
+        png, info = _result_to_png(
+            backend, req, result, out_image, job,
+            meta_prompt=meta_prompt, meta_negative=meta_negative,
+        )
         job.results[task.index] = png
         # register the result as a persistent canvas entity (a new image with
         # an empty draw history); it inherits its mask state (current mask
@@ -299,7 +342,8 @@ def _plain_png(image: np.ndarray) -> bytes:
 
 def _result_to_png(
     backend: ModelBackend, req: GenerateRequest, result, image: np.ndarray,
-    job: Job | None = None,
+    job: Job | None = None, meta_prompt: str | None = None,
+    meta_negative: str | None = None,
 ) -> tuple[bytes, dict]:
     """Return (PNG bytes, text-chunk dict). The dict carries the metadata
     onto the canvas so saves of the canvas keep it too."""
@@ -311,13 +355,20 @@ def _result_to_png(
 
     # width/height are the requested generation size, like A1111/Forge
     # (their inpaint PNGs carry the inpaint box size, not the final canvas
-    # size), so importing the PNG restores the generation settings; the
-    # prompt/negative prompt are the user's raw ones (styles are recorded
-    # separately, not pre-applied)
+    # size), so importing the PNG restores the generation settings. The
+    # prompt/negative prompt default to the user's raw ones (styles are
+    # recorded separately, not pre-applied); the per-task overrides carry
+    # the fully wildcard-resolved text instead.
+    if meta_prompt is None:
+        meta_prompt = job.meta_prompt if (job and job.meta_prompt is not None) else req.prompt
+    if meta_negative is None:
+        meta_negative = (
+            job.meta_negative if (job and job.meta_negative is not None)
+            else req.negative_prompt
+        )
     params = metadata.build_parameters(
-        prompt=job.meta_prompt if (job and job.meta_prompt is not None) else req.prompt,
-        negative_prompt=(job.meta_negative if (job and job.meta_negative is not None)
-                         else req.negative_prompt),
+        prompt=meta_prompt,
+        negative_prompt=meta_negative,
         steps=req.steps,
         sampler=req.sampler or backend.default_sampler,
         scheduler=req.scheduler or backend.default_scheduler,

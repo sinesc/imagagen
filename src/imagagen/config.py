@@ -46,6 +46,10 @@ class Config:
         return self.root / "brushes"
 
     @property
+    def wildcards_dir(self) -> Path:
+        return self.root / "wildcards"
+
+    @property
     def presets_dir(self) -> Path:
         return self.root / "presets"
 
@@ -200,6 +204,7 @@ def ensure_dirs(config: Config) -> None:
         config.segmentation_models_dir,
         config.loras_dir,
         config.brushes_dir,
+        config.wildcards_dir,
         config.presets_dir,
         config.model_configs_dir,
         config.output_dir,

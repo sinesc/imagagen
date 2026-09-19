@@ -121,6 +121,47 @@ def test_generate_batch_seeds_and_completion_order(client, tmp_path):
         assert sorted(parsed_seeds) == [100, 101, 102]
 
 
+def test_generate_missing_wildcard_rejected(client, tmp_path):
+    # an unresolved wildcard is a submit-time error: a 400 with a message
+    # (terminal + UI status line), and no job is queued
+    r = client.post("/api/generate", json={
+        "prompt": "a __nope__ day", "width": 64, "height": 64, "steps": 2,
+    })
+    assert r.status_code == 400
+    assert "not found" in r.json()["error"]
+    assert "job_id" not in r.json()
+
+
+def test_generate_recursion_wildcard_rejected(client, tmp_path):
+    (tmp_path / "wildcards").mkdir(exist_ok=True)
+    (tmp_path / "wildcards" / "loop.txt").write_text("spins __loop__", encoding="utf-8")
+    r = client.post("/api/generate", json={
+        "prompt": "a __loop__ day", "width": 64, "height": 64, "steps": 2,
+    })
+    assert r.status_code == 400
+    assert "recursion" in r.json()["error"]
+
+
+def test_generate_wildcard_resolved_in_metadata(client, tmp_path):
+    from imagagen import metadata
+
+    (tmp_path / "wildcards").mkdir(exist_ok=True)
+    (tmp_path / "wildcards" / "mood.txt").write_text("sunny\nstormy\n", encoding="utf-8")
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": "a __mood__ day", "width": 64, "height": 64, "steps": 2,
+            "seed": 5, "batch_size": 2,
+        })
+        job_id = r.json()["job_id"]
+        assert isinstance(job_id, int)
+        _wait_for(client, ws, "done")
+        for i in range(2):
+            m = metadata.read_metadata(client.get(f"/api/thumb/{job_id}/{i}.png").content)
+            # the metadata stores the fully resolved prompt, not the raw one
+            assert "__mood__" not in m["prompt"]
+            assert m["prompt"] in ("a sunny day", "a stormy day")
+
+
 def test_interrupt_drops_partial(client, tmp_path):
     with client.websocket_connect("/api/ws") as ws:
         r = client.post("/api/generate", json={
