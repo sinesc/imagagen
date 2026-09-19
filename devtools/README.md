@@ -9,6 +9,8 @@ the project root with the venv interpreter, e.g.:
 
 | script | purpose |
 | --- | --- |
+| `smoke.sh` | Shell smoke test: starts the mock server against a temp project root (default port 8099, `PORT` env to override) and hits `/api/health` + `/api/generate`. Run: `bash devtools/smoke.sh`. |
+| `make_forge_presets.py` | One-off generator for the 24 built-in presets, created from the old Forge `config-img2img.json` / `config-txt2img.json`. Idempotent (overwrites in place). Run: `.venv/bin/python devtools/make_forge_presets.py`. |
 | `ascii_view.py <png> [w] [h]` | Render an image as ASCII art + per-region average colors. The main "vision" substitute: shows composition, blank corners, shadows, flat/blank regions. |
 | `gen.py "prompt" [--w/--h/--steps/--cfg/--seed/--sampler/--scheduler/--model/--out]` | Generate directly through the backend (no server). Prints timing, VRAM before/after, and a noise-vs-structure check (`structure(16x16)` should be well below `std` for a real image). |
 | `seed_check.py` | Regression test for seed determinism: same seed x3 must be byte-identical (default + SDE samplers), different seeds must differ. Exits non-zero on failure. |
