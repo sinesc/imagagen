@@ -23,4 +23,3 @@ output/*
 !presets/.gitkeep
 !model-configs/.gitkeep
 !cache/.gitkeep
-!output/.gitkeep
