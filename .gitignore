@@ -17,9 +17,11 @@ presets/*
 model-configs/*
 cache/*
 output/*
+wildcards/*
 !models/.gitkeep
 !loras/.gitkeep
 !brushes/.gitkeep
 !presets/.gitkeep
 !model-configs/.gitkeep
 !cache/.gitkeep
+!wildcards/.gitkeep
