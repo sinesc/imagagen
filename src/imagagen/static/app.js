@@ -1954,13 +1954,18 @@ document.addEventListener("keydown", (e) => {
   });
 });
 
-// B / M switch tools (when not typing in a field)
+// B / M / C switch tools (when not typing in a field); CTRL (clone tool,
+// a source set) makes the source follow the cursor until it is released
 document.addEventListener("keydown", (e) => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
   if (typing) return;
   if (e.key === "b" || e.key === "B") switchTool("brush");
   else if (e.key === "m" || e.key === "M") switchTool("mask");
   else if (e.key === "c" || e.key === "C") switchTool("clone");
+  else if (e.key === "Control") cloneGestureStart();
+});
+document.addEventListener("keyup", (e) => {
+  if (e.key === "Control") cloneGestureEnd();
 });
 
 // -------- sidebar resize: drag the border between the sidebar and stage --------

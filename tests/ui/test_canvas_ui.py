@@ -517,6 +517,101 @@ def test_clone_opacity_is_not_stacked(page, server):
         f"committed stroke stacked: {canvas_px(base, 150, 75)}, want ~{exp}"
 
 
+def test_clone_ctrl_moves_source_relative(page, server):
+    # CTRL gesture: with a source S set, holding CTRL makes the source
+    # follow the cursor 1:1, at the relative offset frozen when CTRL went
+    # down. Strokes pressed during the gesture use the moved source, and
+    # the source reverts to S when CTRL is released (after the stroke).
+    base, _ = server
+    _open(page, base)
+    _two_band(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    page.keyboard.press("c")
+    dot(page, 30, 75, shift=True)  # source S
+
+    page.mouse.move(*screen_pos(page, 140, 75))
+    page.keyboard.down("Control")
+    assert page.evaluate("view.cloneGesture") == pytest.approx([-110, 0])
+    # moving the cursor moves the source 1:1 with it
+    page.mouse.move(*screen_pos(page, 150, 75))
+    assert page.evaluate("cloneSourcePoint()") == pytest.approx([40, 75], abs=0.5)
+    # pressing now draws with the moved source: (150..170) <- (40..60) LEFT
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 170, 75), steps=5)
+    assert _screen_px(page, 160, 75) == list(LEFT), "live preview (moved source)"
+    page.mouse.up()
+    # CTRL still held: the gesture continues; the next click stamps at the
+    # same relative offset: (180..190) <- (70..80) LEFT
+    page.mouse.move(*screen_pos(page, 180, 75))
+    assert page.evaluate("cloneSourcePoint()") == pytest.approx([70, 75], abs=0.5)
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 190, 75), steps=3)
+    page.mouse.up()
+    # releasing CTRL reverts the source to the picked S
+    page.keyboard.up("Control")
+    assert page.evaluate("view.cloneGesture") is None
+    assert page.evaluate("cloneSourcePoint()") == pytest.approx([30, 75], abs=0.5)
+    assert canvas_px(base, 160, 75) == LEFT
+    assert canvas_px(base, 180, 75) == LEFT
+
+
+def test_clone_ctrl_release_mid_stroke_reverts_after(page, server):
+    # releasing CTRL during a clone stroke only takes effect after the
+    # stroke ends: the source reverts at mouseup, not mid-stroke
+    base, _ = server
+    _open(page, base)
+    _two_band(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    page.keyboard.press("c")
+    dot(page, 30, 75, shift=True)
+    page.mouse.move(*screen_pos(page, 140, 75))
+    page.keyboard.down("Control")
+    page.mouse.move(*screen_pos(page, 150, 75))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 170, 75), steps=5)
+    page.keyboard.up("Control")  # mid-stroke
+    assert page.evaluate("view.cloneGesture") is not None
+    assert _screen_px(page, 160, 75) == list(LEFT)
+    page.mouse.up()
+    assert wait_until(lambda: page.evaluate("view.cloneGesture") is None)
+    assert page.evaluate("cloneSourcePoint()") == pytest.approx([30, 75], abs=0.5)
+
+
+def test_clone_ctrl_without_source_is_inert(page, server):
+    base, _ = server
+    _open(page, base)
+    _two_band(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    page.keyboard.press("c")
+    page.mouse.move(*screen_pos(page, 100, 75))
+    page.keyboard.down("Control")
+    page.mouse.move(*screen_pos(page, 120, 75))
+    assert page.evaluate("view.cloneGesture") is None
+    assert page.evaluate("view.cloneSource") is None
+    page.keyboard.up("Control")
+
+
+def test_clone_shift_click_reanchors_ctrl_gesture(page, server):
+    # shift-clicking during the gesture re-picks S and lands the moved
+    # source on it (the relative offset resets to zero)
+    base, _ = server
+    _open(page, base)
+    _two_band(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    page.keyboard.press("c")
+    dot(page, 30, 75, shift=True)
+    page.mouse.move(*screen_pos(page, 140, 75))
+    page.keyboard.down("Control")
+    dot(page, 40, 75, shift=True)  # new S, cursor on it
+    assert page.evaluate("view.cloneSource") == pytest.approx([40, 75], abs=0.5)
+    assert page.evaluate("cloneSourcePoint()") == pytest.approx([40, 75], abs=0.5)
+    page.keyboard.up("Control")
+
+
 def test_clone_preview_held_until_server_response(page, server):
     """No flicker on release: the on-screen clone preview must stay visible
     while the commit round trip is in flight (same invariant as strokes)."""

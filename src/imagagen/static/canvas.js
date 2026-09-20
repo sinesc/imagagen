@@ -21,6 +21,8 @@ const view = {
   dpr: 1,
   stroke: null, // {tool, points: [[x,y]...], erase, cloneOffset}
   cloneSource: null, // [x,y] canvas px: clone tool's picked source S
+  cloneGesture: null, // [ox,oy] canvas px: CTRL held -> the source follows
+  // the cursor at this relative offset (a temporary move of the picked S)
   pan: null,
   cursor: null, // [mx,my] in CSS px relative to the canvas element
   refreshing: false, // stroke commit in flight: don't clobber the preview
@@ -149,6 +151,7 @@ async function viewRefresh() {
   // keep the current zoom/pan unless the image appeared or changed size
   if (!had || view.w !== oldW || view.h !== oldH) {
     view.cloneSource = null; // old source point no longer makes sense
+    view.cloneGesture = null;
     viewResize(); // the canvas element may have been hidden (sized to 0)
     viewFit();
   }
@@ -213,9 +216,52 @@ function drawCursor(ctx) {
   drawBrushRing(ctx, x, y);
 }
 
-// crosshairs for the clone tool: at the picked source S, and (during a
-// clone stroke) at the live sample point (cursor + frozen offset), with a
-// faint line between the two so the user sees where pixels are copied from
+// CTRL gesture (clone tool, a source S is set): the source moves 1:1 with
+// the cursor, at the relative offset frozen when CTRL went down. Strokes
+// pressed during the gesture use the moved source; releasing CTRL reverts
+// the source to S (only after the current stroke, if one is in flight).
+let cloneCtrl = false;
+
+function cloneGestureStart() {
+  if (cloneCtrl) return; // first press freezes the offset
+  cloneCtrl = true;
+  if (view.cloneGesture || Tools.current !== "clone" || !view.cloneSource) return;
+  const p = cursorCanvas();
+  if (!p) return;
+  // source = cursor + (S - cursor): it starts at S and tracks the cursor
+  view.cloneGesture = [view.cloneSource[0] - p[0], view.cloneSource[1] - p[1]];
+  viewRedraw();
+}
+
+function cloneGestureEnd() {
+  if (!cloneCtrl) return;
+  cloneCtrl = false;
+  if (!view.cloneGesture) return;
+  if (view.stroke) return; // only takes effect after the stroke ends
+  view.cloneGesture = null;
+  viewRedraw();
+}
+
+// the current cursor in canvas px (null when off the canvas)
+function cursorCanvas() {
+  if (!view.cursor) return null;
+  return [(view.cursor[0] - view.ox) / view.scale,
+          (view.cursor[1] - view.oy) / view.scale];
+}
+
+// the clone source as it currently is: the picked S, or (while the CTRL
+// gesture is active) the moved source following the cursor
+function cloneSourcePoint() {
+  if (view.cloneGesture) {
+    const p = cursorCanvas();
+    if (p) return [p[0] + view.cloneGesture[0], p[1] + view.cloneGesture[1]];
+  }
+  return view.cloneSource;
+}
+
+// crosshairs for the clone tool: at the source, and (during a clone stroke)
+// at the live sample point (cursor + frozen offset), with a faint line
+// between the two so the user sees where pixels are copied from
 function drawCloneCrosshairs(ctx) {
   if (!view.has || Tools.current !== "clone") return;
   const line = (x1, y1, x2, y2, w, style) => {
@@ -234,14 +280,14 @@ function drawCloneCrosshairs(ctx) {
     line(x, y - L, x, y + L, 1 / view.scale, "rgba(255,255,255,0.95)");
   };
   ctx.save();
-  if (view.cloneSource) {
-    cross(...view.cloneSource);
-    drawBrushRing(ctx, ...view.cloneSource); // the brush at the source too
+  const src = cloneSourcePoint();
+  if (src) {
+    cross(...src);
+    drawBrushRing(ctx, ...src); // the brush at the source too
   }
-  if (view.stroke && view.stroke.tool === "clone" && view.cloneSource && view.cursor) {
+  if (view.stroke && view.stroke.tool === "clone" && src && view.cursor) {
     const [x, y] = cloneCursorSample();
-    line(view.cloneSource[0], view.cloneSource[1], x, y,
-         1 / view.scale, "rgba(255,255,255,0.35)");
+    line(src[0], src[1], x, y, 1 / view.scale, "rgba(255,255,255,0.35)");
     cross(x, y);
   }
   ctx.restore();
@@ -360,10 +406,14 @@ function setupCanvasInput() {
         // pick/move the clone source S; not a stroke (no pointer capture,
         // so the following pointerup has nothing to commit)
         view.cloneSource = [p[0], p[1]];
+        // re-anchor an active CTRL gesture: the moved source lands on S
+        // (the cursor is on S, so the relative offset is zero)
+        if (view.cloneGesture) view.cloneGesture = [0, 0];
         viewRedraw();
         return;
       }
-      if (!view.cloneSource) {
+      const src = cloneSourcePoint();
+      if (!src) {
         setStatus("clone: shift-click to pick a source point first");
         return;
       }
@@ -373,8 +423,7 @@ function setupCanvasInput() {
         size: brushSizeCanvas(),
         // frozen for the whole stroke, integer canvas px, so the client
         // preview and the server commit sample identical pixels
-        cloneOffset: [Math.round(view.cloneSource[0] - p[0]),
-                      Math.round(view.cloneSource[1] - p[1])],
+        cloneOffset: [Math.round(src[0] - p[0]), Math.round(src[1] - p[1])],
       };
       c.setPointerCapture(e.pointerId);
       viewRedraw();
@@ -439,6 +488,9 @@ function setupCanvasInput() {
     if (!view.stroke) return;
     const s = view.stroke;
     const st = Tools.get();
+    // CTRL released during the stroke: the source reverts only now
+    // (no redraw -- the held frame stays until viewRefresh redraws)
+    if (view.cloneGesture && !cloneCtrl) view.cloneGesture = null;
     // Freeze the stroke BEFORE the round trip: stop recording points and
     // hold the last frame (with the preview) until the committed pixels
     // arrive -- otherwise the stroke would keep following the cursor while
