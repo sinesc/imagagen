@@ -21,6 +21,7 @@ wildcards/*
 !models/.gitkeep
 !loras/.gitkeep
 !brushes/.gitkeep
+!brushes/soft.png
 !presets/.gitkeep
 !model-configs/.gitkeep
 !cache/.gitkeep
