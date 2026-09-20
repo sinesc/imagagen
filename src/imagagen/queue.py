@@ -166,6 +166,10 @@ class GenerationQueue:
             self._next_job_id += 1
             live = self._live_image_ids_locked()
         self.canvas.anchor(live)
+        # A new generation resets the crop-thumbnail session: the client
+        # clears its crop thumbnails when it generates, so pinned crop
+        # entities are no longer reachable and can be evicted.
+        self.canvas.release_pins()
         self.canvas.evict_stale()
         with self._cond:
             for i in range(batch_size):

@@ -25,6 +25,8 @@ const view = {
   cloneSource: null, // [x,y] canvas px: clone tool's picked source S
   cloneGesture: null, // [ox,oy] canvas px: CTRL held -> the source follows
   // the cursor at this relative offset (a temporary move of the picked S)
+  crop: null, // {sx, sy, ex, ey} raw canvas px of the crop tool's drag; the
+  // region used is its clamped intersection with the image (cropRect)
   pan: null,
   cursor: null, // [mx,my] in CSS px relative to the canvas element
   refreshing: false, // stroke commit in flight: don't clobber the preview
@@ -92,6 +94,7 @@ function viewRedraw() {
   const erasing = view.stroke && view.stroke.erase;
   if (view.mask && !erasing) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
   if (view.stroke) drawPreview(ctx);
+  if (view.crop) drawCropOverlay(ctx);
   drawCursor(ctx);
   drawCloneCrosshairs(ctx);
   $("zoom-label").textContent = `${Math.round(view.scale * 100)}%`;
@@ -214,6 +217,7 @@ function drawBrushRing(ctx, x, y) {
 // outline of the brush footprint at the cursor (pre-draw preview)
 function drawCursor(ctx) {
   if (!view.has || !view.cursor) return;
+  if (Tools.current === "crop") return; // the crop tool shows a rectangle, not a brush
   const x = (view.cursor[0] - view.ox) / view.scale;
   const y = (view.cursor[1] - view.oy) / view.scale;
   drawBrushRing(ctx, x, y);
@@ -459,6 +463,59 @@ function drawPreview(ctx) {
   ctx.globalAlpha = 1;
 }
 
+// ---------------- crop tool ----------------
+
+// The crop selection's actual region: the drag's bounding rect clamped to
+// the image bounds, so a selection that starts or ends outside the image
+// still crops the intersection. Null when the intersection is empty.
+function cropRect() {
+  if (!view.crop) return null;
+  const { sx, sy, ex, ey } = view.crop;
+  const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const x0 = cl(Math.min(sx, ex), 0, view.w);
+  const y0 = cl(Math.min(sy, ey), 0, view.h);
+  const x1 = cl(Math.max(sx, ex), 0, view.w);
+  const y1 = cl(Math.max(sy, ey), 0, view.h);
+  if (x1 - x0 < 1 || y1 - y0 < 1) return null;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+// preview while dragging: dim everything outside the crop rect and outline it
+function drawCropOverlay(ctx) {
+  const r = cropRect();
+  if (!r) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, view.w, view.h);
+  ctx.rect(r.x, r.y, r.w, r.h);
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fill("evenodd");
+  ctx.lineWidth = 2 / view.scale; // dark halo, constant on screen
+  ctx.strokeStyle = "rgba(0,0,0,0.7)";
+  ctx.strokeRect(r.x, r.y, r.w, r.h);
+  ctx.lineWidth = 1 / view.scale;
+  ctx.strokeStyle = "rgba(255,255,255,0.95)";
+  ctx.strokeRect(r.x, r.y, r.w, r.h);
+  ctx.restore();
+}
+
+// pointerup on a finished drag: commit the (already clamped) rect to the
+// server; a zero-area selection (plain click) is a no-op
+function commitCrop() {
+  const r = cropRect();
+  view.crop = null;
+  viewRedraw();
+  if (!r) return;
+  doCrop(r.x, r.y, r.w, r.h); // app.js: POST + thumbnail update + refresh
+}
+
+// Esc / pointercancel / tool switch: abandon the selection, no request
+function abortCrop() {
+  if (!view.crop) return;
+  view.crop = null;
+  viewRedraw();
+}
+
 // ---------------- input ----------------
 
 function canvasPoint(e) {
@@ -484,6 +541,15 @@ function setupCanvasInput() {
     if (e.button !== 0) return;
     const tool = Tools.current;
     const p = canvasPoint(e);
+    if (tool === "crop") {
+      // start a rectangle selection; the pointer may be anywhere on the
+      // element (including outside the image) -- the used region is the
+      // clamped intersection, computed in cropRect
+      view.crop = { sx: p[0], sy: p[1], ex: p[0], ey: p[1] };
+      c.setPointerCapture(e.pointerId);
+      viewRedraw();
+      return;
+    }
     if (tool === "clone") {
       if (e.shiftKey) {
         // pick/move the clone source S; not a stroke (no pointer capture,
@@ -549,6 +615,12 @@ function setupCanvasInput() {
     if (!view.has) return;
     const oldCursor = view.cursor;
     const p = canvasPoint(e); // also updates view.cursor
+    if (view.crop) {
+      view.crop.ex = p[0];
+      view.crop.ey = p[1];
+      viewRedraw();
+      return;
+    }
     let redraw = false;
     if (view.stroke) {
       const n = view.stroke.points.length;
@@ -639,8 +711,14 @@ function setupCanvasInput() {
       view.refreshing = false;
     }
   };
-  c.addEventListener("pointerup", endStroke);
-  c.addEventListener("pointercancel", endStroke);
+  c.addEventListener("pointerup", (e) => {
+    if (view.crop) { commitCrop(); return; }
+    endStroke();
+  });
+  c.addEventListener("pointercancel", (e) => {
+    if (view.crop) { abortCrop(); return; }
+    endStroke();
+  });
 
   // wheel zoom, anchored at the cursor
   c.addEventListener(

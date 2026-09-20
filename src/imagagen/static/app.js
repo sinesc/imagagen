@@ -658,7 +658,9 @@ function renderThumbs() {
     image.src = t.url;
     image.title = t.source
       ? "source image (click to restore)"
-      : `#${i} seed ${t.seed}`;
+      : t.crop
+        ? "crop (click to restore)"
+        : `#${i} seed ${t.seed}`;
     if (t.source) image.classList.add("source");
     if (i === state.currentThumb) image.classList.add("selected");
     image.onmouseenter = () => thumbPreviewShow(t.url);
@@ -682,6 +684,37 @@ function clearThumbs() {
   state.thumbs = [];
   state.currentThumb = -1;
   renderThumbs();
+}
+
+// ---------------- crop tool (drag a rectangle) ----------------
+// A crop turns the displayed image into a NEW canvas entity: the pre-crop
+// image stays (pinned server-side) as a restorable thumbnail and the crop
+// becomes a new, immediately selected thumbnail — unlike image generation,
+// which only auto-selects on an empty canvas. The rect sent is already the
+// clamped image/selection intersection (canvas.js clamps it to the bounds);
+// the server re-clamps defensively.
+function addCropThumbs(r) {
+  // the not-yet-cropped image becomes a thumbnail, unless it already is one
+  // (e.g. a generation result currently on the canvas)
+  if (!state.thumbs.some((t) => t.image_id === r.prev_image_id)) {
+    state.thumbs.push({ image_id: r.prev_image_id, url: r.prev_url, crop: true });
+  }
+  // the crop is a new thumbnail and, unlike generation, immediately selected
+  state.thumbs.push({ image_id: r.crop_image_id, url: r.crop_url, crop: true });
+  state.currentThumb = state.thumbs.length - 1;
+  renderThumbs();
+}
+
+async function doCrop(x, y, w, h) {
+  try {
+    const r = await api("/api/canvas/crop", { x, y, width: w, height: h });
+    storeUndoFlags(r);
+    addCropThumbs(r);
+    await viewRefresh();
+  } catch (e) {
+    setStatus(`crop failed: ${e.message}`, true);
+    viewRedraw();
+  }
 }
 
 function setGenerating(on) {
@@ -1172,10 +1205,16 @@ function syncToolbar() {
   $("tool-mask").classList.toggle("active", Tools.current === "mask");
   $("tool-clone").classList.toggle("active", Tools.current === "clone");
   $("tool-smudge").classList.toggle("active", Tools.current === "smudge");
+  $("tool-crop").classList.toggle("active", Tools.current === "crop");
+  const cropMode = Tools.current === "crop";
   // The colour swatch always edits the brush tool's remembered colour
   // (mask strokes ignore colour), so it stays live in mask mode too;
   // the clone and smudge tools have no colour at all, so disable it there.
-  $("brush-color").disabled = ["clone", "smudge", "mask"].includes(Tools.current);
+  // Crop disables all four brush controls entirely.
+  $("brush-color").disabled = ["clone", "smudge", "mask", "crop"].includes(Tools.current);
+  $("brush-size").disabled = cropMode;
+  $("brush-screen").disabled = cropMode;
+  $("brush-opacity").disabled = cropMode;
   $("brush-color").value = Tools.state.brush.color || "#ffffff";
   if (brushNames.includes(st.brush)) $("brush").value = st.brush;
   $("brush-size").value = sliderFromSize(st.size);
@@ -1186,6 +1225,9 @@ function syncToolbar() {
 }
 
 function switchTool(t) {
+  // switching to a DIFFERENT tool abandons an in-progress crop selection
+  // (re-arming the crop tool itself, e.g. tapping X mid-drag, does not)
+  if (view.crop && Tools.current !== t) abortCrop();
   Tools.switch(t);
   syncToolbar();
   syncUndoButtons();
@@ -1420,6 +1462,7 @@ function wireToolbar() {
   $("tool-mask").onclick = () => switchTool("mask");
   $("tool-clone").onclick = () => switchTool("clone");
   $("tool-smudge").onclick = () => switchTool("smudge");
+  $("tool-crop").onclick = () => switchTool("crop");
   $("brush").onchange = (e) => {
     Tools.get().brush = e.target.value;
     Tools.save();
@@ -1965,6 +2008,9 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "m" || e.key === "M") switchTool("mask");
   else if (e.key === "c" || e.key === "C") switchTool("clone");
   else if (e.key === "s" || e.key === "S") switchTool("smudge");
+  else if (e.key === "x" || e.key === "X") switchTool("crop");
+  // Esc while dragging the crop rectangle aborts the selection
+  else if (e.key === "Escape" && view.crop) abortCrop();
   else if (e.key === "Control") cloneGestureStart();
 });
 document.addEventListener("keyup", (e) => {

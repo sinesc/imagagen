@@ -240,6 +240,15 @@ class SelectBody(BaseModel):
     id: str
 
 
+class CropBody(BaseModel):
+    # the crop rect in canvas px; the server clamps it to the image bounds
+    # (a drag that runs past the edge still crops the intersection)
+    x: float
+    y: float
+    width: float = Field(..., gt=0)
+    height: float = Field(..., gt=0)
+
+
 def create_app(
     config: Config | None = None,
     backend: ModelBackend | None = None,
@@ -746,6 +755,31 @@ def create_app(
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         return {"ok": True, **canvas_flags()}
+
+    @app.post("/api/canvas/crop")
+    def canvas_crop(body: CropBody) -> dict:
+        if not canvas.has_image():
+            return JSONResponse({"error": "canvas is empty"}, status_code=400)
+        try:
+            prev_id, crop_id = canvas.crop(body.x, body.y, body.width, body.height)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {
+            "ok": True,
+            "prev_image_id": prev_id,
+            "crop_image_id": crop_id,
+            "prev_url": f"/api/canvas/image.png?id={prev_id}",
+            "crop_url": f"/api/canvas/image.png?id={crop_id}",
+            **canvas_flags(),
+        }
+
+    @app.get("/api/canvas/image.png")
+    def canvas_image_png(id: str) -> Response:
+        """Serve the PNG of any known canvas entity (crop/result thumbnail)."""
+        data = canvas.entity_png(id)
+        if data is None:
+            return Response(status_code=404)
+        return Response(content=data, media_type="image/png")
 
     @app.post("/api/canvas/undo")
     def canvas_undo(body: UndoRedoBody) -> dict:

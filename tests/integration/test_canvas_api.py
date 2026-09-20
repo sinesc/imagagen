@@ -402,3 +402,86 @@ def test_png_meta_not_an_image(tmp_path):
     with _client(tmp_path) as c:
         r = c.post("/api/png-meta", content=b"this is not a png")
         assert r.status_code == 400
+
+
+# ---------------- crop ----------------
+
+def _two_band_png() -> bytes:
+    arr = np.zeros((24, 32, 3), np.uint8)
+    arr[:, :16] = (120, 0, 0)
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_crop_crops_image_and_returns_urls(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c, _two_band_png())
+        r = c.post("/api/canvas/crop", json={"x": 4, "y": 6, "width": 12, "height": 8})
+        assert r.status_code == 200
+        j = r.json()
+        assert j["ok"] is True
+        assert j["prev_image_id"] and j["crop_image_id"]
+        assert j["prev_image_id"] != j["crop_image_id"]
+        assert j["prev_url"].startswith("/api/canvas/image.png?id=")
+        assert j["crop_url"].startswith("/api/canvas/image.png?id=")
+        # the four undo/redo flags are present (canvas-mutating response)
+        for k in ("undo_mask", "redo_mask", "undo_draw", "redo_draw"):
+            assert isinstance(j[k], bool)
+        # the canvas now shows the cropped image (12x8)
+        img = _img(c)
+        assert img.shape == (8, 12, 3)
+        assert img[0, 0][0] == 120  # inside the red left band
+
+
+def test_crop_pre_crop_image_restorable(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c, _two_band_png())
+        j = c.post("/api/canvas/crop", json={"x": 0, "y": 0, "width": 16, "height": 24}).json()
+        # the pre-crop image is servable by id and, when re-selected,
+        # restores the full-size image
+        prev_png = c.get(j["prev_url"])
+        assert prev_png.status_code == 200
+        assert np.asarray(Image.open(io.BytesIO(prev_png.content))).shape == (24, 32, 3)
+        s = c.post("/api/canvas/select", json={"id": j["prev_image_id"]})
+        assert s.status_code == 200 and s.json()["ok"] is True
+        assert _img(c).shape == (24, 32, 3)
+
+
+def test_crop_clamps_to_bounds(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c, _two_band_png())
+        # region runs past the right/bottom edges: clamped to the image
+        r = c.post("/api/canvas/crop", json={"x": 20, "y": 20, "width": 100, "height": 100})
+        assert r.status_code == 200
+        assert _img(c).shape == (4, 12, 3)
+
+
+def test_crop_empty_region_400(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c)  # 32x24
+        r = c.post(
+            "/api/canvas/crop", json={"x": 50, "y": 50, "width": 5, "height": 5}
+        )
+        assert r.status_code == 400
+
+
+def test_crop_empty_canvas_400(tmp_path):
+    with _client(tmp_path) as c:
+        r = c.post(
+            "/api/canvas/crop", json={"x": 0, "y": 0, "width": 5, "height": 5}
+        )
+        assert r.status_code == 400
+
+
+def test_crop_bad_values_422(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c)
+        r = c.post("/api/canvas/crop", json={"x": 0, "y": 0, "width": 0, "height": 5})
+        assert r.status_code == 422
+        assert c.post("/api/canvas/crop", json={"x": 0, "y": 0, "height": 5}).status_code == 422
+
+
+def test_image_png_unknown_id_404(tmp_path):
+    with _client(tmp_path) as c:
+        assert c.get("/api/canvas/image.png?id=nope").status_code == 404

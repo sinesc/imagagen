@@ -116,7 +116,9 @@ class Canvas:
         self._images: dict[str, CanvasImage] = {}
         self._current: str | None = None
         self._anchored: set[str] = set()  # entity ids referenced by a live job
+        self._pinned: set[str] = set()  # entity ids kept as crop thumbnails
         self._upload_counter = 0
+        self._crop_counter = 0
         self._brushes_dir = brushes_dir
         self._brush_cache: dict[str, np.ndarray] = {}  # name -> float32 L array 0..1
 
@@ -246,13 +248,33 @@ class Canvas:
         with self._lock:
             self._anchored = set(ids)
 
+    def pin(self, id: str) -> None:
+        """Keep entity ``id`` alive outside of a job, as a selectable
+        thumbnail. Used by crop: the pre-crop image and the crop result both
+        stay restorable even after they leave the canvas."""
+        with self._lock:
+            self._pin_locked(id)
+
+    def release_pins(self) -> None:
+        """Drop every crop pin and evict what is no longer referenced. Called
+        when a new generation starts (the client clears its crop thumbnails
+        at that point, so the pinned entities are no longer reachable)."""
+        with self._lock:
+            self._pinned.clear()
+            self._evict_stale_locked()
+
+    def _pin_locked(self, id: str) -> None:
+        if id in self._images:
+            self._pinned.add(id)
+
     def evict_stale(self) -> None:
         with self._lock:
             self._evict_stale_locked()
 
     def _evict_stale_locked(self) -> None:
         for eid in list(self._images.keys()):
-            if eid != self._current and eid not in self._anchored:
+            if (eid != self._current and eid not in self._anchored
+                    and eid not in self._pinned):
                 del self._images[eid]
 
     # --- draw (image) history ---
@@ -741,6 +763,51 @@ class Canvas:
             if not ent.mask.any():
                 return False
             return self._set_mask_locked(ent, np.zeros_like(ent.mask))
+
+    # --- crop ---
+    def crop(self, x: float, y: float, w: float, h: float) -> tuple[str, str]:
+        """Crop the displayed image to the ``(x, y, w, h)`` rect (canvas px,
+        clamped to the image bounds). The pre-crop image is kept (pinned) as a
+        restorable entity; the crop becomes a new entity, set current and
+        pinned as well. Returns ``(prev_image_id, crop_image_id)``."""
+        with self._lock:
+            if self._current is None or self._images[self._current].image is None:
+                raise ValueError("cannot crop an empty canvas")
+            ent = self._images[self._current]
+            img = ent.image
+            H, W = img.shape[:2]
+            x0 = int(round(min(max(x, 0.0), W)))
+            y0 = int(round(min(max(y, 0.0), H)))
+            x1 = int(round(min(max(x + w, 0.0), W)))
+            y1 = int(round(min(max(y + h, 0.0), H)))
+            if x1 - x0 < 1 or y1 - y0 < 1:
+                raise ValueError("crop region is empty")
+            sub = img[y0:y1, x0:x1].copy()
+            # the mask is at the image's size, so it is cropped 1:1 with the
+            # image; the mask history does not follow (its frames are at the
+            # source size and a crop is not the aspect-fit transform they
+            # would need), so the new entity starts with an empty history
+            crop_mask = ent.mask[y0:y1, x0:x1].copy()
+            prev_id = self._current
+            eid = f"crop:{self._crop_counter}"
+            self._crop_counter += 1
+            self._images[eid] = CanvasImage(
+                id=eid, png=_encode_png(sub, ent.info), info=dict(ent.info),
+                image=sub, mask=crop_mask, mask_undo=[], mask_redo=[],
+            )
+            # keep both the pre-crop image and the crop restorable as
+            # thumbnails (pinned before entering, so eviction sees them)
+            self._pin_locked(prev_id)
+            self._pin_locked(eid)
+            self._enter_entity_locked(eid)
+            return prev_id, eid
+
+    def entity_png(self, id: str) -> bytes | None:
+        """The cold PNG of any known entity (crop/result thumbnails), or
+        None when it no longer exists."""
+        with self._lock:
+            ent = self._images.get(id)
+            return None if ent is None else ent.png
 
     # --- (de)serialization ---
     def to_png_bytes(self) -> bytes | None:

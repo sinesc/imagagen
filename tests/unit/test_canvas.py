@@ -679,6 +679,111 @@ def test_upload_png_info_survives_strokes():
     assert Image.open(_bytes_io(data)).info.get("parameters") == "seed: 1"
 
 
+# ---------------- crop ----------------
+
+def test_crop_crops_image_and_mask_1_to_1():
+    # left band coloured, right band left black; mask painted on the left
+    arr = np.zeros((24, 32, 3), np.uint8)
+    arr[:, :16] = 100
+    c = Canvas()
+    c.import_image(_png(arr))
+    m = np.zeros((24, 32), dtype=np.uint8)
+    m[4:12, 2:10] = 255
+    c.set_mask(m)
+
+    prev_id, eid = c.crop(4, 6, 12, 8)  # x 4..16, y 6..14
+    assert c.current_id() == eid
+    img = c.image
+    assert img.shape == (8, 12, 3)  # (h, w, ch)
+    assert img[0, 0].tolist() == [100, 100, 100]  # still inside the left band
+    # the mask is cropped 1:1 with the image: the dot (rows 4..11, cols 2..9)
+    # is shifted to the crop origin (6, 4)
+    assert c.mask.shape == (8, 12)
+    assert c.mask[0, 0] == 255  # original (6, 4)
+    assert c.mask[5, 5] == 255  # original (11, 9)
+    assert c.mask[7, 7] == 0  # original (13, 11): outside the dot
+    # the crop's own history stacks start empty
+    ent = c._images[eid]
+    assert ent.undo == [] and ent.redo == []
+    assert ent.mask_undo == [] and ent.mask_redo == []
+    # the pre-crop image is kept as a restorable entity, not mutated
+    prev = c._images[prev_id]
+    assert prev.image is None  # hot cache dropped (it left the canvas)
+    assert prev.png  # cold store intact
+
+
+def test_crop_clamps_to_image_bounds():
+    arr = np.zeros((24, 32, 3), np.uint8)
+    arr[:, :16] = 100
+    c = Canvas()
+    c.import_image(_png(arr))
+    # rect runs past the right and bottom edges -> clamped to the image
+    c.crop(20, 20, 100, 100)
+    assert c.image.shape == (4, 12, 3)  # (24-20, 32-20)
+    assert c.image[0, 0].tolist() == [0, 0, 0]  # orig (20,20): right band
+    # rect starts outside on the top/left -> clamped to the origin
+    c2 = Canvas()
+    c2.import_image(_png(arr.copy()))
+    c2.crop(-10, -10, 40, 40)
+    assert c2.image.shape == (24, 30, 3)  # rect spans x -10..30 -> clamped to 0..30
+    assert c2.image[0, 0].tolist() == [100, 100, 100]
+
+
+def test_crop_empty_region_raises():
+    c = Canvas()
+    c.import_image(_png(np.zeros((16, 16, 3), np.uint8)))
+    with pytest.raises(ValueError):
+        c.crop(5, 5, 0, 0)
+    with pytest.raises(ValueError):
+        c.crop(20, 20, 5, 5)  # entirely outside the image
+
+
+def test_crop_empty_canvas_raises():
+    c = Canvas()
+    with pytest.raises(ValueError):
+        c.crop(0, 0, 10, 10)
+
+
+def test_crop_pins_pre_crop_and_result_against_eviction():
+    arr = np.zeros((24, 32, 3), np.uint8)
+    c = Canvas()
+    c.import_image(_png(arr))
+    prev_id, eid = c.crop(0, 0, 16, 24)
+    # un-anchor everything and evict: both the pre-crop image and the crop
+    # must survive because they are pinned
+    c.anchor(set())
+    c.evict_stale()
+    assert prev_id in c._images
+    assert eid in c._images
+    assert c.current_id() == eid
+    # releasing the pins evicts the one that is no longer current
+    c.release_pins()
+    assert prev_id not in c._images
+    assert eid in c._images  # still current
+
+
+def test_crop_keeps_png_metadata():
+    c = Canvas()
+    c.import_image(_png_with_info(b"seed: 7"))
+    c.crop(0, 0, 16, 24)
+    assert c.png_info().get("parameters") == "seed: 7"
+    data = c.to_png_bytes()
+    assert Image.open(_bytes_io(data)).info.get("parameters") == "seed: 7"
+
+
+def test_entity_png_serves_any_known_entity():
+    arr = np.zeros((16, 16, 3), np.uint8)
+    arr[:, :8] = 5
+    c = Canvas()
+    c.import_image(_png(arr))
+    prev_id, eid = c.crop(0, 0, 8, 16)
+    for eid_, w in ((prev_id, 16), (eid, 8)):
+        data = c.entity_png(eid_)
+        assert data is not None
+        assert Image.open(_bytes_io(data)).size == (w, 16)
+    assert c.entity_png("nope") is None
+
+
 # ---------------- history caps ----------------
 
 def test_draw_history_capped():

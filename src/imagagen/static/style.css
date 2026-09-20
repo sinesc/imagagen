@@ -388,7 +388,9 @@ button.danger:hover { background: #a33; }
   background: #222;
   cursor: pointer;
 }
-#toolbar input[type="color"]:disabled {
+#toolbar input[type="color"]:disabled,
+#toolbar input[type="range"]:disabled,
+#toolbar input[type="checkbox"]:disabled {
   opacity: 0.35;
   cursor: default;
 }

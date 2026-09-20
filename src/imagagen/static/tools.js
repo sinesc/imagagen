@@ -3,7 +3,7 @@
    Persisted in localStorage so the choice survives a page reload. */
 "use strict";
 
-const TOOLS = ["brush", "mask", "clone", "smudge"];
+const TOOLS = ["brush", "mask", "clone", "smudge", "crop"];
 
 const Tools = {
   current: "brush",
@@ -16,6 +16,8 @@ const Tools = {
     clone: { size: 10, opacity: 1, brush: "circle", screen: false },
     // no colour either: smudge smears the image's own pixels
     smudge: { size: 10, opacity: 1, brush: "circle", screen: false },
+    // crop uses no brush at all; entry kept so Tools.get() never returns undefined
+    crop: { size: 10, opacity: 1, brush: "circle", screen: false },
   },
   load() {
     try {
