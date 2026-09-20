@@ -664,12 +664,16 @@ class Canvas:
         centers = self.stamp_positions(points, spacing)
         if not centers:
             return False
-        # mask strokes are hard alpha (no soft blending); opacity still
-        # scales the added/removed alpha
+        # like image strokes, mask strokes use non-stacking opacity: the
+        # added alpha is the fixed brush x 255 x opacity (overlapping
+        # stamps do not stack, so a stroke's look does not depend on how
+        # long it is dragged); erasing caps the remaining alpha at
+        # 255 x (1-opacity), the dual of adding
         a = shape
         mh, mw = ent.mask.shape[:2]
         sh, sw = shape.shape
         m = ent.mask.astype(np.float32)
+        cap = 255.0 * (1.0 - opacity)
         for cx, cy in centers:
             x0, y0 = int(round(cx - sw / 2)), int(round(cy - sh / 2))
             sx0, sy0 = max(-x0, 0), max(-y0, 0)
@@ -677,10 +681,15 @@ class Canvas:
             if ex0 <= sx0 or ey0 <= sy0:
                 continue
             region = m[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0]
-            patch = (a[sy0:ey0, sx0:ex0] * 255.0) * opacity
-            m[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0] = np.clip(
-                region - patch if erase else region + patch, 0, 255
-            )
+            if erase:
+                m[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0] = np.minimum(
+                    region, cap
+                )
+            else:
+                patch = (a[sy0:ey0, sx0:ex0] * 255.0) * opacity
+                m[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0] = np.maximum(
+                    region, patch
+                )
         new_mask = m.astype(np.uint8)
         return self._set_mask_locked(ent, new_mask)
 

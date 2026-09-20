@@ -370,12 +370,28 @@ def test_mask_stroke_paints_and_erases():
     assert (c.mask == 0).all()  # AA fringe erased too (same shape, same opacity)
 
 
-def test_mask_stroke_opacity_clips():
+def test_mask_stroke_opacity_does_not_stack():
+    # like image/clone strokes, one stroke paints at a fixed alpha:
+    # overlapping stamps (and repeated strokes) do not stack the opacity
     c = blank_canvas()
-    c.stroke([(32.0, 24.0)], size=20, opacity=0.5, target="mask")
+    c.stroke([(32.0, 24.0), (52.0, 24.0)], size=20, opacity=0.5, target="mask")
     assert c.mask[24, 32] == 127  # 0.5 * 255, truncated to int
+    assert c.mask[24, 44] == 127  # second stamp of the same stroke
     c.stroke([(32.0, 24.0)], size=20, opacity=0.5, target="mask")
-    assert c.mask[24, 32] >= 254  # additive, capped (127 + 127.5 -> 254)
+    assert c.mask[24, 32] == 127  # a second stroke does not add on
+
+
+def test_mask_erase_caps_alpha_by_opacity():
+    # erasing caps the remaining alpha at 255 * (1-opacity): 0.5 caps at
+    # 127.5, not subtractive 255 - 127.5
+    c = blank_canvas()
+    c.stroke([(32.0, 24.0)], size=20, opacity=1.0, target="mask")
+    assert c.mask[24, 32] == 255
+    c.stroke([(32.0, 24.0)], size=20, opacity=0.5, erase=True, target="mask")
+    assert c.mask[24, 32] == 127
+    # and like add, erase does not stack
+    c.stroke([(32.0, 24.0)], size=20, opacity=0.5, erase=True, target="mask")
+    assert c.mask[24, 32] == 127
 
 
 def test_mask_stroke_does_not_touch_image():

@@ -314,12 +314,14 @@ function newSmudgeWork() {
   return { canvas };
 }
 
-// scratch canvas for the erase preview (punched-out mask overlay)
+// scratch canvases for the erase preview (capped mask overlay + stamp
+// coverage, both layer-sized)
 const eraseLayer = {
   canvas: document.createElement("canvas"),
   w: 0,
   h: 0,
 };
+let eraseCoverage = null;
 
 function drawPreview(ctx) {
   const st = Tools.get();
@@ -387,8 +389,10 @@ function drawPreview(ctx) {
     return;
   }
   if (s.tool === "mask" && s.erase) {
-    // erasing removes the grey overlay: copy it into a scratch canvas, punch
-    // out the stamped spots (destination-out), draw it over the image
+    // erasing caps the mask alpha at 255*(1-opacity) inside the stamped
+    // footprint (non-stacking, same as the server). The overlay alpha is
+    // the mask alpha x 0.9 (buildMaskLayer), so cap it at 0.9*255*
+    // (1-opacity), blended by the stamp coverage for the AA edge
     if (view.mask) {
       let L = eraseLayer;
       if (L.w !== view.w || L.h !== view.h) {
@@ -402,16 +406,45 @@ function drawPreview(ctx) {
       lctx.globalAlpha = 1;
       lctx.clearRect(0, 0, L.canvas.width, L.canvas.height);
       lctx.drawImage(view.mask, 0, 0);
-      lctx.globalCompositeOperation = "destination-out";
-      lctx.globalAlpha = st.opacity; // the server scales removal by opacity
-      lctx.fillStyle = "#000";
+      // union bbox of the stamped circles, clamped to the layer
+      let bx0 = 1 / 0, by0 = 1 / 0, bx1 = -1 / 0, by1 = -1 / 0;
       for (const [x, y] of pts) {
-        lctx.beginPath();
-        lctx.arc(x, y, r, 0, Math.PI * 2);
-        lctx.fill();
+        bx0 = Math.min(bx0, x - r);
+        by0 = Math.min(by0, y - r);
+        bx1 = Math.max(bx1, x + r);
+        by1 = Math.max(by1, y + r);
       }
-      lctx.globalCompositeOperation = "source-over";
-      lctx.globalAlpha = 1;
+      bx0 = Math.max(0, Math.floor(bx0));
+      by0 = Math.max(0, Math.floor(by0));
+      bx1 = Math.min(L.w, Math.ceil(bx1));
+      by1 = Math.min(L.h, Math.ceil(by1));
+      if (bx1 > bx0 && by1 > by0) {
+        if (!eraseCoverage) eraseCoverage = document.createElement("canvas");
+        const cov = eraseCoverage;
+        if (cov.width !== L.w || cov.height !== L.h) {
+          cov.width = L.w;
+          cov.height = L.h;
+        }
+        const cctx = cov.getContext("2d");
+        cctx.clearRect(0, 0, cov.width, cov.height);
+        cctx.fillStyle = "#000";
+        for (const [x, y] of pts) {
+          cctx.beginPath();
+          cctx.arc(x, y, r, 0, Math.PI * 2);
+          cctx.fill();
+        }
+        const bw = bx1 - bx0, bh = by1 - by0;
+        const d = lctx.getImageData(bx0, by0, bw, bh);
+        const c = cctx.getImageData(bx0, by0, bw, bh);
+        const cap = 229.5 * (1 - st.opacity);
+        for (let i = 0, j = 0; i < d.data.length; i += 4, j++) {
+          const covA = c.data[i + 3] / 255;
+          if (!covA) continue;
+          const a = d.data[i + 3];
+          d.data[i + 3] = a - covA * (a - Math.min(a, cap));
+        }
+        lctx.putImageData(d, bx0, by0);
+      }
       ctx.drawImage(L.canvas, 0, 0);
     }
     ctx.globalAlpha = 1;
