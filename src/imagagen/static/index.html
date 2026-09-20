@@ -117,7 +117,7 @@
         <textarea id="negative" placeholder="Negative prompt"></textarea>
       </div>
       <div id="toolbar">
-        <button id="tool-brush" class="tool active mini" title="brush tool (B)">brush</button>
+        <button id="tool-brush" class="tool active mini" title="draw tool (B)">draw</button>
         <button id="tool-smudge" class="tool mini" title="smudge tool (S); drag to smear/blur (smudge is sequential: each stamp drags the pixels the previous one moved)">smudge</button>
         <button id="tool-clone" class="tool mini" title="clone tool (C); shift-click to pick the source, then drag to copy">clone</button>
         <button id="tool-mask" class="tool mini" title="mask tool (M); draw with shift held to erase">mask</button>
@@ -126,9 +126,9 @@
           <span>colour</span>
           <input id="brush-color" type="color" value="#ffffff">
         </label>
-        <label class="slab" title="brush size, logarithmic 1–300 px (canvas px; screen px when 'screen' is checked)">
+        <label class="slab" title="brush size, logarithmic 10–300 px (canvas px; screen px when 'screen' is checked)">
           <span>size</span>
-          <input id="brush-size" type="range" min="0" max="1" step="0.001" value="0.404">
+          <input id="brush-size" type="range" min="0" max="1" step="0.001" value="0">
           <b id="brush-size-val">10</b>
         </label>
         <label class="slab tight" title="size in screen px: stays the same on screen while zooming (unchecked = size in canvas px)">

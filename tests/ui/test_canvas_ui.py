@@ -116,7 +116,7 @@ def test_mask_tool_shift_erase_and_morph(page, server):
 
     # shift = erase: punch a hole in the centre (leaves a ring). The eraser
     # must fully cover the pixel (alpha ~1) for destination-out to zero it.
-    set_input(page, "#brush-size", "0.323")  # 6 px -> radius 3
+    set_input(page, "#brush-size", "0")  # 10 px -> radius 5
     dot(page, 50, 40, shift=True)
     assert wait_until(lambda: mask_arr(base)[40, 50] == 0)
     ring = int((mask_arr(base) > 0).sum())
@@ -758,7 +758,7 @@ def test_smudge_state_persists_across_reload(page, server):
     _show(page, base)
 
     page.keyboard.press("s")  # smudge tool
-    set_input(page, "#brush-size", "0.608")  # 32 px (log scale)
+    set_input(page, "#brush-size", "0.342")  # 32 px (log scale)
     set_input(page, "#brush-opacity", "0.4")
 
     page.reload()
@@ -777,7 +777,7 @@ def test_tool_state_persists_across_reload(page, server):
     _show(page, base)
 
     page.keyboard.press("m")  # mask tool
-    set_input(page, "#brush-size", "0.608")  # 32 px (log scale)
+    set_input(page, "#brush-size", "0.342")  # 32 px (log scale)
     set_input(page, "#brush-opacity", "0.4")
 
     page.reload()
@@ -806,7 +806,7 @@ def test_custom_brush_listed_and_used(page, server):
     page.wait_for_function("brushNames.includes('soft24')")
     page.select_option("#brush", "soft24")
     set_input(page, "#brush-color", "#00ff00")
-    set_input(page, "#brush-size", "0.647")  # = 40 px
+    set_input(page, "#brush-size", "0.408")  # = 40 px
 
     # single stamp at the centre: strong in the middle, soft near the rim
     dot(page, 100, 75)

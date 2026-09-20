@@ -1160,7 +1160,7 @@ async function loadBrushes() {
 }
 
 // Brush size bounds; keep BRUSH_SIZE_MAX in sync with MAX_BRUSH_SIZE in app.py
-const BRUSH_SIZE_MIN = 1;
+const BRUSH_SIZE_MIN = 10;
 const BRUSH_SIZE_MAX = 300;
 // log-scale size: slider 0..1 maps to BRUSH_SIZE_MIN..BRUSH_SIZE_MAX px
 const sizeFromSlider = (v) => BRUSH_SIZE_MIN * Math.pow(BRUSH_SIZE_MAX / BRUSH_SIZE_MIN, v);
