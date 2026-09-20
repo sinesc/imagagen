@@ -184,6 +184,23 @@ def test_clone_source_off_edge_clips():
     assert c.image[24, 2].tolist() == list(left)
 
 
+def test_clone_opacity_does_not_stack_overlapping_stamps():
+    # one continuous stroke = one paint at the stroke's opacity: the
+    # overlapping stamps must NOT accumulate (0.5 stays 0.5 at the core)
+    b, a = (0, 100, 0), (100, 0, 0)
+    arr = np.zeros((48, 64, 3), np.uint8)
+    arr[:, :32] = b
+    arr[:, 32:] = a
+    c = Canvas()
+    c.import_image(_png(arr))
+    changed = c.clone([(16.0, 24.0), (17.0, 24.0)], offset=(20, 0), size=20,
+                      opacity=0.5)
+    assert changed
+    # core pixel covered by BOTH stamps: exactly the 0.5 blend, not the
+    # ~0.75+ a per-stamp sequential blend would stack up to
+    assert c.image[24, 20].tolist() == [50, 50, 0]
+
+
 def test_clone_opacity_blending():
     a, b = (100, 0, 0), (0, 100, 0)
     arr = np.zeros((48, 64, 3), np.uint8)

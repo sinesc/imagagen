@@ -186,15 +186,11 @@ function brushSizeCanvas() {
   return st.screen ? st.size / view.scale : st.size;
 }
 
-// outline of the brush footprint at the cursor (pre-draw preview)
-function drawCursor(ctx) {
-  if (!view.has || !view.cursor) return;
-  if (Tools.current === "clone") return; // the clone tool uses crosshairs
+// brush footprint outline: dark halo + thin white ring, visible on any
+// background, 1-screen-px wide
+function drawBrushRing(ctx, x, y) {
   const r = brushSizeCanvas() / 2;
   if (r < 0.5) return;
-  const x = (view.cursor[0] - view.ox) / view.scale;
-  const y = (view.cursor[1] - view.oy) / view.scale;
-  // dark halo + thin white ring: visible on any background, 1-screen-px wide
   ctx.save();
   ctx.lineWidth = 3 / view.scale;
   ctx.strokeStyle = "rgba(0,0,0,0.7)";
@@ -207,6 +203,14 @@ function drawCursor(ctx) {
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
+}
+
+// outline of the brush footprint at the cursor (pre-draw preview)
+function drawCursor(ctx) {
+  if (!view.has || !view.cursor) return;
+  const x = (view.cursor[0] - view.ox) / view.scale;
+  const y = (view.cursor[1] - view.oy) / view.scale;
+  drawBrushRing(ctx, x, y);
 }
 
 // crosshairs for the clone tool: at the picked source S, and (during a
@@ -230,7 +234,10 @@ function drawCloneCrosshairs(ctx) {
     line(x, y - L, x, y + L, 1 / view.scale, "rgba(255,255,255,0.95)");
   };
   ctx.save();
-  if (view.cloneSource) cross(...view.cloneSource);
+  if (view.cloneSource) {
+    cross(...view.cloneSource);
+    drawBrushRing(ctx, ...view.cloneSource); // the brush at the source too
+  }
   if (view.stroke && view.stroke.tool === "clone" && view.cloneSource && view.cursor) {
     const [x, y] = cloneCursorSample();
     line(view.cloneSource[0], view.cloneSource[1], x, y,
@@ -262,21 +269,24 @@ function drawPreview(ctx) {
   const r = Math.max(s.size / 2, 0.5);
   ctx.globalAlpha = st.opacity;
   if (s.tool === "clone") {
-    // live clone preview: copy from the pre-stroke image (view.img) sampled
-    // at C + offset, circular-clip at C (the server stamps the exact brush
-    // shape; the disc matches it for the 'circle' brush). Off-image source
-    // is clipped to transparent by drawImage, same as the server skips it.
+    // live clone preview: paint the pre-stroke image (view.img) translated
+    // by the frozen offset, clipped to the UNION of the stamp footprints,
+    // in ONE composite so the opacity applies to the stroke as a whole
+    // (overlapping stamps must not stack, same as the server commit).
+    // Off-image source reads as transparent, same as the server skips it.
     const [ox, oy] = s.cloneOffset;
+    ctx.save();
+    ctx.beginPath();
     for (const [x, y] of pts) {
-      ctx.save();
-      ctx.globalAlpha = st.opacity;
-      ctx.beginPath();
+      ctx.moveTo(x + r, y);
       ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.clip();
-      ctx.drawImage(view.img, x + ox - r, y + oy - r, 2 * r, 2 * r,
-                    x - r, y - r, 2 * r, 2 * r);
-      ctx.restore();
     }
+    ctx.clip();
+    ctx.globalAlpha = st.opacity;
+    // dest pixel p must show img[p + (ox, oy)]: drawImage(img, dx, dy) shows
+    // img[p - (dx, dy)], so the image goes at -offset
+    ctx.drawImage(view.img, -ox, -oy);
+    ctx.restore();
     ctx.globalAlpha = 1;
     return;
   }
@@ -429,6 +439,12 @@ function setupCanvasInput() {
     if (!view.stroke) return;
     const s = view.stroke;
     const st = Tools.get();
+    // Freeze the stroke BEFORE the round trip: stop recording points and
+    // hold the last frame (with the preview) until the committed pixels
+    // arrive -- otherwise the stroke would keep following the cursor while
+    // the request is in flight, and the preview would vanish (flicker).
+    view.stroke = null;
+    view.refreshing = true;
     let resp;
     try {
       if (s.tool === "clone") {
@@ -452,18 +468,12 @@ function setupCanvasInput() {
         });
       }
     } catch (err) {
-      view.stroke = null;
+      view.refreshing = false;
       setStatus(`stroke failed: ${err.message}`, true);
       viewRedraw();
       return;
     }
     storeUndoFlags(resp); // the response carries the four undo/redo flags
-    // Drop the stroke WITHOUT redrawing in between: the screen keeps the
-    // last rendered frame (preview over the old image) until viewRefresh()
-    // has fetched and drawn the committed pixels, so the stroke never
-    // vanishes during the request round trip (no flicker on release).
-    view.stroke = null;
-    view.refreshing = true;
     try {
       await viewRefresh();
     } finally {

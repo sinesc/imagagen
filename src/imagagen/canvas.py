@@ -467,11 +467,12 @@ class Canvas:
         opacity: float = 1.0,
         brush: str = "circle",
     ) -> bool:
-        """Clone (stamp) a stroke: for each stamp centre C, copy the
-        brush-shaped region sampled at C + `offset` onto C, blended by
-        brush alpha x opacity. Samples the *pre-stroke* image (deterministic
-        and matches the client's live preview). Returns True when anything
-        changed (a draw-history step was recorded)."""
+        """Clone (stamp) a stroke: paint the pre-stroke image translated by
+        `offset` over the stroke's stamp footprint, blended by the footprint
+        coverage x `opacity` (overlapping stamps do NOT stack the opacity).
+        Samples the *pre-stroke* image (deterministic and matches the
+        client's live preview). Returns True when anything changed
+        (a draw-history step was recorded)."""
         opacity = min(max(opacity, 0.0), 1.0)
         with self._lock:
             return self._stroke_clone_locked(points, offset, size, opacity, brush)
@@ -529,9 +530,14 @@ class Canvas:
             return False
         h, w = img.shape[:2]
         sh, sw = shape.shape
-        a = shape * opacity
         ox, oy = int(round(offset[0])), int(round(offset[1]))
-        img2 = img.astype(np.float32)
+        # every stamp copies the pre-stroke image at (dest + offset): with
+        # the frozen stroke offset the source pixel of any destination pixel
+        # is fixed for the whole stroke, so accumulate the STROKE's coverage
+        # over all stamp footprints, then blend the translated image ONCE
+        # with coverage x opacity (overlapping stamps must not stack the
+        # opacity, e.g. 0.5 opacity stays 0.5 at the stroke core)
+        cov = np.zeros((h, w), np.float32)
         for cx, cy in centers:
             # destination footprint origin (top-left) in image coords
             dx0, dy0 = int(round(cx - sw / 2)), int(round(cy - sh / 2))
@@ -544,12 +550,27 @@ class Canvas:
             i1 = min(sh, h - dy0, h - dy0 - oy)
             if j1 <= j0 or i1 <= i0:
                 continue  # stamp (or its source) is entirely off-canvas
-            dst = img2[dy0 + i0:dy0 + i1, dx0 + j0:dx0 + j1]
-            s = src[dy0 + i0 + oy:dy0 + i1 + oy, dx0 + j0 + ox:dx0 + j1 + ox]
-            aa = a[i0:i1, j0:j1][..., None]
-            img2[dy0 + i0:dy0 + i1, dx0 + j0:dx0 + j1] = np.clip(
-                dst * (1 - aa) + s * aa, 0, 255
-            )
+            w_cov = cov[dy0 + i0:dy0 + i1, dx0 + j0:dx0 + j1]
+            w_cov = 1 - (1 - w_cov) * (1 - shape[i0:i1, j0:j1])
+            cov[dy0 + i0:dy0 + i1, dx0 + j0:dx0 + j1] = w_cov
+        ys, xs = np.nonzero(cov)
+        if not len(ys):
+            return False
+        # blend window: where cov > 0 the source (dest + offset) is inside
+        # the canvas by construction, so the shifted read is always valid
+        py0, py1 = max(int(ys.min()), -oy, 0), min(int(ys.max()), h - 1 - oy)
+        px0, px1 = max(int(xs.min()), -ox, 0), min(int(xs.max()), w - 1 - ox)
+        if py1 < py0 or px1 < px0:
+            return False
+        img2 = img.astype(np.float32)
+        aa = cov[py0:py1 + 1, px0:px1 + 1] * opacity
+        s = src[py0 + oy:py1 + 1 + oy, px0 + ox:px1 + 1 + ox]
+        img2[py0:py1 + 1, px0:px1 + 1] = np.clip(
+            img2[py0:py1 + 1, px0:px1 + 1] * (1 - aa[..., None])
+            + s * aa[..., None],
+            0,
+            255,
+        )
         new_img = img2.astype(np.uint8)
         if np.array_equal(new_img, img):
             return False

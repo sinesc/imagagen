@@ -372,6 +372,26 @@ def test_clone_toolbar_button_and_shortcut(page, server):
         "!document.getElementById('tool-brush').classList.contains('active')")
     # ...and the colour swatch is disabled (the clone tool has no colour)
     assert page.evaluate("document.getElementById('brush-color').disabled")
+    # the brush outline follows the cursor like the other tools
+    cx, cy = _centre(page)
+    page.mouse.move(cx, cy)
+    bright = page.evaluate(
+        """() => {
+            const ctx = document.getElementById('canvas').getContext('2d');
+            const dpr = view.dpr;
+            const [mx, my] = view.cursor;
+            const r = (Tools.get().size / 2) * view.scale * dpr;
+            let best = 0;
+            for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) {
+                const d = ctx.getImageData(
+                    Math.round(mx * dpr + r + dx), Math.round(my * dpr + dy), 1, 1
+                ).data;
+                best = Math.max(best, d[0] + d[1] + d[2]);
+            }
+            return best;
+        }"""
+    )
+    assert bright > 300  # white ring pixel; BG sums to 90
     # the toolbar button works too
     page.click("#tool-brush")
     assert page.evaluate(
@@ -406,6 +426,27 @@ def test_clone_shift_click_picks_source(page, server):
         }"""
     )
     assert bright > 400  # white crosshair; BG sums to 90
+    # the brush outline is drawn at the source too (cursor moved away, so
+    # the ring under test is the source's, not the cursor's)
+    page.mouse.move(*screen_pos(page, 130, 40))
+    ring_bright = page.evaluate(
+        """() => {
+            const ctx = document.getElementById('canvas').getContext('2d');
+            const dpr = view.dpr;
+            const sx = (view.ox + view.cloneSource[0] * view.scale) * dpr;
+            const sy = (view.oy + view.cloneSource[1] * view.scale) * dpr;
+            const r = (Tools.get().size / 2) * view.scale * dpr;
+            let best = 0;
+            for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) {
+                const d = ctx.getImageData(
+                    Math.round(sx + r + dx), Math.round(sy + dy), 1, 1
+                ).data;
+                best = Math.max(best, d[0] + d[1] + d[2]);
+            }
+            return best;
+        }"""
+    )
+    assert ring_bright > 300  # ring at the source point
     # shift+click again moves the source
     dot(page, 55, 80, shift=True)
     assert page.evaluate("view.cloneSource") == pytest.approx([55, 80], abs=0.5)
@@ -450,6 +491,32 @@ def test_clone_drag_copies_pixels(page, server):
     assert canvas_px(base, 30, 75) == LEFT  # source region untouched
 
 
+def test_clone_opacity_is_not_stacked(page, server):
+    # a continuous stroke at <1 opacity must paint the copied content at
+    # that opacity: overlapping stamps do NOT accumulate (the stroke core
+    # stays at the stroke's opacity, in the live preview AND the commit)
+    base, _ = server
+    _open(page, base)
+    _two_band(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    page.keyboard.press("c")
+    set_input(page, "#brush-opacity", "0.4")
+    dot(page, 30, 75, shift=True)
+    page.mouse.move(*screen_pos(page, 140, 75))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 160, 75), steps=5)
+    exp = [0.4 * c + 0.6 * b for c, b in zip(LEFT, RIGHT)]
+    got = _screen_px(page, 150, 75)
+    assert all(abs(g - e) <= 1 for g, e in zip(got, exp)), \
+        f"live preview stacked: {got}, want ~{exp}"
+    page.mouse.up()
+    assert wait_until(
+        lambda: all(abs(int(g) - e) <= 1
+                    for g, e in zip(canvas_px(base, 150, 75), exp))), \
+        f"committed stroke stacked: {canvas_px(base, 150, 75)}, want ~{exp}"
+
+
 def test_clone_preview_held_until_server_response(page, server):
     """No flicker on release: the on-screen clone preview must stay visible
     while the commit round trip is in flight (same invariant as strokes)."""
@@ -472,13 +539,18 @@ def test_clone_preview_held_until_server_response(page, server):
         };
     }""")
     stroke(page, [(140, 75), (160, 75)])  # ends with mouse.up
-    # cursor tracking during the in-flight commit must not clobber the frame
-    page.mouse.move(*screen_pos(page, 165, 80))
+    # after release the stroke must NOT keep following the cursor while the
+    # commit is in flight: move the mouse away and the preview must stay
+    # where it was
+    page.mouse.move(*screen_pos(page, 170, 90))
 
     # inside the 250 ms delay: the preview (LEFT over the RIGHT band) must
     # still be on screen, not the un-stroked image underneath
     assert _screen_px(page, 150, 75) == list(LEFT), \
         f"preview lost during round trip: {_screen_px(page, 150, 75)}"
+    # ...and it must not have extended after the release
+    assert _screen_px(page, 170, 90) == list(RIGHT), \
+        f"stroke followed the cursor after release: {_screen_px(page, 170, 90)}"
     # ...and the server commits the stroke
     assert wait_until(lambda: canvas_px(base, 150, 75) == LEFT)
     # after the refresh the committed pixels are on screen
