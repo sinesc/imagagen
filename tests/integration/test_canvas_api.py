@@ -156,6 +156,63 @@ def test_clone_unknown_brush_400(tmp_path):
         assert r.status_code == 400  # KeyError from the brush loader
 
 
+def test_smudge_smears_image(tmp_path):
+    with _client(tmp_path) as c:
+        left, right = (123, 45, 67), (10, 20, 30)
+        arr = np.zeros((48, 64, 3), np.uint8)
+        arr[:, :32] = left
+        arr[:, 32:] = right
+        buf = io.BytesIO()
+        Image.fromarray(arr).save(buf, format="PNG")
+        _set_canvas(c, buf.getvalue())
+        # sequential smear: the left band is carried to the drag endpoint
+        r = c.post("/api/canvas/smudge", json={
+            "points": [[16.0, 24.0], [56.0, 24.0]], "size": 20,
+            "opacity": 1.0})
+        # a smudge stroke is a draw step; the mask stack is untouched
+        assert r.json() == {"ok": True, "undo_mask": False, "redo_mask": False,
+                            "undo_draw": True, "redo_draw": False}
+        img = _img(c)
+        assert img[24, 48].tolist() == list(left)  # sequential carry
+        assert img[24, 10].tolist() == list(left)  # source region untouched
+
+
+def test_smudge_empty_canvas_400(tmp_path):
+    with _client(tmp_path) as c:
+        r = c.post("/api/canvas/smudge", json={
+            "points": [[1.0, 1.0], [5.0, 1.0]], "size": 10})
+        assert r.status_code == 400
+
+
+def test_smudge_bad_values_422(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c)
+        assert c.post("/api/canvas/smudge", json={
+            "points": [], "size": 10}).status_code == 422
+        assert c.post("/api/canvas/smudge", json={
+            "points": [[1.0, 1.0], [5.0, 1.0]],
+            "size": 0}).status_code == 422
+        assert c.post("/api/canvas/smudge", json={
+            "points": [[1.0, 1.0], [5.0, 1.0]],
+            "opacity": 2.0}).status_code == 422
+        # size boundary (same as /api/canvas/stroke)
+        assert c.post("/api/canvas/smudge", json={
+            "points": [[1.0, 1.0], [5.0, 1.0]],
+            "size": MAX_BRUSH_SIZE_ZOOMED}).status_code == 200
+        assert c.post("/api/canvas/smudge", json={
+            "points": [[1.0, 1.0], [5.0, 1.0]],
+            "size": MAX_BRUSH_SIZE_ZOOMED + 1}).status_code == 422
+
+
+def test_smudge_unknown_brush_400(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c)
+        r = c.post("/api/canvas/smudge", json={
+            "points": [[16.0, 12.0], [40.0, 12.0]], "size": 10,
+            "brush": "nope"})
+        assert r.status_code == 400  # KeyError from the brush loader
+
+
 def test_mask_roundtrip(tmp_path):
     with _client(tmp_path) as c:
         _set_canvas(c)

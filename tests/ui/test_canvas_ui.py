@@ -652,7 +652,121 @@ def test_clone_preview_held_until_server_response(page, server):
     assert _screen_px(page, 150, 75) == list(LEFT)
 
 
+# ---------------- smudge tool ----------------
+
+
+def test_smudge_toolbar_button_and_shortcut(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    assert page.is_visible("#tool-smudge")
+    # keyboard shortcut S selects the smudge tool...
+    page.keyboard.press("s")
+    assert page.evaluate(
+        "document.getElementById('tool-smudge').classList.contains('active')")
+    assert page.evaluate(
+        "!document.getElementById('tool-brush').classList.contains('active')")
+    # ...and the colour swatch is disabled (smudge smears existing pixels)
+    assert page.evaluate("document.getElementById('brush-color').disabled")
+    # the toolbar button works too
+    page.click("#tool-brush")
+    assert page.evaluate(
+        "document.getElementById('tool-brush').classList.contains('active')")
+    page.click("#tool-smudge")
+    assert page.evaluate(
+        "document.getElementById('tool-smudge').classList.contains('active')")
+
+
+def test_smudge_single_click_is_noop(page, server):
+    # smudge is a drag: a single click has no previous stamp to smear, so
+    # nothing is committed
+    base, _ = server
+    _open(page, base)
+    _two_band(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    page.keyboard.press("s")
+    dot(page, 140, 75)
+    assert canvas_px(base, 140, 75) == RIGHT
+    assert page.evaluate("view.stroke") is None
+
+
+def test_smudge_drag_smears(page, server):
+    # a continuous smear carries the LEFT band all the way to the drag
+    # endpoint (each stamp drags what the previous one moved). The preview
+    # is live: it is on screen BEFORE mouse.up commits it.
+    base, _ = server
+    _open(page, base)
+    _two_band(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    page.keyboard.press("s")
+
+    page.mouse.move(*screen_pos(page, 30, 75))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 60, 75), steps=5)
+    page.mouse.move(*screen_pos(page, 90, 75), steps=5)
+    assert _screen_px(page, 80, 75) == list(LEFT), \
+        f"live preview under cursor: {_screen_px(page, 80, 75)}"
+    page.mouse.up()
+    assert wait_until(lambda: canvas_px(base, 80, 75) == LEFT), \
+        f"smudge trail: {canvas_px(base, 80, 75)}"
+    assert canvas_px(base, 140, 75) == RIGHT  # not dragged: untouched
+    assert canvas_px(base, 10, 10) == LEFT  # left band untouched
+    assert canvas_px(base, 190, 140) == RIGHT  # right band corner untouched
+
+
+def test_smudge_preview_held_until_server_response(page, server):
+    """No flicker on release: the on-screen smudge preview must stay visible
+    while the commit round trip is in flight (same invariant as strokes)."""
+    base, _ = server
+    _open(page, base)
+    _two_band(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    page.keyboard.press("s")
+
+    # Delay the smudge response so the round-trip window is wide.
+    page.evaluate("""() => {
+        const orig = window.fetch;
+        window.fetch = async (url, opts) => {
+            const r = await orig(url, opts);
+            if (String(url).includes('/canvas/smudge'))
+                await new Promise((res) => setTimeout(res, 250));
+            return r;
+        };
+    }""")
+    stroke(page, [(40, 75), (90, 75)])  # ends with mouse.up
+    # inside the 250 ms delay: the smear preview (LEFT out in the RIGHT
+    # band) must still be on screen, not the un-stroked image underneath
+    assert _screen_px(page, 80, 75) == list(LEFT), \
+        f"preview lost during round trip: {_screen_px(page, 80, 75)}"
+    # ...and the server commits the stroke
+    assert wait_until(lambda: canvas_px(base, 80, 75) == LEFT)
+    # after the refresh the committed pixels are on screen
+    assert _screen_px(page, 80, 75) == list(LEFT)
+
+
 # ---------------- state persistence ----------------
+
+
+def test_smudge_state_persists_across_reload(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+
+    page.keyboard.press("s")  # smudge tool
+    set_input(page, "#brush-size", "0.608")  # 32 px (log scale)
+    set_input(page, "#brush-opacity", "0.4")
+
+    page.reload()
+    page.wait_for_function(
+        "document.getElementById('tool-smudge').classList.contains('active')")
+    assert page.evaluate("Tools.get().size") == 32
+    assert page.evaluate("Tools.get().opacity") == pytest.approx(0.4, abs=0.01)
+    # per-tool memory: switching back to brush restores its own settings
+    page.keyboard.press("b")
+    assert page.evaluate("Tools.get().size") == pytest.approx(10, abs=0.5)
 
 
 def test_tool_state_persists_across_reload(page, server):

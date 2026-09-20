@@ -477,6 +477,23 @@ class Canvas:
         with self._lock:
             return self._stroke_clone_locked(points, offset, size, opacity, brush)
 
+    def smudge(
+        self,
+        points: list[tuple[float, float]],
+        size: float,
+        opacity: float = 1.0,
+        brush: str = "circle",
+    ) -> bool:
+        """Smudge (smear) a stroke over the displayed image. Sequential:
+        each stamp drags the brush-shaped region at the previous stamp
+        centre to the current one (integer displacement, same size, so no
+        resampling) and alpha-blends it by the brush shape x `opacity`,
+        accumulating on a copy of the pre-stroke image. Returns True when
+        anything changed (a draw-history step was recorded)."""
+        opacity = min(max(opacity, 0.0), 1.0)
+        with self._lock:
+            return self._stroke_smudge_locked(points, size, opacity, brush)
+
     def _stroke_image_locked(
         self, points, size, opacity, brush, color
     ) -> bool:
@@ -572,6 +589,58 @@ class Canvas:
             255,
         )
         new_img = img2.astype(np.uint8)
+        if np.array_equal(new_img, img):
+            return False
+        ent.undo.append(ent.png)
+        if len(ent.undo) > DRAW_HISTORY:
+            ent.undo.pop(0)
+        ent.redo.clear()
+        ent.image = new_img
+        ent.png = _encode_png(new_img, ent.info)
+        return True
+
+    def _stroke_smudge_locked(self, points, size, opacity, brush) -> bool:
+        """Apply a smudge stroke to the displayed image (see `smudge`)."""
+        if self._current is None or self._images[self._current].image is None:
+            raise ValueError("cannot stroke an empty canvas")
+        ent = self._images[self._current]
+        img = ent.image
+        shape = self.brush_shape(brush, size)
+        spacing = max(1.0, size * STAMP_SPACING_FRACTION)
+        centers = self.stamp_positions(points, spacing)
+        if len(centers) < 2:
+            return False  # a smudge is a DRAG: one point moves nothing
+        h, w = img.shape[:2]
+        sh, sw = shape.shape
+        # Sequential smear: stamp N samples stamp N-1's OUTPUT, so the stroke
+        # accumulates on a working copy of the pre-stroke image (a single
+        # click changes nothing). Integer displacement + same-size copy,
+        # matching the client's incremental canvas drawImage preview.
+        work = img.astype(np.float32)
+        for prev, cur in zip(centers, centers[1:], strict=False):
+            dx = int(round(cur[0] - prev[0]))
+            dy = int(round(cur[1] - prev[1]))
+            if dx == 0 and dy == 0:
+                continue
+            # destination footprint origin (top-left) in image coords;
+            # the source is the same footprint shifted back by (dx, dy);
+            # the shape-local sub-rect must be valid for BOTH
+            x0, y0 = int(round(cur[0] - sw / 2)), int(round(cur[1] - sh / 2))
+            j0 = max(0, -x0, dx - x0)
+            j1 = min(sw, w - x0, w - x0 + dx)
+            i0 = max(0, -y0, dy - y0)
+            i1 = min(sh, h - y0, h - y0 + dy)
+            if j1 <= j0 or i1 <= i0:
+                continue  # stamp (or its source) is entirely off-canvas
+            sub = (shape[i0:i1, j0:j1] * opacity)[..., None]
+            dst = work[y0 + i0:y0 + i1, x0 + j0:x0 + j1]
+            src = work[y0 + i0 - dy:y0 + i1 - dy, x0 + j0 - dx:x0 + j1 - dx]
+            # the RHS reads `work` whole before this stamp's write, so
+            # overlapping source/destination regions are safe
+            work[y0 + i0:y0 + i1, x0 + j0:x0 + j1] = np.clip(
+                dst * (1 - sub) + src * sub, 0, 255
+            )
+        new_img = work.astype(np.uint8)
         if np.array_equal(new_img, img):
             return False
         ent.undo.append(ent.png)

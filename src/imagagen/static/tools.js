@@ -3,7 +3,7 @@
    Persisted in localStorage so the choice survives a page reload. */
 "use strict";
 
-const TOOLS = ["brush", "mask", "clone"];
+const TOOLS = ["brush", "mask", "clone", "smudge"];
 
 const Tools = {
   current: "brush",
@@ -14,6 +14,8 @@ const Tools = {
     mask: { size: 30, opacity: 1, brush: "circle", screen: false },
     // no colour: clone copies pixels from the picked source point
     clone: { size: 10, opacity: 1, brush: "circle", screen: false },
+    // no colour either: smudge smears the image's own pixels
+    smudge: { size: 10, opacity: 1, brush: "circle", screen: false },
   },
   load() {
     try {

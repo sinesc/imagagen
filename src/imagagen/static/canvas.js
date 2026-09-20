@@ -19,7 +19,9 @@ const view = {
   ox: 0,
   oy: 0,
   dpr: 1,
-  stroke: null, // {tool, points: [[x,y]...], erase, cloneOffset}
+  stroke: null, // {tool, points: [[x,y]...], erase, cloneOffset, smudgeStamps}
+  smudgeWork: null, // {canvas}: smudge tool's offscreen working image (canvas
+  // px), the pre-stroke image plus the drag accumulated stamp by stamp
   cloneSource: null, // [x,y] canvas px: clone tool's picked source S
   cloneGesture: null, // [ox,oy] canvas px: CTRL held -> the source follows
   // the cursor at this relative offset (a temporary move of the picked S)
@@ -152,6 +154,7 @@ async function viewRefresh() {
   if (!had || view.w !== oldW || view.h !== oldH) {
     view.cloneSource = null; // old source point no longer makes sense
     view.cloneGesture = null;
+    view.smudgeWork = null; // a working canvas is size-bound
     viewResize(); // the canvas element may have been hidden (sized to 0)
     viewFit();
   }
@@ -301,6 +304,16 @@ function cloneCursorSample() {
   return [x, y];
 }
 
+// the smudge preview's working image: a copy of the pre-stroke image at
+// canvas-px resolution, accumulated stamp by stamp (see drawPreview)
+function newSmudgeWork() {
+  const canvas = document.createElement("canvas");
+  canvas.width = view.w;
+  canvas.height = view.h;
+  canvas.getContext("2d").drawImage(view.img, 0, 0);
+  return { canvas };
+}
+
 // scratch canvas for the erase preview (punched-out mask overlay)
 const eraseLayer = {
   canvas: document.createElement("canvas"),
@@ -314,6 +327,42 @@ function drawPreview(ctx) {
   const pts = stampPositions(s.points, Math.max(1, s.size / 12));
   const r = Math.max(s.size / 2, 0.5);
   ctx.globalAlpha = st.opacity;
+  if (s.tool === "smudge") {
+    // live smudge preview: SEQUENTIAL smear, accumulated on an offscreen
+    // working image (like a real smudge, unlike brush/clone which recompute
+    // from scratch). For each new stamp centre, copy the working image at
+    // the previous centre onto the current one (integer displacement, same
+    // size, so no resampling) and alpha-blend it by the opacity, clipped to
+    // the stamp's disc. This is the same sequential accumulation the server
+    // commit does over its working copy (only the brush-edge antialiasing
+    // differs), so the no-flicker hand-off stays invisible.
+    const wctx = view.smudgeWork.canvas.getContext("2d");
+    while (s.smudgeStamps < pts.length) {
+      const i = s.smudgeStamps++; // new centre; i-1 is its predecessor
+      const [ox, oy] = pts[i - 1];
+      const [cx, cy] = pts[i];
+      const dx = Math.round(cx - ox);
+      const dy = Math.round(cy - oy);
+      if (!dx && !dy) continue;
+      wctx.save();
+      wctx.beginPath();
+      wctx.arc(cx, cy, r, 0, Math.PI * 2);
+      wctx.clip();
+      wctx.globalAlpha = st.opacity;
+      // drawImage(img, dx, dy) shows img[p - (dx, dy)] at dest p: the whole
+      // working image at -displacement, so dest shows the pixels the
+      // PREVIOUS stamp just moved (off-image source leaves dest as-is)
+      wctx.drawImage(view.smudgeWork.canvas, -dx, -dy);
+      wctx.restore();
+    }
+    // blit the working image; the mask overlay goes on top of it so the
+    // stack matches the base rendering (image, then mask)
+    ctx.globalAlpha = 1;
+    ctx.drawImage(view.smudgeWork.canvas, 0, 0);
+    if (view.mask) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
+    ctx.globalAlpha = 1;
+    return;
+  }
   if (s.tool === "clone") {
     // live clone preview: paint the pre-stroke image (view.img) translated
     // by the frozen offset, clipped to the UNION of the stamp footprints,
@@ -429,6 +478,21 @@ function setupCanvasInput() {
       viewRedraw();
       return;
     }
+    if (tool === "smudge") {
+      // smudge is a drag: the first stamp samples itself (a no-op), so the
+      // stamp counter starts at 1; the working image starts as the current
+      // (pre-stroke) canvas image
+      view.smudgeWork = newSmudgeWork();
+      view.stroke = {
+        tool,
+        points: [p],
+        size: brushSizeCanvas(),
+        smudgeStamps: 1,
+      };
+      c.setPointerCapture(e.pointerId);
+      viewRedraw();
+      return;
+    }
     view.stroke = {
       tool,
       points: [p],
@@ -507,6 +571,14 @@ function setupCanvasInput() {
           opacity: st.opacity,
           brush: st.brush,
         });
+      } else if (s.tool === "smudge") {
+        resp = await api("/api/canvas/smudge", {
+          points: s.points,
+          size: s.size, // canvas px (screen mode already divided by zoom)
+          opacity: st.opacity,
+          brush: st.brush,
+        });
+        view.smudgeWork = null;
       } else {
         resp = await api("/api/canvas/stroke", {
           points: s.points,
@@ -520,6 +592,7 @@ function setupCanvasInput() {
         });
       }
     } catch (err) {
+      view.smudgeWork = null;
       view.refreshing = false;
       setStatus(`stroke failed: ${err.message}`, true);
       viewRedraw();

@@ -252,6 +252,110 @@ def test_clone_history_is_one_draw_step():
     assert not c.can_redo_draw()
 
 
+# ---------------- smudge ----------------
+
+def test_smudge_single_point_is_noop():
+    # smudge is a drag: one point has no previous stamp to sample
+    arr = np.zeros((48, 64, 3), np.uint8)
+    arr[:, :32] = 255
+    c = Canvas()
+    c.import_image(_png(arr))
+    assert not c.smudge([(30.0, 24.0)], size=20)
+    assert (c.image == arr).all()
+    assert not c.can_undo_draw() and not c.can_redo_draw()
+
+
+def test_smudge_uniform_image_is_noop():
+    # dragging a uniform image moves identical pixels: nothing changes
+    arr = np.full((48, 64, 3), 10, np.uint8)
+    c = Canvas()
+    c.import_image(_png(arr))
+    assert not c.smudge([(20.0, 24.0), (40.0, 24.0)], size=20)
+    assert not c.can_undo_draw() and not c.can_redo_draw()
+
+
+def test_smudge_is_sequential():
+    # white left half, black right half. A SEQUENTIAL smear carries the
+    # white the whole way (each stamp drags what the previous one moved);
+    # sampling the pre-stroke image would stop short of the white region.
+    # The source region is untouched (a copy, not a move).
+    arr = np.zeros((48, 64, 3), np.uint8)
+    arr[:, :32] = 255
+    c = Canvas()
+    c.import_image(_png(arr))
+    changed = c.smudge([(16.0, 24.0), (56.0, 24.0)], size=20, opacity=1.0)
+    assert changed
+    img = c.image
+    assert img[24, 48].tolist() == [255, 255, 255]  # well past the white half
+    assert img[24, 56].tolist() == [255, 255, 255]  # the drag endpoint
+    assert img[24, 63].tolist() == [255, 255, 255]  # up to the canvas edge
+    assert img[24, 10].tolist() == [255, 255, 255]  # source region untouched
+    assert img[0, 60].tolist() == [0, 0, 0]  # outside the stamp rows
+
+
+def test_smudge_off_edge_clips():
+    # dragging into/past the right edge: no crash, the in-bounds part works
+    arr = np.zeros((48, 64, 3), np.uint8)
+    arr[:, :32] = 255
+    c = Canvas()
+    c.import_image(_png(arr))
+    changed = c.smudge([(32.0, 24.0), (80.0, 24.0)], size=20, opacity=1.0)
+    assert changed
+    assert c.image[24, 60].tolist() == [255, 255, 255]
+    assert c.image[24, 63].tolist() == [255, 255, 255]
+    # up-and-left corner stamp clipped the same way
+    arr2 = np.zeros((48, 64, 3), np.uint8)
+    arr2[:, :32] = 255
+    c2 = Canvas()
+    c2.import_image(_png(arr2))
+    changed = c2.smudge([(4.0, 6.0), (40.0, 6.0)], size=20, opacity=1.0)
+    assert changed
+    assert c2.image[6, 38].tolist() == [255, 255, 255]
+
+
+def test_smudge_blends_by_opacity():
+    # A=(200,0,0) left of x=16, black elsewhere. A 0.5-opacity drag decays
+    # as it propagates (each stamp blends the previous one's output), and
+    # the original blob keeps its value (it copies A onto A there).
+    a = (200, 0, 0)
+    arr = np.zeros((48, 64, 3), np.uint8)
+    arr[:, :16] = a
+    c = Canvas()
+    c.import_image(_png(arr))
+    changed = c.smudge([(12.0, 24.0), (24.0, 24.0)], size=20, opacity=0.5)
+    assert changed
+    img = c.image
+    assert img[24, 8].tolist() == list(a)  # inside the original blob: A
+    assert img[24, 13].tolist() == list(a)  # copies A onto A
+    # the trail decays: 154 -> 100 -> 0, strictly between source and black
+    assert img[24, 20][0] == 154
+    assert img[24, 22][0] == 100
+    assert img[24, 24][0] == 45
+    assert img[24, 30][0] == 0
+
+
+def test_smudge_empty_canvas_raises():
+    c = Canvas()
+    with pytest.raises(ValueError):
+        c.smudge([(1.0, 1.0), (5.0, 1.0)], size=10)
+
+
+def test_smudge_history_is_one_draw_step():
+    arr = np.zeros((48, 64, 3), np.uint8)
+    arr[:, :32] = 255
+    c = Canvas()
+    c.import_image(_png(arr))
+    c.smudge([(16.0, 24.0), (56.0, 24.0)], size=20)
+    assert c.can_undo_draw() and not c.can_redo_draw()
+    assert len(c._images[c.current_id()].undo) == 1
+    c.undo("image")
+    assert (c.image == arr).all()
+    assert not c.can_undo_draw() and c.can_redo_draw()
+    c.redo("image")
+    assert c.image[24, 56].tolist() == [255, 255, 255]
+    assert not c.can_redo_draw()
+
+
 # ---------------- mask ----------------
 
 def test_mask_stroke_paints_and_erases():

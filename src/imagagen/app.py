@@ -213,6 +213,15 @@ class CloneBody(BaseModel):
     brush: str = "circle"
 
 
+class SmudgeBody(BaseModel):
+    # A smudge stroke: a sequential smear along the stroke (see
+    # Canvas.smudge) -- no external source, just the canvas itself.
+    points: list[list[float]] = Field(..., min_length=1)  # canvas-pixel coords
+    size: float = Field(10.0, ge=MIN_BRUSH_SIZE, le=MAX_BRUSH_SIZE_ZOOMED)
+    opacity: float = Field(1.0, ge=0.0, le=1.0)
+    brush: str = "circle"
+
+
 class MaskOpBody(BaseModel):
     op: str  # "dilate" | "erode" | "clear"
     px: int = Field(4, ge=0, le=100)
@@ -778,6 +787,19 @@ def create_app(
             canvas.clone(
                 points=[(float(x), float(y)) for x, y in body.points],
                 offset=(body.offset[0], body.offset[1]),
+                size=body.size,
+                opacity=body.opacity,
+                brush=body.brush,
+            )
+        except (ValueError, KeyError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {"ok": True, **canvas_flags()}
+
+    @app.post("/api/canvas/smudge")
+    def canvas_smudge(body: SmudgeBody) -> dict:
+        try:
+            canvas.smudge(
+                points=[(float(x), float(y)) for x, y in body.points],
                 size=body.size,
                 opacity=body.opacity,
                 brush=body.brush,

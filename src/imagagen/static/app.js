@@ -1171,10 +1171,11 @@ function syncToolbar() {
   $("tool-brush").classList.toggle("active", Tools.current === "brush");
   $("tool-mask").classList.toggle("active", Tools.current === "mask");
   $("tool-clone").classList.toggle("active", Tools.current === "clone");
+  $("tool-smudge").classList.toggle("active", Tools.current === "smudge");
   // The colour swatch always edits the brush tool's remembered colour
   // (mask strokes ignore colour), so it stays live in mask mode too;
-  // the clone tool has no colour at all, so disable it there.
-  $("brush-color").disabled = Tools.current === "clone";
+  // the clone and smudge tools have no colour at all, so disable it there.
+  $("brush-color").disabled = ["clone", "smudge"].includes(Tools.current);
   $("brush-color").value = Tools.state.brush.color || "#ffffff";
   if (brushNames.includes(st.brush)) $("brush").value = st.brush;
   $("brush-size").value = sliderFromSize(st.size);
@@ -1418,6 +1419,7 @@ function wireToolbar() {
   $("tool-brush").onclick = () => switchTool("brush");
   $("tool-mask").onclick = () => switchTool("mask");
   $("tool-clone").onclick = () => switchTool("clone");
+  $("tool-smudge").onclick = () => switchTool("smudge");
   $("brush").onchange = (e) => {
     Tools.get().brush = e.target.value;
     Tools.save();
@@ -1954,14 +1956,15 @@ document.addEventListener("keydown", (e) => {
   });
 });
 
-// B / M / C switch tools (when not typing in a field); CTRL (clone tool,
-// a source set) makes the source follow the cursor until it is released
+// B / M / C / S switch tools (when not typing in a field); CTRL (clone
+// tool, a source set) makes the source follow the cursor until it is released
 document.addEventListener("keydown", (e) => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
   if (typing) return;
   if (e.key === "b" || e.key === "B") switchTool("brush");
   else if (e.key === "m" || e.key === "M") switchTool("mask");
   else if (e.key === "c" || e.key === "C") switchTool("clone");
+  else if (e.key === "s" || e.key === "S") switchTool("smudge");
   else if (e.key === "Control") cloneGestureStart();
 });
 document.addEventListener("keyup", (e) => {
