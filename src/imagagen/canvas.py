@@ -459,6 +459,23 @@ class Canvas:
                 return self._stroke_mask_locked(points, size, opacity, brush, erase)
             return self._stroke_image_locked(points, size, opacity, brush, color)
 
+    def clone(
+        self,
+        points: list[tuple[float, float]],
+        offset: tuple[float, float],
+        size: float,
+        opacity: float = 1.0,
+        brush: str = "circle",
+    ) -> bool:
+        """Clone (stamp) a stroke: for each stamp centre C, copy the
+        brush-shaped region sampled at C + `offset` onto C, blended by
+        brush alpha x opacity. Samples the *pre-stroke* image (deterministic
+        and matches the client's live preview). Returns True when anything
+        changed (a draw-history step was recorded)."""
+        opacity = min(max(opacity, 0.0), 1.0)
+        with self._lock:
+            return self._stroke_clone_locked(points, offset, size, opacity, brush)
+
     def _stroke_image_locked(
         self, points, size, opacity, brush, color
     ) -> bool:
@@ -486,6 +503,52 @@ class Canvas:
             region = img2[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0]
             img2[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0] = np.clip(
                 region * (1 - aa) + np.array([cr, cg, cb]) * aa, 0, 255
+            )
+        new_img = img2.astype(np.uint8)
+        if np.array_equal(new_img, img):
+            return False
+        ent.undo.append(ent.png)
+        if len(ent.undo) > DRAW_HISTORY:
+            ent.undo.pop(0)
+        ent.redo.clear()
+        ent.image = new_img
+        ent.png = _encode_png(new_img, ent.info)
+        return True
+
+    def _stroke_clone_locked(self, points, offset, size, opacity, brush) -> bool:
+        """Apply a clone stroke to the displayed image (see `clone`)."""
+        if self._current is None or self._images[self._current].image is None:
+            raise ValueError("cannot stroke an empty canvas")
+        ent = self._images[self._current]
+        img = ent.image
+        src = img  # pre-stroke image, read-only during the loop
+        shape = self.brush_shape(brush, size)
+        spacing = max(1.0, size * STAMP_SPACING_FRACTION)
+        centers = self.stamp_positions(points, spacing)
+        if not centers:
+            return False
+        h, w = img.shape[:2]
+        sh, sw = shape.shape
+        a = shape * opacity
+        ox, oy = int(round(offset[0])), int(round(offset[1]))
+        img2 = img.astype(np.float32)
+        for cx, cy in centers:
+            # destination footprint origin (top-left) in image coords
+            dx0, dy0 = int(round(cx - sw / 2)), int(round(cy - sh / 2))
+            # shape-local sub-rect valid for BOTH the destination and the
+            # source (= destination shifted by (ox, oy)); the copy is a pure
+            # integer translation so the two regions align 1:1
+            j0 = max(0, -dx0, -dx0 - ox)
+            j1 = min(sw, w - dx0, w - dx0 - ox)
+            i0 = max(0, -dy0, -dy0 - oy)
+            i1 = min(sh, h - dy0, h - dy0 - oy)
+            if j1 <= j0 or i1 <= i0:
+                continue  # stamp (or its source) is entirely off-canvas
+            dst = img2[dy0 + i0:dy0 + i1, dx0 + j0:dx0 + j1]
+            s = src[dy0 + i0 + oy:dy0 + i1 + oy, dx0 + j0 + ox:dx0 + j1 + ox]
+            aa = a[i0:i1, j0:j1][..., None]
+            img2[dy0 + i0:dy0 + i1, dx0 + j0:dx0 + j1] = np.clip(
+                dst * (1 - aa) + s * aa, 0, 255
             )
         new_img = img2.astype(np.uint8)
         if np.array_equal(new_img, img):

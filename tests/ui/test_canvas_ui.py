@@ -17,6 +17,7 @@ from conftest import (
     combo_pick,
     dot,
     mask_arr,
+    screen_pos,
     set_canvas,
     set_input,
     stroke,
@@ -325,6 +326,163 @@ def test_brush_screen_size_mode(page, server):
         }"""
     )
     assert bright > 300  # white ring pixel; BG sums to 90
+
+
+# ---------------- clone tool ----------------
+
+LEFT, RIGHT = (123, 45, 67), (10, 20, 30)
+
+
+def _two_band(base, w=200, h=150, split=100):
+    """Left half LEFT, right half RIGHT (clone source/destination bands)."""
+    arr = np.zeros((h, w, 3), np.uint8)
+    arr[:, :split] = LEFT
+    arr[:, split:] = RIGHT
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="PNG")
+    with httpx.Client(base_url=base, timeout=10) as c:
+        r = c.post("/api/canvas/upload", content=buf.getvalue())
+        assert r.status_code == 200, r.text
+
+
+def _screen_px(page, x, y):
+    """The device-pixel on the display canvas at canvas-pixel (x, y)."""
+    return page.evaluate(
+        """([x, y]) => {
+            const c = document.getElementById('canvas');
+            const dx = Math.round((view.ox + x * view.scale) * view.dpr);
+            const dy = Math.round((view.oy + y * view.scale) * view.dpr);
+            const d = c.getContext('2d').getImageData(dx, dy, 1, 1).data;
+            return [d[0], d[1], d[2]];
+        }""",
+        [x, y],
+    )
+
+
+def test_clone_toolbar_button_and_shortcut(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    assert page.is_visible("#tool-clone")
+    # keyboard shortcut C selects the clone tool...
+    page.keyboard.press("c")
+    assert page.evaluate(
+        "document.getElementById('tool-clone').classList.contains('active')")
+    assert page.evaluate(
+        "!document.getElementById('tool-brush').classList.contains('active')")
+    # ...and the colour swatch is disabled (the clone tool has no colour)
+    assert page.evaluate("document.getElementById('brush-color').disabled")
+    # the toolbar button works too
+    page.click("#tool-brush")
+    assert page.evaluate(
+        "document.getElementById('tool-brush').classList.contains('active')")
+    page.click("#tool-clone")
+    assert page.evaluate(
+        "document.getElementById('tool-clone').classList.contains('active')")
+
+
+def test_clone_shift_click_picks_source(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    page.keyboard.press("c")
+    # shift+click picks the source; it is NOT a stroke (nothing committed)
+    dot(page, 40, 75, shift=True)
+    assert page.evaluate("view.cloneSource") == pytest.approx([40, 75], abs=0.5)
+    assert canvas_px(base, 40, 75) == BG
+    # the crosshair is rendered at the source point
+    bright = page.evaluate(
+        """() => {
+            const ctx = document.getElementById('canvas').getContext('2d');
+            const dpr = view.dpr;
+            const x = Math.round((view.ox + view.cloneSource[0] * view.scale) * dpr);
+            const y = Math.round((view.oy + view.cloneSource[1] * view.scale) * dpr);
+            let best = 0;
+            for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) {
+                const d = ctx.getImageData(x + dx, y + dy, 1, 1).data;
+                best = Math.max(best, d[0] + d[1] + d[2]);
+            }
+            return best;
+        }"""
+    )
+    assert bright > 400  # white crosshair; BG sums to 90
+    # shift+click again moves the source
+    dot(page, 55, 80, shift=True)
+    assert page.evaluate("view.cloneSource") == pytest.approx([55, 80], abs=0.5)
+    assert canvas_px(base, 55, 80) == BG
+
+
+def test_clone_drag_without_source_shows_hint(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    page.keyboard.press("c")
+    # plain drag without a picked source: hint shown, nothing committed
+    stroke(page, [(40, 75), (60, 75)])
+    assert "shift-click" in page.text_content("#status-line").lower()
+    assert canvas_px(base, 60, 75) == BG
+    assert page.evaluate("view.stroke") is None
+
+
+def test_clone_drag_copies_pixels(page, server):
+    base, _ = server
+    _open(page, base)
+    _two_band(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    page.keyboard.press("c")
+    dot(page, 30, 75, shift=True)  # source S in the left band
+    assert page.evaluate("view.cloneSource") == pytest.approx([30, 75], abs=0.5)
+
+    # drag on the right band: the offset S-D0 = (-110, 0) maps the cursor
+    # back into the left band, so the stroke must paint the LEFT colour.
+    # The preview is live: already on screen BEFORE mouse.up commits it.
+    page.mouse.move(*screen_pos(page, 140, 75))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 160, 75), steps=5)
+    assert _screen_px(page, 150, 75) == list(LEFT), \
+        f"live preview under cursor: {_screen_px(page, 150, 75)}"
+    page.mouse.up()
+    assert wait_until(lambda: canvas_px(base, 150, 75) == LEFT), \
+        f"clone centre: {canvas_px(base, 150, 75)}"
+    assert canvas_px(base, 10, 10) == LEFT  # left band untouched
+    assert canvas_px(base, 190, 140) == RIGHT  # right band corner untouched
+    assert canvas_px(base, 30, 75) == LEFT  # source region untouched
+
+
+def test_clone_preview_held_until_server_response(page, server):
+    """No flicker on release: the on-screen clone preview must stay visible
+    while the commit round trip is in flight (same invariant as strokes)."""
+    base, _ = server
+    _open(page, base)
+    _two_band(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    page.keyboard.press("c")
+    dot(page, 30, 75, shift=True)
+
+    # Delay the clone response so the round-trip window is wide.
+    page.evaluate("""() => {
+        const orig = window.fetch;
+        window.fetch = async (url, opts) => {
+            const r = await orig(url, opts);
+            if (String(url).includes('/canvas/clone'))
+                await new Promise((res) => setTimeout(res, 250));
+            return r;
+        };
+    }""")
+    stroke(page, [(140, 75), (160, 75)])  # ends with mouse.up
+    # cursor tracking during the in-flight commit must not clobber the frame
+    page.mouse.move(*screen_pos(page, 165, 80))
+
+    # inside the 250 ms delay: the preview (LEFT over the RIGHT band) must
+    # still be on screen, not the un-stroked image underneath
+    assert _screen_px(page, 150, 75) == list(LEFT), \
+        f"preview lost during round trip: {_screen_px(page, 150, 75)}"
+    # ...and the server commits the stroke
+    assert wait_until(lambda: canvas_px(base, 150, 75) == LEFT)
+    # after the refresh the committed pixels are on screen
+    assert _screen_px(page, 150, 75) == list(LEFT)
 
 
 # ---------------- state persistence ----------------

@@ -1170,8 +1170,11 @@ function syncToolbar() {
   const st = Tools.get();
   $("tool-brush").classList.toggle("active", Tools.current === "brush");
   $("tool-mask").classList.toggle("active", Tools.current === "mask");
+  $("tool-clone").classList.toggle("active", Tools.current === "clone");
   // The colour swatch always edits the brush tool's remembered colour
-  // (mask strokes ignore colour), so it stays live in mask mode too.
+  // (mask strokes ignore colour), so it stays live in mask mode too;
+  // the clone tool has no colour at all, so disable it there.
+  $("brush-color").disabled = Tools.current === "clone";
   $("brush-color").value = Tools.state.brush.color || "#ffffff";
   if (brushNames.includes(st.brush)) $("brush").value = st.brush;
   $("brush-size").value = sliderFromSize(st.size);
@@ -1414,6 +1417,7 @@ function sagBody() {
 function wireToolbar() {
   $("tool-brush").onclick = () => switchTool("brush");
   $("tool-mask").onclick = () => switchTool("mask");
+  $("tool-clone").onclick = () => switchTool("clone");
   $("brush").onchange = (e) => {
     Tools.get().brush = e.target.value;
     Tools.save();
@@ -1956,6 +1960,7 @@ document.addEventListener("keydown", (e) => {
   if (typing) return;
   if (e.key === "b" || e.key === "B") switchTool("brush");
   else if (e.key === "m" || e.key === "M") switchTool("mask");
+  else if (e.key === "c" || e.key === "C") switchTool("clone");
 });
 
 // -------- sidebar resize: drag the border between the sidebar and stage --------

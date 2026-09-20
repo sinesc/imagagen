@@ -127,6 +127,114 @@ def test_list_brushes(tmp_path):
     assert c.list_brushes() == ["circle", "b1", "b2"]
 
 
+# ---------------- clone ----------------
+
+def test_clone_copies_source_pixels():
+    # left band L, right band R; clone from the left onto the right with an
+    # offset that maps the destination footprint back into the left band
+    left, right = (123, 45, 67), (10, 20, 30)
+    arr = np.zeros((48, 64, 3), np.uint8)
+    arr[:, :32] = left
+    arr[:, 32:] = right
+    c = Canvas()
+    c.import_image(_png(arr))
+    changed = c.clone([(44.0, 24.0)], offset=(-30, 0), size=20, opacity=1.0)
+    assert changed
+    assert c.image[24, 44].tolist() == list(left)  # destination = source px
+    assert c.image[24, 10].tolist() == list(left)  # source region untouched
+    assert c.image[24, 55].tolist() == list(right)  # outside the footprint
+    assert c.image[0, 63].tolist() == list(right)  # far corner untouched
+
+
+def test_clone_samples_the_pre_stroke_image():
+    # two stamps of one stroke whose source regions overlap the other
+    # stamp's destination: the second stamp must still read the ORIGINAL
+    # pixels, not the first stamp's output (progressive sampling bug)
+    a, b, ccol = (100, 0, 0), (0, 100, 0), (0, 0, 100)
+    arr = np.zeros((48, 64, 3), np.uint8)
+    arr[:, :16] = a
+    arr[:, 16:40] = b
+    arr[:, 40:] = ccol
+    c = Canvas()
+    c.import_image(_png(arr))
+    changed = c.clone([(24.0, 24.0), (25.0, 24.0)], offset=(14, 0), size=20)
+    assert changed
+    # stamp 2 (centre 25) samples x 29..49, which overlaps stamp 1's
+    # destination x 14..34: pre-stroke it reads band B there; a
+    # progressively-edited image would hand it stamp 1's band-C output
+    assert c.image[24, 16].tolist() == list(b)
+    assert c.image[24, 20].tolist() == list(b)
+
+
+def test_clone_source_off_edge_clips():
+    # source shifted off the left edge: no crash, the in-range portion is
+    # copied 1:1 and off-canvas source pixels leave the destination as-is
+    left, rest = (100, 0, 0), (0, 100, 0)
+    arr = np.zeros((48, 64, 3), np.uint8)
+    arr[:, :4] = left
+    arr[:, 4:] = rest
+    c = Canvas()
+    c.import_image(_png(arr))
+    changed = c.clone([(4.0, 24.0)], offset=(-6, 0), size=12, opacity=1.0)
+    assert changed
+    # dest x 6,8 <- source x 0,2 (inside: band `left`), full alpha there
+    assert c.image[24, 6].tolist() == list(left)
+    assert c.image[24, 8].tolist() == list(left)
+    # dest x 2 <- source x -4 (off-canvas): destination unchanged
+    assert c.image[24, 2].tolist() == list(left)
+
+
+def test_clone_opacity_blending():
+    a, b = (100, 0, 0), (0, 100, 0)
+    arr = np.zeros((48, 64, 3), np.uint8)
+    arr[:, :32] = a
+    arr[:, 32:] = b
+    # opacity 0.5: destination centre is the midpoint of source + destination
+    c = Canvas()
+    c.import_image(_png(arr))
+    c.clone([(32.0, 24.0)], offset=(-30, 0), size=20, opacity=0.5)
+    assert c.image[24, 32].tolist() == [50, 50, 0]
+    # opacity 1.0: hard copy at the centre (full brush alpha)
+    c2 = Canvas()
+    c2.import_image(_png(arr))
+    c2.clone([(32.0, 24.0)], offset=(-30, 0), size=20, opacity=1.0)
+    assert c2.image[24, 32].tolist() == list(a)
+
+
+def test_clone_noop_returns_false():
+    # offset (0,0) copies identical pixels: nothing changes, no history step
+    arr = np.full((48, 64, 3), 10, np.uint8)
+    c = Canvas()
+    c.import_image(_png(arr))
+    assert not c.clone([(32.0, 24.0)], offset=(0, 0), size=20)
+    assert not c.can_undo_draw() and not c.can_redo_draw()
+    assert (c.image == arr).all()
+
+
+def test_clone_empty_canvas_raises():
+    c = Canvas()
+    with pytest.raises(ValueError):
+        c.clone([(1.0, 1.0)], offset=(1, 1), size=10)
+
+
+def test_clone_history_is_one_draw_step():
+    left, right = (123, 45, 67), (10, 20, 30)
+    arr = np.zeros((48, 64, 3), np.uint8)
+    arr[:, :32] = left
+    arr[:, 32:] = right
+    c = Canvas()
+    c.import_image(_png(arr))
+    c.clone([(44.0, 24.0)], offset=(-30, 0), size=20)
+    assert c.can_undo_draw() and not c.can_redo_draw()
+    assert len(c._images[c.current_id()].undo) == 1
+    c.undo("image")
+    assert (c.image == arr).all()
+    assert not c.can_undo_draw() and c.can_redo_draw()
+    c.redo("image")
+    assert c.image[24, 44].tolist() == list(left)
+    assert not c.can_redo_draw()
+
+
 # ---------------- mask ----------------
 
 def test_mask_stroke_paints_and_erases():

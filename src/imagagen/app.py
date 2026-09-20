@@ -201,6 +201,18 @@ class StrokeBody(BaseModel):
         return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
 
 
+class CloneBody(BaseModel):
+    # A clone stroke: for each stamp centre C, copy the brush-shaped region
+    # sampled at C + offset onto C (see Canvas.clone). offset is in
+    # canvas px, integer (the client rounds it so the live preview and the
+    # commit agree).
+    points: list[list[float]] = Field(..., min_length=1)  # canvas-pixel coords
+    offset: list[float] = Field(..., min_length=2, max_length=2)
+    size: float = Field(10.0, ge=MIN_BRUSH_SIZE, le=MAX_BRUSH_SIZE_ZOOMED)
+    opacity: float = Field(1.0, ge=0.0, le=1.0)
+    brush: str = "circle"
+
+
 class MaskOpBody(BaseModel):
     op: str  # "dilate" | "erode" | "clear"
     px: int = Field(4, ge=0, le=100)
@@ -755,6 +767,20 @@ def create_app(
                 erase=body.erase,
                 color=color,
                 target=body.target,
+            )
+        except (ValueError, KeyError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {"ok": True, **canvas_flags()}
+
+    @app.post("/api/canvas/clone")
+    def canvas_clone(body: CloneBody) -> dict:
+        try:
+            canvas.clone(
+                points=[(float(x), float(y)) for x, y in body.points],
+                offset=(body.offset[0], body.offset[1]),
+                size=body.size,
+                opacity=body.opacity,
+                brush=body.brush,
             )
         except (ValueError, KeyError) as e:
             return JSONResponse({"error": str(e)}, status_code=400)
