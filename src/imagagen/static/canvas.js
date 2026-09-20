@@ -349,10 +349,11 @@ function drawPreview(ctx) {
       wctx.arc(cx, cy, r, 0, Math.PI * 2);
       wctx.clip();
       wctx.globalAlpha = st.opacity;
-      // drawImage(img, dx, dy) shows img[p - (dx, dy)] at dest p: the whole
-      // working image at -displacement, so dest shows the pixels the
-      // PREVIOUS stamp just moved (off-image source leaves dest as-is)
-      wctx.drawImage(view.smudgeWork.canvas, -dx, -dy);
+      // drawImage(img, a, b) places img's top-left at (a, b), so dest p
+      // shows img[p - (a, b)]: with (dx, dy) that is work[p - (dx, dy)],
+      // the pixels the PREVIOUS stamp just moved (off-image source leaves
+      // dest as-is) -- the same read as the server's src sub-rect
+      wctx.drawImage(view.smudgeWork.canvas, dx, dy);
       wctx.restore();
     }
     // blit the working image; the mask overlay goes on top of it so the

@@ -692,9 +692,11 @@ def test_smudge_single_click_is_noop(page, server):
 
 
 def test_smudge_drag_smears(page, server):
-    # a continuous smear carries the LEFT band all the way to the drag
-    # endpoint (each stamp drags what the previous one moved). The preview
-    # is live: it is on screen BEFORE mouse.up commits it.
+    # a continuous smear carries the LEFT band along the drag: each stamp
+    # drags what the previous one moved, so the white front (x=100) ends
+    # up past the drag endpoint (x=140). A smear in the WRONG direction
+    # (sampling ahead of the motion) would show RIGHT where LEFT is
+    # expected. The preview is live: asserted BEFORE mouse.up commits.
     base, _ = server
     _open(page, base)
     _two_band(base)
@@ -702,17 +704,17 @@ def test_smudge_drag_smears(page, server):
     page.wait_for_function("document.getElementById('canvas').hidden === false")
     page.keyboard.press("s")
 
-    page.mouse.move(*screen_pos(page, 30, 75))
+    page.mouse.move(*screen_pos(page, 60, 75))
     page.mouse.down()
-    page.mouse.move(*screen_pos(page, 60, 75), steps=5)
-    page.mouse.move(*screen_pos(page, 90, 75), steps=5)
-    assert _screen_px(page, 80, 75) == list(LEFT), \
-        f"live preview under cursor: {_screen_px(page, 80, 75)}"
+    page.mouse.move(*screen_pos(page, 100, 75), steps=5)
+    page.mouse.move(*screen_pos(page, 140, 75), steps=5)
+    assert _screen_px(page, 130, 75) == list(LEFT), \
+        f"live preview under cursor: {_screen_px(page, 130, 75)}"
     page.mouse.up()
-    assert wait_until(lambda: canvas_px(base, 80, 75) == LEFT), \
-        f"smudge trail: {canvas_px(base, 80, 75)}"
-    assert canvas_px(base, 140, 75) == RIGHT  # not dragged: untouched
+    assert wait_until(lambda: canvas_px(base, 130, 75) == LEFT), \
+        f"smudge trail: {canvas_px(base, 130, 75)}"
     assert canvas_px(base, 10, 10) == LEFT  # left band untouched
+    assert canvas_px(base, 148, 75) == RIGHT  # ahead of the trail: untouched
     assert canvas_px(base, 190, 140) == RIGHT  # right band corner untouched
 
 
