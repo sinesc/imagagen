@@ -1175,7 +1175,7 @@ function syncToolbar() {
   // The colour swatch always edits the brush tool's remembered colour
   // (mask strokes ignore colour), so it stays live in mask mode too;
   // the clone and smudge tools have no colour at all, so disable it there.
-  $("brush-color").disabled = ["clone", "smudge"].includes(Tools.current);
+  $("brush-color").disabled = ["clone", "smudge", "mask"].includes(Tools.current);
   $("brush-color").value = Tools.state.brush.color || "#ffffff";
   if (brushNames.includes(st.brush)) $("brush").value = st.brush;
   $("brush-size").value = sliderFromSize(st.size);

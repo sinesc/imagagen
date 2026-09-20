@@ -106,9 +106,8 @@ def test_mask_tool_shift_erase_and_morph(page, server):
     page.keyboard.press("m")
     assert page.evaluate(
         "document.getElementById('tool-mask').classList.contains('active')")
-    # the colour swatch stays live in mask mode (it edits the brush tool's
-    # colour; mask strokes ignore colour server-side)
-    assert not page.evaluate("document.getElementById('brush-color').disabled")
+    # mask strokes have no colour, like clone/smudge
+    assert page.evaluate("document.getElementById('brush-color').disabled")
 
     dot(page, 50, 40)  # mask default 30 px -> disc, radius 15
     assert wait_until(lambda: mask_arr(base) is not None and mask_arr(base)[40, 50] == 255)
