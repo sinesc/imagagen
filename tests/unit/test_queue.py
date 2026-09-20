@@ -198,9 +198,13 @@ def test_image_events_carry_image_id():
     _wait_done(q, job.id)
     img_events = [e for e in events if e["type"] == "image"]
     assert len(img_events) == 2
-    # each result is registered as a canvas entity referenced by the event
-    for i, e in enumerate(img_events):
-        assert e["image_id"] == f"job:{job.id}:{i}"
+    # each result is registered as a canvas entity referenced by the event;
+    # key on the event's own index, NOT its position in the list -- the
+    # queue runs one worker per GPU, so a batch's tasks complete (and emit
+    # events) in racy order
+    assert {e["index"] for e in img_events} == {0, 1}
+    for e in img_events:
+        assert e["image_id"] == f"job:{job.id}:{e['index']}"
         assert e["image_id"] in canvas._images
 
 

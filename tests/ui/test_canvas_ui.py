@@ -911,8 +911,10 @@ def test_drop_png_on_canvas_sets_image_only(page, server):
     _drop_png(page, "#canvas-holder", _meta_png(120, 90, rgb=BG))
     assert wait_until(lambda: _canvas_size(base) == (120, 90))
     assert canvas_px(base, 1, 1) == BG
-    # the image is rendered, the drop highlight is gone...
-    assert page.evaluate("document.getElementById('canvas').hidden === false")
+    # the image is rendered, the drop highlight is gone... (the client
+    # re-render is async after the upload commit, so wait for it)
+    assert page.wait_for_function(
+        "document.getElementById('canvas').hidden === false")
     assert not page.locator("#canvas-holder").evaluate(
         "el => el.classList.contains('drop')")
     # ...and NO metadata was applied to the controls
