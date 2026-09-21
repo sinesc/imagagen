@@ -24,6 +24,7 @@ on the GPUs that are running that job (partial images are never emitted).
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from collections import deque
 from collections.abc import Callable
@@ -37,6 +38,12 @@ from .backends import GenerateRequest, ModelBackend
 from .generation import InpaintPlan
 
 log = logging.getLogger(__name__)
+
+# Backends report per-task progress as "step <done>/<total>". The queue
+# parses it to aggregate completed steps across every task (GPU) of a job,
+# so the progress bar tracks the whole batch instead of bouncing between
+# each GPU's individual step counter.
+_STEP_RE = re.compile(r"step (\d+)/(\d+)")
 
 
 @dataclass
@@ -60,6 +67,15 @@ class Job:
     meta_prompt: str | None = None
     meta_negative: str | None = None
     meta_styles: list[dict] | None = None
+    # Batch-wide step progress (see _STEP_RE): `steps_per_task` is the total
+    # number of denoising steps one image needs (learned from the backend's
+    # first progress event; identical for every task of the job because they
+    # all share the same request). `steps_done` maps a task index to how many
+    # of its steps have completed. Together they let the queue emit a single
+    # monotonic progress value for the whole batch: done/total where
+    # total = steps_per_task * batch_size.
+    steps_per_task: int | None = None
+    steps_done: dict[int, int] = field(default_factory=dict)
 
     @property
     def completed(self) -> int:
@@ -98,6 +114,10 @@ class GenerationQueue:
         self._workers: dict[int, threading.Thread] = {}
         self._stop = False
         self._job_lock = threading.Lock()
+        # Guards batch-wide step aggregation (steps_per_task / steps_done)
+        # so concurrent worker progress updates stay consistent and the
+        # emitted progress sequence remains monotonic.
+        self._progress_lock = threading.Lock()
         # The model whose first image has fully generated+decoded in this
         # process (the warm-up gate, see module docstring). Tasks of any
         # other model run on the primary GPU only until one of them has
@@ -338,9 +358,31 @@ class GenerationQueue:
             meta_prompt, meta_negative = prompt, negative
 
         def progress(fraction: float, message: str) -> None:
-            if not job.interrupted:
+            if job.interrupted:
+                return
+            m = _STEP_RE.search(message)
+            if m is None:
+                # unexpected message format: keep the per-task pass-through
                 self.emit({"type": "progress", "job": job.id, "index": task.index,
                            "fraction": fraction, "message": message})
+                return
+            step, per_task = int(m.group(1)), int(m.group(2))
+            # Aggregate across the whole batch: sum the completed steps of
+            # every task and divide by (steps per task * batch size). The lock
+            # is held across the emit as well so that the emitted sequence
+            # stays monotonic (a later-emitted event can never report fewer
+            # completed steps than an earlier one).
+            with self._progress_lock:
+                if job.steps_per_task is None:
+                    job.steps_per_task = per_task
+                job.steps_done[task.index] = max(
+                    job.steps_done.get(task.index, 0), step)
+                total = job.steps_per_task * job.batch_size
+                done = sum(job.steps_done.values())
+                self.emit({"type": "progress", "job": job.id,
+                           "index": task.index,
+                           "fraction": done / total,
+                           "message": f"step {done} / {total}"})
 
         try:
             result, backend = self.registry.run(job.model_id, gpu, req, progress)

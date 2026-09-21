@@ -394,6 +394,32 @@ def test_three_images_run_in_parallel_and_refill():
     assert backend.max_active == 2    # two GPUs truly generated at once
 
 
+def test_progress_aggregates_across_batch_on_multiple_gpus():
+    # When a batch runs across GPUs in parallel, the progress bar must track
+    # the WHOLE batch (steps * batch_size), not bounce between each GPU's
+    # individual step counter.
+    backend = MockBackend(steps_delay=0.02)
+    events = []
+    q, _ = _queue(backend, events, gpus=[0, 1])
+    # warm the model so the whole batch can run in parallel on both GPUs
+    warm = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=0), 1)
+    _wait_done(q, warm.id)
+    steps, batch = 4, 4
+    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=steps, seed=10), batch)
+    _wait_done(q, job.id)
+    progs = [e for e in events if e["type"] == "progress" and e["job"] == job.id]
+    assert progs, "expected progress events for the batch job"
+    total = steps * batch
+    # the denominator is the whole batch, not a single image's steps
+    assert all(e["message"].endswith(f"/ {total}") for e in progs)
+    fracs = [e["fraction"] for e in progs]
+    # the bar only ever moves forward (no bouncing between GPU progress)
+    assert fracs == sorted(fracs), f"progress not monotonic: {fracs}"
+    # the batch reaches 100% once every image has finished all its steps
+    assert progs[-1]["fraction"] == 1.0
+    assert progs[-1]["message"] == f"step {total} / {total}"
+
+
 def test_primary_wins_tie_when_both_free():
     q, _ = _queue(MockBackend(), events=[], gpus=[0, 1])
     j1 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 1)
