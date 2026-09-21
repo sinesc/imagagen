@@ -7,6 +7,14 @@ is empty. Each GPU therefore generates at most one image at a time, but
 different GPUs run in parallel. Model loading/unloading is serialized per
 GPU by the registry's per-GPU lock.
 
+Warm-up gate: the first image for a model (fresh server, or a model switch)
+runs ALONE on the primary GPU. Only once it has been fully generated and
+decoded does that model's work join normal parallel dispatch. Starting a
+cold process straight into a parallel multi-GPU batch corrupts CUDA state
+and produces black images; a completed warm-up generation makes the
+subsequent parallel generation reliable. The mark lives per model in
+``_warmed_model`` and is set in ``_run_task`` after a successful run.
+
 A "job" is a user generation request expanded into N single-image tasks
 (batch). Tasks of a job carry ascending seeds from the job's base seed.
 Interrupting a job drops its pending tasks and cancels any in-flight image
@@ -90,6 +98,11 @@ class GenerationQueue:
         self._workers: dict[int, threading.Thread] = {}
         self._stop = False
         self._job_lock = threading.Lock()
+        # The model whose first image has fully generated+decoded in this
+        # process (the warm-up gate, see module docstring). Tasks of any
+        # other model run on the primary GPU only until one of them has
+        # completed. Guarded by ``self._cond``.
+        self._warmed_model: str | None = None
 
     def start(self, gpus: list[int] | None = None) -> None:
         if gpus is None:
@@ -263,9 +276,23 @@ class GenerationQueue:
             g for g in self._gpus
             if g not in self._gpu_running and not self._gpu_queues[g]
         ]
-        while self._pending and free:
-            task = self._pending.pop(0)
-            gpu = free.pop(0)  # self._gpus is primary-ordered
+        i = 0
+        while i < len(self._pending) and free:
+            task = self._pending[i]
+            job = self.job(task.job_id)
+            if job is not None and job.model_id == self._warmed_model:
+                gpu = free.pop(0)  # warm: any free GPU, primary first
+            else:
+                # Cold model: primary only, and only while it is the next
+                # free GPU. A cold task is never sent to a secondary GPU,
+                # and at most one cold task leaves the pending list per
+                # dispatch (the second would still see the primary busy).
+                if free and free[0] == self._gpus[0]:
+                    gpu = free.pop(0)
+                else:
+                    i += 1
+                    continue
+            del self._pending[i]
             self._gpu_queues[gpu].append(task)
         self._cond.notify_all()
 
@@ -327,6 +354,17 @@ class GenerationQueue:
                        "message": f"{type(e).__name__}: {e}"})
             self._settle(job, task.index)
             return
+
+        # The image is fully generated and decoded: this model is now warm.
+        # From here on its tasks may run in parallel on multiple GPUs
+        # (releases the warm-up gate in _dispatch). An interrupted or
+        # failed first run does NOT warm the model: the next task stays
+        # gated to the primary and retries.
+        if job.model_id != self._warmed_model:
+            with self._cond:
+                if job.model_id != self._warmed_model:
+                    self._warmed_model = job.model_id
+                    self._dispatch()
 
         if job.interrupted:
             return

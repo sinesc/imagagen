@@ -340,13 +340,45 @@ def test_single_image_uses_primary():
     assert q.registry.uses == [(0, 1)]  # went to primary, not the other
 
 
-def test_two_images_distribute_across_gpus():
-    q, _ = _queue(MockBackend(steps_delay=0.05), events=[], gpus=[0, 1])
+def test_first_image_warms_primary_then_batch_continues():
+    # Cold start: the first image of a model runs ALONE on the primary GPU
+    # (warm-up gate); only after it fully completes do further images flow,
+    # and subsequent batches distribute across both GPUs in parallel.
+    backend = MockBackend(steps_delay=0.05)
+    q, _ = _queue(backend, events=[], gpus=[0, 1])
     job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=2, seed=1), 2)
     _wait_done(q, job.id)
     mapping = {seed: gpu for gpu, seed in q.registry.uses}
-    assert mapping[1] == 0  # first task -> primary
-    assert mapping[2] == 1  # second task -> the other GPU
+    assert mapping[1] == 0   # first (cold) image: primary only
+    assert mapping[2] == 1   # after warm-up it runs on the other GPU
+    # a subsequent batch now spreads across both GPUs
+    job2 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=2, seed=10), 2)
+    _wait_done(q, job2.id)
+    mapping2 = {seed: gpu for gpu, seed in q.registry.uses if seed >= 10}
+    assert mapping2[10] == 0
+    assert mapping2[11] == 1
+
+
+def test_cold_second_image_waits_for_primary():
+    # The second image of a cold batch must NOT start on the secondary GPU
+    # before the first image has fully generated + decoded.
+    backend = MockBackend(steps_delay=0.15)
+    events = []
+    q, _ = _queue(backend, events, gpus=[0, 1])
+    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=20, seed=1), 2)
+    deadline = time.time() + 5
+    while time.time() < deadline and not any(
+        e["type"] == "progress" and e["job"] == job.id and e["index"] == 0
+        for e in events
+    ):
+        time.sleep(0.01)
+    # first image is in flight (steps=20 @ 0.15s ~ 3s); give the dispatch
+    # time to (incorrectly) start image 2 early, then assert it has not
+    time.sleep(0.5)
+    assert q.registry.uses == [(0, 1)]
+    _wait_done(q, job.id)
+    # image 2 started only after image 1 fully completed, on the other GPU
+    assert q.registry.uses == [(0, 1), (1, 2)]
 
 
 def test_three_images_run_in_parallel_and_refill():
@@ -355,9 +387,9 @@ def test_three_images_run_in_parallel_and_refill():
     job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=2, seed=100), 3)
     _wait_done(q, job.id)
     mapping = {seed: gpu for gpu, seed in q.registry.uses}
-    assert mapping[100] == 0          # first -> primary
-    assert mapping[101] == 1          # second -> the other GPU
-    assert mapping[102] in (0, 1)     # third -> whichever freed first
+    assert mapping[100] == 0     # first (cold) image -> primary
+    assert mapping[101] == 1     # after warm-up, the other GPU
+    assert mapping[102] == 0     # primary picks up the remaining image
     assert set(mapping.values()) == {0, 1}
     assert backend.max_active == 2    # two GPUs truly generated at once
 
@@ -377,11 +409,14 @@ def test_interrupt_cancels_only_that_job_gpus():
     backend = MockBackend(steps_delay=0.2)
     events = []
     q, _ = _queue(backend, events, gpus=[0, 1])
+    # warm-up image so j1's batch can immediately occupy BOTH GPUs
+    j0 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=0), 1)
+    _wait_done(q, j0.id)
     # batch 2 occupies BOTH GPUs
     j1 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=20, seed=1), 2)
     deadline = time.time() + 5
     while time.time() < deadline and \
-            sum(1 for e in events if e["type"] == "progress") < 2:
+            sum(1 for e in events if e["type"] == "progress" and e["job"] == j1.id) < 2:
         time.sleep(0.01)
     # a second job goes pending behind the busy GPUs
     j2 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=50), 1)
@@ -412,13 +447,17 @@ def test_lone_image_uses_other_gpu_when_primary_busy():
     backend = MockBackend(steps_delay=0.15)
     events = []
     q, _ = _queue(backend, events, gpus=[0, 1])
+    # warm-up on the primary (cold models are gated to the primary first)
+    j0 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=0), 1)
+    _wait_done(q, j0.id)
     j1 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=20, seed=1), 1)
     deadline = time.time() + 5
     while time.time() < deadline and not any(
         e["type"] == "progress" and e["job"] == j1.id for e in events
     ):
         time.sleep(0.01)
-    # primary is now busy; a *new* lone image must not stall for it
+    # primary is now busy with a warm-model job; a *new* lone image must
+    # not stall for it
     j2 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=100), 1)
     _wait_done(q, j2.id)
     mapping = {seed: gpu for gpu, seed in q.registry.uses}
