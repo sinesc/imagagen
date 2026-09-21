@@ -43,10 +43,14 @@ Precision (matching Forge's kdiff path exactly):
   solver in fp16 (10-bit mantissa) measurably flattens detail/contrast.
 - only the UNet itself runs in fp16 (input cast right before the call,
   like Forge's calculate_input + .to(computation_dtype))
+- the improved VAE (models/sdxl_vae.safetensors, ft-MSE) is swapped in when
+  present: the stock SDXL VAE baked into the checkpoint overflows to NaN at
+  high-magnitude latents (the classic "black image" bug), while the improved
+  VAE is fp16-stable and renders color better. All reference images were
+  decoded with the improved VAE. The checkpoint VAE is the fallback when the
+  file is absent.
 - the VAE decodes in bf16 (Forge's default on sm_80+ GPUs): bf16 has the
-  same 8-bit mantissa as fp16 but 8x the dynamic range, which is also why
-  Forge does not hit the fp16 stock-VAE overflow/NaN that used to make us
-  swap in the improved VAE
+  same 8-bit mantissa as fp16 but 8x the dynamic range
 
 VRAM options (imagagen.ini, all optional, all off by default):
 - unet-quantization = nf4: bitsandbytes NF4 4-bit weights for the UNet.
@@ -337,10 +341,30 @@ class SdxlBackend(ModelBackend):
             self.pipe = StableDiffusionXLPipeline.from_single_file(
                 str(info.path), torch_dtype=torch.float16
             )
+        # Swap in the improved fp16-stable VAE (ft-MSE) if present: the
+        # stock SDXL VAE baked into the checkpoint overflows to NaN at
+        # high-magnitude latents (uniformly black images). Prefer the
+        # project's models/ dir, fall back to next to the model's grandparent
+        # dir (the pre-Config-location behavior).
+        vae_path = None
+        if config is not None:
+            candidate = config.models_dir / "sdxl_vae.safetensors"
+            if candidate.is_file():
+                vae_path = candidate
+        if vae_path is None:
+            candidate = info.path.parent.parent / "sdxl_vae.safetensors"
+            if candidate.is_file():
+                vae_path = candidate
+        if vae_path is not None:
+            from diffusers import AutoencoderKL
+
+            self.pipe.vae = AutoencoderKL.from_single_file(
+                str(vae_path), torch_dtype=torch.float16
+            )
         self.pipe.to(self.device)
-        # Forge's default VAE dtype on sm_80+ is bf16: same 8-bit mantissa
-        # as fp16 but 8x the exponent range, so the stock VAE no longer
-        # overflows (the fp16 NaN that used to force a VAE swap is gone).
+        # The VAE decodes in bf16 (Forge's default on sm_80+ GPUs): same
+        # 8-bit mantissa as fp16 but 8x the exponent range. The improved
+        # VAE is fp16-stable, so bf16 is even safer for it.
         cap = torch.cuda.get_device_capability(self.device)
         self.vae_dtype = torch.bfloat16 if cap[0] >= 8 else torch.float32
         self.pipe.vae.to(dtype=self.vae_dtype)
