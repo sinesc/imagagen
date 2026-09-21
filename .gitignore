@@ -5,24 +5,23 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 dist/
-ui-state.json
-imagagen.ini
-styles.csv
+user/ui-state.json
+user/imagagen.ini
+user/styles.csv
 
 # user data directories (created at runtime)
 models/*
 loras/*
-brushes/*
-presets/*
-model-configs/*
+user/brushes/*
+user/presets/*
+user/model-configs/*
 cache/*
 output/*
-wildcards/*
+user/wildcards/*
 !models/.gitkeep
 !loras/.gitkeep
-!brushes/.gitkeep
-!brushes/soft.png
-!presets/.gitkeep
-!model-configs/.gitkeep
+!user/brushes/.gitkeep
+!user/presets/.gitkeep
+!user/model-configs/.gitkeep
 !cache/.gitkeep
-!wildcards/.gitkeep
+!user/wildcards/.gitkeep

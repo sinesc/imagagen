@@ -100,7 +100,7 @@ def test_model_config_crud(client):
         "i2i": {"sampler": None, "scheduler": None, "cfg": 6.0, "loras": []},
     })
     assert r.status_code == 200, r.text
-    assert (tmp_path / "model-configs" / "mock-tuned.json").is_file()
+    assert (tmp_path / "user" / "model-configs" / "mock-tuned.json").is_file()
 
     # invalid bodies are rejected (pydantic: 422)
     assert client.post("/api/model-configs",
@@ -109,7 +109,7 @@ def test_model_config_crud(client):
     # delete
     r = client.post("/api/model-configs/delete", json={"id": "mock-tuned"})
     assert r.json() == {"ok": True}
-    assert not (tmp_path / "model-configs" / "mock-tuned.json").exists()
+    assert not (tmp_path / "user" / "model-configs" / "mock-tuned.json").exists()
     body = client.get("/api/models").json()
     assert [e["id"] for e in body["models"]] == [MOCK_ID]
 
@@ -128,7 +128,7 @@ def test_editing_default_config_materializes_it(client):
     body = r.json()
     assert body["id"] == "mock-model"
     assert body["is_default"] is False
-    assert (tmp_path / "model-configs" / "mock-model.json").is_file()
+    assert (tmp_path / "user" / "model-configs" / "mock-model.json").is_file()
     # the selector now lists the file config instead of the in-memory
     # default (same name, model covered)
     models = client.get("/api/models").json()
@@ -302,7 +302,7 @@ def test_preset_crud_and_apply_payload(client, tmp_path):
         "controls": {"width": True, "height": True, "steps": True},
     })
     assert r.status_code == 200, r.text
-    assert (tmp_path / "presets" / "big-square.json").is_file()
+    assert (tmp_path / "user" / "presets" / "big-square.json").is_file()
     assert client.get("/api/presets").json() == {
         "presets": [{"name": "Big square", "group": None}]}
 

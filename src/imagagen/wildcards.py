@@ -1,6 +1,6 @@
 """Prompt wildcard processing.
 
-Wildcard text files (``*.txt``) live in the project's ``wildcards/``
+Wildcard text files (``*.txt``) live in the project's ``user/wildcards/``
 directory. A prompt (or negative prompt) may include one via ``__name__``,
 where ``name`` is the file's path relative to the wildcards folder without
 its extension, wrapped in double underscores -- e.g. ``__weather__`` or

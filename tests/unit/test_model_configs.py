@@ -53,7 +53,7 @@ def test_file_layout(tmp_path):
     s = store(tmp_path)
     s.save(ModelConfig(name="My A tuned", model="sdxl/a.safetensors",
                        t2i=ModeConfig(loras=[LoraRef(name="sdxl/dmd2", weight=0.8)])))
-    f = tmp_path / "model-configs" / "my-a-tuned.json"
+    f = tmp_path / "user" / "model-configs" / "my-a-tuned.json"
     assert f.is_file()
     on_disk = json.loads(f.read_text())
     assert on_disk["name"] == "My A tuned"
@@ -86,7 +86,7 @@ def test_save_with_default_id_materializes_it(tmp_path):
     e = s.save(ModelConfig(name="A", model="sdxl/a.safetensors",
                            t2i=ModeConfig(cfg=6.0)),
                id_="sdxl/a.safetensors")
-    assert (tmp_path / "model-configs" / "a.json").is_file()
+    assert (tmp_path / "user" / "model-configs" / "a.json").is_file()
     by_id = {x.id: x for x in s.entries()}
     # model A is covered now -> the default entry is gone
     assert set(by_id) == {"a", "sdxl/b.safetensors"}
@@ -128,15 +128,15 @@ def test_delete(tmp_path):
     with pytest.raises(ConfigError):
         s.delete("sdxl/a.safetensors")  # in-memory default: not deletable
     s.delete("base")
-    assert not (tmp_path / "model-configs" / "base.json").exists()
+    assert not (tmp_path / "user" / "model-configs" / "base.json").exists()
     assert {e.id for e in s.entries()} == {"sdxl/a.safetensors", "sdxl/b.safetensors"}
     with pytest.raises(ConfigError):
         s.delete("base")
 
 
 def test_corrupt_file_is_reported(tmp_path):
-    (tmp_path / "model-configs").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "model-configs" / "bad.json").write_text("{nope")
+    (tmp_path / "user" / "model-configs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "user" / "model-configs" / "bad.json").write_text("{nope")
     with pytest.raises(ConfigError, match="bad.json"):
         store(tmp_path).entries()
 

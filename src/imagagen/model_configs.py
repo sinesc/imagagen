@@ -1,9 +1,9 @@
-"""Model configurations (model-configs/*.json) and default-override resolution.
+"""Model configurations (user/model-configs/*.json) and default-override resolution.
 
 Every *model* (a .safetensors under models/<type>/) shows up in the model
 selector as at least one *configuration*:
 
-- models covered by a file in model-configs/ get one entry per file -- the
+- models covered by a file in user/model-configs/ get one entry per file -- the
   user can create several per model (e.g. "My SDXL Model" and "My SDXL Model
   + DMD2 Lora");
 - models with no configuration files get a read-only in-memory *default*
@@ -105,7 +105,7 @@ def entry_id(name: str) -> str:
 
 
 class ConfigStore:
-    """Loads/saves model-configs/*.json and merges them with the in-memory
+    """Loads/saves user/model-configs/*.json and merges them with the in-memory
     defaults for unconfigured models. Thread-safe (saves are rare)."""
 
     def __init__(self, config, models: Callable[[], list[dict]]) -> None:

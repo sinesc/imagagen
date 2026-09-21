@@ -46,8 +46,8 @@ def test_health_and_dirs(client, tmp_path):
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    for d in ("models", "models/segmentation", "loras", "brushes", "presets",
-              "model-configs", "output"):
+    for d in ("models", "models/segmentation", "loras", "user", "user/brushes",
+              "user/wildcards", "user/presets", "user/model-configs", "output"):
         assert (tmp_path / d).is_dir(), d
 
 
@@ -133,8 +133,8 @@ def test_generate_missing_wildcard_rejected(client, tmp_path):
 
 
 def test_generate_recursion_wildcard_rejected(client, tmp_path):
-    (tmp_path / "wildcards").mkdir(exist_ok=True)
-    (tmp_path / "wildcards" / "loop.txt").write_text("spins __loop__", encoding="utf-8")
+    (tmp_path / "user" / "wildcards").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "user" / "wildcards" / "loop.txt").write_text("spins __loop__", encoding="utf-8")
     r = client.post("/api/generate", json={
         "prompt": "a __loop__ day", "width": 64, "height": 64, "steps": 2,
     })
@@ -145,8 +145,8 @@ def test_generate_recursion_wildcard_rejected(client, tmp_path):
 def test_generate_wildcard_resolved_in_metadata(client, tmp_path):
     from imagagen import metadata
 
-    (tmp_path / "wildcards").mkdir(exist_ok=True)
-    (tmp_path / "wildcards" / "mood.txt").write_text("sunny\nstormy\n", encoding="utf-8")
+    (tmp_path / "user" / "wildcards").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "user" / "wildcards" / "mood.txt").write_text("sunny\nstormy\n", encoding="utf-8")
     with client.websocket_connect("/api/ws") as ws:
         r = client.post("/api/generate", json={
             "prompt": "a __mood__ day", "width": 64, "height": 64, "steps": 2,

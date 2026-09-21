@@ -111,7 +111,11 @@ class CanvasImage:
 
 
 class Canvas:
-    def __init__(self, brushes_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        brushes_dir: Path | None = None,
+        default_brushes_dir: Path | None = None,
+    ) -> None:
         self._lock = threading.RLock()
         self._images: dict[str, CanvasImage] = {}
         self._current: str | None = None
@@ -119,8 +123,24 @@ class Canvas:
         self._pinned: set[str] = set()  # entity ids kept as crop thumbnails
         self._upload_counter = 0
         self._crop_counter = 0
+        # brush PNG lookup: the provided defaults (res/brushes/) are
+        # searched first, then the user's brushes (user/brushes/)
         self._brushes_dir = brushes_dir
+        self._default_brushes_dir = default_brushes_dir
         self._brush_cache: dict[str, np.ndarray] = {}  # name -> float32 L array 0..1
+
+    def _brush_dirs(self) -> list[Path]:
+        """Existing brush folders in search order (defaults, then user)."""
+        return [d for d in (self._default_brushes_dir, self._brushes_dir)
+                if d is not None and d.is_dir()]
+
+    def _brush_file(self, name: str) -> Path | None:
+        """The PNG for brush `name` (first folder hit wins), or None."""
+        for d in self._brush_dirs():
+            p = d / f"{name}.png"
+            if p.is_file():
+                return p
+        return None
 
     # --- state ---
     @property
@@ -394,12 +414,17 @@ class Canvas:
 
     # --- brushes ---
     def list_brushes(self) -> list[str]:
-        """'circle' plus every greyscale png in brushes/ (by file stem)."""
+        """'circle' plus every greyscale png (by file stem), the provided
+        defaults (res/brushes/) first, then the user's (user/brushes/);
+        a name in both folders is listed once (the default file wins)."""
         names = ["circle"]
-        if self._brushes_dir is not None and self._brushes_dir.is_dir():
-            for p in sorted(self._brushes_dir.iterdir()):
-                if p.suffix.lower() == ".png" and p.is_file():
+        seen: set[str] = set()
+        for d in self._brush_dirs():
+            for p in sorted(d.iterdir()):
+                if p.suffix.lower() == ".png" and p.is_file() \
+                        and p.stem not in seen:
                     names.append(p.stem)
+                    seen.add(p.stem)
         return names
 
     def brush_shape(self, name: str, size: float) -> np.ndarray:
@@ -408,8 +433,8 @@ class Canvas:
         greyscale PNG whose luminance is the alpha."""
         with self._lock:
             if name != "circle" and name not in self._brush_cache:
-                p = (self._brushes_dir or Path("/nonexistent")) / f"{name}.png"
-                if not p.is_file():
+                p = self._brush_file(name)
+                if p is None:
                     raise KeyError(f"unknown brush: {name}")
                 img = ImageOps.grayscale(Image.open(p)).convert("L")
                 self._brush_cache[name] = np.asarray(img, dtype=np.float32) / 255.0

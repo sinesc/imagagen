@@ -157,7 +157,7 @@ def test_ui_state_persists_soft_fields(tmp_path):
         # unspecified options keep the Forge defaults
         assert state["soft_inpaint_detail_preservation"] == 4.0
         assert state["soft_composite_difference_threshold"] == 0.5
-    on_disk = json.loads((tmp_path / "ui-state.json").read_text())
+    on_disk = json.loads((tmp_path / "user" / "ui-state.json").read_text())
     assert on_disk["soft_inpainting"] is True
     assert on_disk["soft_mask_blend_scale"] == 0.5
 

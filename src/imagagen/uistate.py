@@ -3,7 +3,7 @@
 The last-used form values (model, prompt, negative prompt, width, height,
 steps, CFG, seed, batch, sampler, scheduler, denoise strength) are
 serialized as JSON to
-``<root>/ui-state.json``. A restarted server serves the saved state via
+``<root>/user/ui-state.json``. A restarted server serves the saved state via
 ``GET /api/ui-state`` and the UI restores it into the form, so the page
 picks up exactly where the user left off.
 

@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parent.parent
 port = 8794
 tmp = Path(tempfile.mkdtemp(prefix="imagagen-pad-"))
 (tmp / "models").symlink_to(ROOT / "models")
-(tmp / "imagagen.ini").write_text("[imagagen]\nprimary-gpu = 1\n")
+(tmp / "user").mkdir(exist_ok=True)
+(tmp / "user" / "imagagen.ini").write_text("[imagagen]\nprimary-gpu = 1\n")
 
 proc = subprocess.Popen(
     [sys.executable, "-m", "imagagen.server", "--port", str(port),

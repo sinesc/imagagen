@@ -46,7 +46,15 @@ Place SDXL weights in `models/sdxl/` and LoRAs in `loras/sdxl/` (subdirectories
 are scanned recursively, models/LoRAs are addressed by their relative path
 without extension, e.g. `test-dir/JuggernautXL9.0`). Small HuggingFace hub
 files fetched on first load are cached in `cache/`. Greyscale brush
-PNGs in `brushes/`. Outputs land in `output/`.
+PNGs in `user/brushes/` (the provided defaults in `res/brushes/` are
+searched first). Outputs land in `output/`.
+
+All user data lives in `user/` (settings, model configurations, presets,
+styles, wildcards, brushes, UI state — share or back up that one folder).
+The provided defaults live in `res/` (tracked in git, never written by
+the app): default brushes in `res/brushes/`, and `imagagen.ini.default`
+/ `styles.csv.default`, which `launch.sh` copies to `user/` on first
+start.
 
 **Person mask generation**: drop a MediaPipe image-segmenter `.tflite` into
 `models/segmentation/` (e.g. the selfie multiclass model, 16 MB, from
@@ -54,9 +62,9 @@ PNGs in `brushes/`. Outputs land in `output/`.
 The toolbar's model dropdown + *segment* button then generate a person-part
 mask into the mask buffer (undoable). MediaPipe needs the `libEGL`/`libGLES`
 system libraries (Debian/Ubuntu: `apt install libegl1 libgles2`). Named model configurations
-live in `model-configs/`, generation-setting presets in `presets/` (both
-plain JSON), and prompt styles in `styles.csv` (all created/edited from the
-UI and safe to edit by hand).
+live in `user/model-configs/`, generation-setting presets in
+`user/presets/` (both plain JSON), and prompt styles in `user/styles.csv`
+(all created/edited from the UI and safe to edit by hand).
 
 Optional: put an improved VAE (`sdxl_vae.safetensors`, e.g. the ft-MSE
 "Improved VAE") in `models/`. The stock SDXL VAE overflows to NaN in fp16 for
@@ -72,8 +80,7 @@ On a 16 GB card shared with other GPU work, expect 1024² to be at the ceiling
 
 ### GPU selection
 
-Which GPU the server uses is configured in `imagagen.ini` in the project
-root:
+Which GPU the server uses is configured in `user/imagagen.ini`:
 
 ```ini
 [imagagen]
@@ -93,7 +100,7 @@ around automatically. The chosen GPU is reported by `GET /api/health`
 ### Model configurations
 
 Every model shows up in the selector as at least one *configuration*:
-models with files in `model-configs/` get one entry per file (you can have
+models with files in `user/model-configs/` get one entry per file (you can have
 several per model, e.g. "Base" and "Base + DMD2 Lora"), unconfigured models
 get a read-only in-memory default. A configuration stores, separately for
 text-to-image and inpainting, a sampler, a scheduler, a CFG and a LoRA list;
@@ -104,8 +111,8 @@ LoRAs are always loaded in front of the LoRAs you pick in the form.
 
 ### Prompt styles
 
-Prompt styles live in `styles.csv` in the project root (A1111-style CSV:
-`name,prompt,negative_prompt,optgroup` — created from `styles.csv.default`,
+Prompt styles live in `user/styles.csv` (A1111-style CSV:
+`name,prompt,negative_prompt,optgroup` — created from `res/styles.csv.default`,
 safe to edit by hand). In the UI, *+ Style* adds a dropdown row (styles are
 grouped by `optgroup`, everything sorted alphabetically); each row has a −
 to remove it, and the ⚙ next to *+ Style* opens the style configuration
@@ -116,14 +123,14 @@ style text is appended to the end (same for the style's negative prompt).
 Generated images record the *raw* prompt plus the selected styles' names
 and contents in the PNG metadata, so re-importing an image restores the same
 prompt + style list. Imported images that reference styles missing from
-`styles.csv` get those styles added as in-memory temporaries under the
-"Session" optgroup (never written to the CSV).
+`user/styles.csv` get those styles added as in-memory temporaries under
+the "Session" optgroup (never written to the CSV).
 
 ### UI state persistence
 
 The web UI's last-used form inputs (model configuration, prompt, negative
 prompt, size, steps, CFG, seed, batch, sampler, scheduler, LoRAs, styles) are
-saved automatically to `ui-state.json` in the project root as you type and on
+saved automatically to `user/ui-state.json` as you type and on
 every generation. On server start the UI restores them, so the page picks up
 where you left off. The file is plain JSON and safe to edit by hand;
 a missing or corrupt file simply falls back to the form defaults.

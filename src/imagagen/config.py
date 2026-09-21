@@ -12,8 +12,13 @@ from pathlib import Path
 class Config:
     """Root of the imagagen project plus all derived data directories.
 
-    GPU selection is read from ``<root>/imagagen.ini`` (see
-    :func:`_parse_gpu_ini`): ``primary_gpu`` is ``None`` for auto-pick
+    User data (settings, presets, styles, wildcards, brushes, ...)
+    lives in ``<root>/user/`` so it is easy to share/backup as one
+    folder; the provided defaults live in ``<root>/res/`` (tracked in
+    git, never written by the app).
+
+    GPU selection is read from ``<root>/user/imagagen.ini`` (see
+    :func:`_parse_ini`): ``primary_gpu`` is ``None`` for auto-pick
     (most free VRAM) or an explicit index; ``ignore_gpus`` are excluded
     from auto-pick (a friendlier alternative to CUDA_VISIBLE_DEVICES).
     """
@@ -28,10 +33,20 @@ class Config:
     # Development aid: no-store on all responses (see cache middleware in
     # app.py); without it responses are revalidated on every request.
     debug: bool = False
-    # Persist the UI's form state to <root>/ui-state.json on every save
-    # (true = default). Disable it to keep the file from being written;
-    # an existing file is still loaded on start.
+    # Persist the UI's form state to <root>/user/ui-state.json on every
+    # save (true = default). Disable it to keep the file from being
+    # written; an existing file is still loaded on start.
     save_ui_state: bool = True
+
+    @property
+    def user_dir(self) -> Path:
+        """All user data (share/backup this folder)."""
+        return self.root / "user"
+
+    @property
+    def res_dir(self) -> Path:
+        """Provided defaults (tracked in git; never written by the app)."""
+        return self.root / "res"
 
     @property
     def models_dir(self) -> Path:
@@ -43,19 +58,37 @@ class Config:
 
     @property
     def brushes_dir(self) -> Path:
-        return self.root / "brushes"
+        """User brushes (grey PNGs), searched after the provided ones."""
+        return self.user_dir / "brushes"
+
+    @property
+    def default_brushes_dir(self) -> Path:
+        """Provided default brushes (res/brushes/), searched first."""
+        return self.res_dir / "brushes"
 
     @property
     def wildcards_dir(self) -> Path:
-        return self.root / "wildcards"
+        return self.user_dir / "wildcards"
 
     @property
     def presets_dir(self) -> Path:
-        return self.root / "presets"
+        return self.user_dir / "presets"
 
     @property
     def model_configs_dir(self) -> Path:
-        return self.root / "model-configs"
+        return self.user_dir / "model-configs"
+
+    @property
+    def styles_csv_path(self) -> Path:
+        return self.user_dir / "styles.csv"
+
+    @property
+    def ui_state_path(self) -> Path:
+        return self.user_dir / "ui-state.json"
+
+    @property
+    def ini_path(self) -> Path:
+        return self.user_dir / "imagagen.ini"
 
     @property
     def output_dir(self) -> Path:
@@ -90,7 +123,7 @@ def load_config(root: Path | str | None = None) -> Config:
         vae_tiling,
         debug,
         save_ui_state,
-    ) = _parse_ini(root / "imagagen.ini")
+    ) = _parse_ini(root / "user" / "imagagen.ini")
     config = Config(
         root=root,
         primary_gpu=primary_gpu,
@@ -120,7 +153,7 @@ def load_config(root: Path | str | None = None) -> Config:
 def _parse_ini(
     path: Path,
 ) -> tuple[int | None, frozenset[int], str, str, bool, bool, bool]:
-    """Parse ``<root>/imagagen.ini``: GPU selection, VRAM options, debug.
+    """Parse ``<root>/user/imagagen.ini``: GPU selection, VRAM options, debug.
 
     A missing file yields the defaults
     (auto, none, off, gpu, False, False, True).
@@ -203,6 +236,7 @@ def ensure_dirs(config: Config) -> None:
         config.models_dir,
         config.segmentation_models_dir,
         config.loras_dir,
+        config.user_dir,
         config.brushes_dir,
         config.wildcards_dir,
         config.presets_dir,

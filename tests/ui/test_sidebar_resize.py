@@ -55,9 +55,9 @@ def test_width_is_restored_from_ui_state(page, server):
     assert _width(page) == 370
 
     # the debounced save lands in ui-state.json
-    wait_until(lambda: (root / "ui-state.json").exists())
+    wait_until(lambda: (root / "user" / "ui-state.json").exists())
     wait_until(lambda: '"sidebar_width": 370' in
-               (root / "ui-state.json").read_text())
+               (root / "user" / "ui-state.json").read_text())
 
     # a fresh page load restores the saved width
     page.goto(base)

@@ -24,7 +24,7 @@ def write(store: PresetStore, group=None, **fields) -> str:
     return p.name
 
 
-store = PresetStore(ROOT / "presets")
+store = PresetStore(ROOT / "user" / "presets")
 
 # ---------------- img2img: detail touchup (mask_mode 0 -> inpaint_masked) --
 for w, h, denoise in [

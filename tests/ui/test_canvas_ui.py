@@ -798,7 +798,7 @@ def test_custom_brush_listed_and_used(page, server):
     a = (np.clip(1 - d / 12.0, 0, 1) * 255).astype("uint8")
     buf = io.BytesIO()
     Image.fromarray(a).save(buf, format="PNG")
-    (Path(root) / "brushes" / "soft24.png").write_bytes(buf.getvalue())
+    (Path(root) / "user" / "brushes" / "soft24.png").write_bytes(buf.getvalue())
 
     _open(page, base)
     _show(page, base, 200, 150)
@@ -1103,8 +1103,8 @@ def test_drop_png_loras_skip_the_model_config_loras(page, server):
         "t2i": {"loras": [{"name": "dmd2", "weight": 0.7}]},
         "i2i": {"loras": [{"name": "dmd2", "weight": 0.7}]},
     }
-    (root / "model-configs").mkdir(exist_ok=True)
-    (root / "model-configs" / "mock-model.json").write_text(
+    (root / "user" / "model-configs").mkdir(exist_ok=True)
+    (root / "user" / "model-configs" / "mock-model.json").write_text(
         json.dumps(cfg), "utf-8")
     _open(page, base)
     combo_pick(page, page.locator("#model"), "mock-model")

@@ -37,7 +37,7 @@ def client(tmp_path):
 
 
 def _seed_csv(client):
-    (client.root / "styles.csv").write_text(
+    (client.root / "user" / "styles.csv").write_text(
         "\n".join(
             [
                 CSV_HEADER,
@@ -85,7 +85,7 @@ def test_styles_crud(client):
     assert r.status_code == 200
     assert client.post("/api/styles/delete", json={"name": "Dunes"}).status_code == 404
     # disk file reflects the changes
-    text = (client.root / "styles.csv").read_text("utf-8")
+    text = (client.root / "user" / "styles.csv").read_text("utf-8")
     assert "Dunes" not in text and "Analog Film" in text
 
 
@@ -104,7 +104,7 @@ def test_styles_temporary(client):
     assert styles["Lost"]["temporary"] is True
     assert styles["Lost"]["optgroup"] == "Session"
     # never written to the CSV
-    assert "Lost" not in (client.root / "styles.csv").read_text("utf-8")
+    assert "Lost" not in (client.root / "user" / "styles.csv").read_text("utf-8")
     # a real style with the same name supersedes the temporary
     client.post("/api/styles", json={"name": "Lost", "prompt": "real now"})
     styles = {s["name"]: s for s in client.get("/api/styles").json()["styles"]}

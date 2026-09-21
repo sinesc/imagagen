@@ -1,7 +1,8 @@
 #!/bin/sh
 cd "${0%/*}"
-[ -f "imagagen.ini" ] || cp imagagen.ini.default imagagen.ini
-[ -f "styles.csv" ] || cp styles.csv.default styles.csv
+mkdir -p user
+[ -f "user/imagagen.ini" ] || cp res/imagagen.ini.default user/imagagen.ini
+[ -f "user/styles.csv" ] || cp res/styles.csv.default user/styles.csv
 # uv sync (in the container) rewrites these three venv files with absolute
 # container paths, which break host usage; restore the relative versions
 # (also documented in README.md, "Running on the host system")

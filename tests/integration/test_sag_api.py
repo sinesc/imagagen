@@ -135,7 +135,7 @@ def test_ui_state_persists_sag_fields(tmp_path):
         assert state["sag_scale"] == 0.25
         assert state["sag_blur_sigma"] == 4.5
         assert state["sag_threshold"] == 2.5
-    on_disk = json.loads((tmp_path / "ui-state.json").read_text())
+    on_disk = json.loads((tmp_path / "user" / "ui-state.json").read_text())
     assert on_disk["sag"] is True
     # unspecified options keep the Forge defaults
     assert on_disk["sag_scale"] == 0.25

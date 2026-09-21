@@ -1,4 +1,4 @@
-"""Setting presets (presets/*.json).
+"""Setting presets (user/presets/*.json).
 
 A preset captures some of the image-generation settings. Each setting has a
 checkbox ("controls") deciding whether the preset controls that setting: on
@@ -99,7 +99,7 @@ class Preset(BaseModel):
 
 
 class PresetStore:
-    """Loads/saves presets/*.json. Thread-safe (saves are rare)."""
+    """Loads/saves user/presets/*.json. Thread-safe (saves are rare)."""
 
     def __init__(self, presets_dir: Path) -> None:
         self.dir = presets_dir

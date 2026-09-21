@@ -23,7 +23,7 @@ SEED_ROWS = "\n".join(
 
 def _open(page, base, root, seed=True):
     if seed:
-        (root / "styles.csv").write_text(SEED_ROWS + "\n", "utf-8")
+        (root / "user" / "styles.csv").write_text(SEED_ROWS + "\n", "utf-8")
     page.goto(base)
     page.wait_for_function("brushNames.length >= 1 && state.styles.length > 0")
 
@@ -151,7 +151,7 @@ def test_style_manage_create_edit_delete(page, server):
     # saving returns to the management list (re-rendered with the new style)
     wait_until(lambda: page.evaluate(
         "document.getElementById('dialog-title').textContent") == "Style configuration")
-    text = (root / "styles.csv").read_text("utf-8")
+    text = (root / "user" / "styles.csv").read_text("utf-8")
     assert "Analog Film" in text and "Photo Styles" in text
 
     # edit the new style
@@ -170,7 +170,7 @@ def test_style_manage_create_edit_delete(page, server):
     # saving returns to the management list again
     wait_until(lambda: page.evaluate(
         "document.getElementById('dialog-title').textContent") == "Style configuration")
-    assert "vintage {prompt}" in (root / "styles.csv").read_text("utf-8")
+    assert "vintage {prompt}" in (root / "user" / "styles.csv").read_text("utf-8")
 
     # required name validation keeps the dialog open
     page.click("text=+ New style")
@@ -193,7 +193,7 @@ def test_style_manage_create_edit_delete(page, server):
     page.locator(".preset-manage-row").nth(idx).locator("button").nth(1).click()  # ✗
     # the list stays open after a delete; "Plain" is gone from it (4 remain)
     wait_until(lambda: page.locator(".preset-manage-name").count() == 4)
-    assert "Plain" not in (root / "styles.csv").read_text("utf-8")
+    assert "Plain" not in (root / "user" / "styles.csv").read_text("utf-8")
 
 
 # ---------------- generate + temporary styles ----------------
@@ -253,6 +253,6 @@ def test_temporary_style_from_imported_metadata(page, server):
     lost = [s for s in r if s["name"] == "Lost Style"]
     assert lost and lost[0]["temporary"] is True
     assert lost[0]["optgroup"] == "Session"
-    assert "Lost Style" not in (root / "styles.csv").read_text("utf-8")
+    assert "Lost Style" not in (root / "user" / "styles.csv").read_text("utf-8")
     # the existing file style was NOT overwritten by the import
     assert not [s for s in r if s["name"] == "Cinematic"][0]["temporary"]

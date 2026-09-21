@@ -14,8 +14,10 @@ from imagagen.config import Config
 def _client(tmp_path, brush: str | None = None):
     app = create_app(config=Config(root=tmp_path), backend=MockBackend())
     if brush:
+        bdir = tmp_path / "user" / "brushes"
+        bdir.mkdir(parents=True, exist_ok=True)
         img = Image.new("L", (8, 8), 200)
-        img.save(tmp_path / "brushes" / f"{brush}.png")
+        img.save(bdir / f"{brush}.png")
     return TestClient(app)
 
 

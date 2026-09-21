@@ -59,7 +59,7 @@ def test_create_and_edit_model_config(page, server):
     wait_until(lambda: any("Mock tuned" in (t or "")
                            for t in page.eval_on_selector_all(
                                "#model option", "els => els.map(e => e.textContent)")))
-    assert (root / "model-configs" / "mock-tuned.json").is_file()
+    assert (root / "user" / "model-configs" / "mock-tuned.json").is_file()
     assert page.evaluate("document.getElementById('model').value") == "mock-tuned"
 
     # edit dialog: configure the t2i section (CFG override + sampler)
@@ -73,7 +73,7 @@ def test_create_and_edit_model_config(page, server):
     wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
     import json
 
-    on_disk = json.loads((root / "model-configs" / "mock-tuned.json").read_text())
+    on_disk = json.loads((root / "user" / "model-configs" / "mock-tuned.json").read_text())
     assert on_disk["t2i"]["cfg"] == 4.25
     assert on_disk["t2i"]["steps"] == 12
     assert on_disk["t2i"]["sampler"] == "DPM++ 2M"
@@ -98,10 +98,10 @@ def test_edit_default_model_config_materializes_it(page, server):
     page.locator(".cfg-mode").first.locator(".cfg-cfg").fill("4.5")
     page.click("#dialog-ok")
     wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
-    wait_until(lambda: (root / "model-configs" / "mock-model.json").exists())
+    wait_until(lambda: (root / "user" / "model-configs" / "mock-model.json").exists())
     import json
 
-    on_disk = json.loads((root / "model-configs" / "mock-model.json").read_text())
+    on_disk = json.loads((root / "user" / "model-configs" / "mock-model.json").read_text())
     assert on_disk["t2i"]["cfg"] == 4.5
     # the default entry is replaced by the file configuration (same name,
     # no more "(default)" suffix) and the selector follows the new id
@@ -117,11 +117,11 @@ def test_delete_model_config(page, server):
     page.locator(".cfg-name").fill("to-delete")
     page.click("#dialog-ok")
     wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
-    assert (root / "model-configs" / "to-delete.json").is_file()
+    assert (root / "user" / "model-configs" / "to-delete.json").is_file()
 
     _dialogs(page, "")  # confirm(delete)
     page.click("#cfg-delete")
-    wait_until(lambda: not (root / "model-configs" / "to-delete.json").exists())
+    wait_until(lambda: not (root / "user" / "model-configs" / "to-delete.json").exists())
     assert combo_items(page, page.locator("#model")) == ["Mock Model (default)"]
 
 
@@ -145,7 +145,7 @@ def test_lora_rows(page, server):
     import json
 
     def loras_persisted():
-        f = root / "ui-state.json"
+        f = root / "user" / "ui-state.json"
         if not f.is_file():
             return False
         try:

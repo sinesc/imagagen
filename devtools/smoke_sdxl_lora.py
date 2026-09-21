@@ -89,7 +89,7 @@ def main(gpu: int | None) -> None:
         f"expected the copied-in LoRA in loras/sdxl/, got {found!r}"
     )
     store = ConfigStore(cfg, lambda: [])
-    assert store.entries() == []  # empty model-configs dir in the temp root
+    assert store.entries() == []  # empty user/model-configs dir in the temp root
 
     reg = ModelRegistry(cfg, gpu=gpu)
     info = reg.models[0]

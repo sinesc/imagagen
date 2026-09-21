@@ -258,7 +258,8 @@ def create_app(
     ensure_dirs(config)
 
     hub = EventHub()
-    canvas = Canvas(brushes_dir=config.brushes_dir)
+    canvas = Canvas(brushes_dir=config.brushes_dir,
+                    default_brushes_dir=config.default_brushes_dir)
     if segmentation is None:
         # models/segmentation/ may be empty; mediapipe itself is imported
         # lazily on first use (see segmentation.py)
@@ -284,12 +285,12 @@ def create_app(
     app.state.canvas = canvas
     app.state.queue = queue
     app.state.registry = registry
-    app.state.ui_state = UiStateStore(config.root / "ui-state.json")
-    # model configurations: files in model-configs/ + in-memory defaults
-    # for unconfigured models (Phase 4)
+    app.state.ui_state = UiStateStore(config.ui_state_path)
+    # model configurations: files in user/model-configs/ + in-memory
+    # defaults for unconfigured models (Phase 4)
     app.state.config_store = ConfigStore(config, lambda: registry.list())
     app.state.preset_store = PresetStore(config.presets_dir)
-    app.state.style_store = StyleStore(config.root / "styles.csv")
+    app.state.style_store = StyleStore(config.styles_csv_path)
     app.state.segmentation = segmentation
     app.state.last_config_id: str | None = None
 
@@ -326,7 +327,7 @@ def create_app(
 
     # --- models & model configurations (Phase 4) ---
     # The model selector lists *configurations*, not raw checkpoints:
-    # every file config in model-configs/ plus one in-memory default per
+    # every file config in user/model-configs/ plus one in-memory default per
     # unconfigured model. Generation resolves the config's defaults
     # (sampler/scheduler/CFG/LoRAs) server-side.
     @app.get("/api/models")
@@ -470,7 +471,7 @@ def create_app(
             return JSONResponse({"error": f"unknown preset: {name!r}"}, status_code=404)
         return {"ok": True}
 
-    # --- styles (styles.csv + in-memory "Session" temporaries) ---
+    # --- styles (user/styles.csv + in-memory "Session" temporaries) ---
     @app.get("/api/styles")
     def styles_list() -> dict:
         return {"styles": app.state.style_store.all()}
@@ -505,7 +506,7 @@ def create_app(
     @app.post("/api/generate")
     def generate(body: GenerateBody) -> dict:
         # model_id here is a *configuration* id (Phase 4): files in
-        # model-configs/ or the in-memory default of an unconfigured model.
+        # user/model-configs/ or the in-memory default of an unconfigured model.
         # Default-override resolution (concept.md): user setting -> (only
         # when it is the "use model default" sentinel: cfg == -1, sampler/
         # scheduler null) the config's t2i/i2i value -> backend built-in.

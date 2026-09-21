@@ -127,6 +127,22 @@ def test_list_brushes(tmp_path):
     assert c.list_brushes() == ["circle", "b1", "b2"]
 
 
+def test_list_brushes_default_dir_first(tmp_path):
+    d, u = tmp_path / "res", tmp_path / "user"
+    d.mkdir()
+    u.mkdir()
+    for name in ("a.png", "dup.png"):  # dup in both folders
+        Image.new("L", (4, 4), 10).save(d / name)
+    for name in ("b.png", "dup.png"):
+        Image.new("L", (4, 4), 200).save(u / name)
+    c = Canvas(brushes_dir=u, default_brushes_dir=d)
+    # provided defaults first, then user; a duplicate is listed once
+    assert c.list_brushes() == ["circle", "a", "dup", "b"]
+    # the default file wins: its luminance is 10/255
+    assert c.brush_shape("dup", 4).max() == pytest.approx(10 / 255.0)
+    assert c.brush_shape("b", 4).max() == pytest.approx(200 / 255.0)
+
+
 # ---------------- clone ----------------
 
 def test_clone_copies_source_pixels():
