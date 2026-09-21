@@ -1888,9 +1888,13 @@ const finishedJobs = new Set();
 // true while the status line shows an error: "done" must not wipe it
 let statusIsError = false;
 let ws = null;
+// resolves once the first websocket connection is up; the boot section
+// keeps the loading overlay visible until this AND all initial fetches settle
+let resolveWsConnected = () => {};
+const wsConnected = new Promise((r) => (resolveWsConnected = r));
 function connectWS() {
   ws = new WebSocket(`ws://${location.host}/api/ws`);
-  ws.onopen = () => { $("loading-overlay").hidden = true; };
+  ws.onopen = resolveWsConnected;
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     switch (msg.type) {
@@ -2049,13 +2053,34 @@ wireToolbar();
 wireConfig();
 wirePromptDrop();
 wireCanvasDrop();
-loadBrushes();
-init();
+// the loading overlay covers the UI until it is settled: the websocket AND
+// every request whose response rewrites the form (init), plus the brush
+// list and the canvas. While it is up, pointer input hits the overlay and
+// the keydown guard below blocks the keyboard, so nothing the user does
+// can be clobbered by the state load. Fail open: hide it if any of these
+// rejects instead of leaving a permanent overlay.
+const pInit = init();
+const pBrushes = loadBrushes();
 viewResize();
-viewRefresh();
+const pCanvas = viewRefresh();
 setupCanvasInput();
 window.addEventListener("resize", viewResize);
 connectWS();
+Promise.all([pInit, pBrushes, pCanvas, wsConnected])
+  .then(() => { $("loading-overlay").hidden = true; })
+  .catch((e) => { console.error("boot:", e); $("loading-overlay").hidden = true; });
+
+// while the overlay is up, block keyboard input into the fields behind it
+// (the overlay already eats pointer events; Tab can still focus them)
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if ($("loading-overlay").hidden) return;
+    const t = document.activeElement;
+    if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) e.preventDefault();
+  },
+  true
+);
 
 ["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch", "denoise", "mask-padding"].forEach((id) => {
   $(id).addEventListener("input", () => { onUserFieldChange(id); scheduleSaveUiState(); });
@@ -2083,6 +2108,9 @@ $("swap-dims").onclick = () => {
 // last-ditch save on tab close (sendBeacon is fire-and-forget, always
 // delivered; the endpoint ignores content-type to accept its text/plain)
 window.addEventListener("beforeunload", () => {
+  // the load is still in flight: the server's persisted state is about to
+  // fill the form, so don't clobber it with the not-yet-applied defaults
+  if (!$("loading-overlay").hidden) return;
   try {
     navigator.sendBeacon(
       "/api/ui-state",
