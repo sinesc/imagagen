@@ -30,7 +30,7 @@ CASES = {
 def main():
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     cfg = load_config()
-    reg = ModelRegistry(cfg, gpu=1)  # leave GPU 0 to the user
+    reg = ModelRegistry(cfg, gpus=[1])  # leave GPU 0 to the user
     backend = reg.backend_for([m for m in reg.models if m.name == "epicrealismXL11.0"][0].id)
     out_dir = Path("devtools/references/imagagen")
     out_dir.mkdir(parents=True, exist_ok=True)

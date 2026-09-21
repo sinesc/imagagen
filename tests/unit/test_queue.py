@@ -1,4 +1,6 @@
+import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
@@ -19,9 +21,22 @@ def _png(arr: np.ndarray) -> bytes:
 
 
 class FakeRegistry:
-    def __init__(self, backend):
+    """Minimal stand-in for the (multi-GPU) ModelRegistry.
+
+    ``gpus`` / ``primary`` describe the pool the queue should dispatch
+    over; ``uses`` records ``(gpu, seed)`` in the order generations start,
+    so distribution across GPUs can be asserted deterministically.
+    """
+
+    def __init__(self, backend, gpus=(0,)):
         self._b = backend
+        self.gpus = list(gpus)
+        self.primary = self.gpus[0] if self.gpus else None
         self._id = None
+        self.uses = []
+        self.model_uses = []
+        self.cancels = []
+        self._lk = threading.Lock()
 
     def list(self):
         return []
@@ -29,24 +44,38 @@ class FakeRegistry:
     def models(self):
         return []
 
+    def get(self, model_id):
+        return SimpleNamespace(name="Fake Model")
+
     def current_id(self):
         return self._id
 
     def current_backend(self):
         return self._b
 
-    def backend_for(self, model_id):
+    def backend_for(self, model_id, gpu=None):
         self._id = model_id
         return self._b
 
+    def run(self, model_id, gpu=None, request=None, progress=None):
+        with self._lk:
+            self._id = model_id
+            self.uses.append((gpu, request.seed))
+            self.model_uses.append((gpu, model_id))
+        return self._b.generate(request, progress), self._b
 
-def _queue(backend, events, wildcards_dir=None):
+    def cancel(self, gpu=None):
+        self.cancels.append(gpu)
+        self._b.cancel()
+
+
+def _queue(backend, events, wildcards_dir=None, gpus=None):
     canvas = Canvas()
     q = GenerationQueue(
-        registry=FakeRegistry(backend), canvas=canvas, emit=events.append,
-        wildcards_dir=wildcards_dir,
+        registry=FakeRegistry(backend, gpus or (0,)), canvas=canvas,
+        emit=events.append, wildcards_dir=wildcards_dir,
     )
-    q.start()
+    q.start(gpus=gpus)  # None -> FakeRegistry.gpus -> (0,)
     return q, canvas
 
 
@@ -280,3 +309,118 @@ def test_live_image_ids_contains_results_and_source():
     live = q.live_image_ids()
     assert src_id in live  # the source canvas image is referenced
     assert f"job:{job.id}:0" in live  # the result is referenced
+
+
+# --- multi-GPU distribution ------------------------------------------------
+
+class ConcurrentBackend(MockBackend):
+    """Records peak concurrency so "ran in parallel" is deterministic."""
+
+    def __init__(self):
+        super().__init__(steps_delay=0.3)
+        self._lk = threading.Lock()
+        self._active = 0
+        self.max_active = 0
+
+    def generate(self, request, progress=None):
+        with self._lk:
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+        try:
+            return super().generate(request, progress)
+        finally:
+            with self._lk:
+                self._active -= 1
+
+
+def test_single_image_uses_primary():
+    q, _ = _queue(MockBackend(), events=[], gpus=[0, 1])
+    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 1)
+    _wait_done(q, job.id)
+    assert q.registry.uses == [(0, 1)]  # went to primary, not the other
+
+
+def test_two_images_distribute_across_gpus():
+    q, _ = _queue(MockBackend(steps_delay=0.05), events=[], gpus=[0, 1])
+    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=2, seed=1), 2)
+    _wait_done(q, job.id)
+    mapping = {seed: gpu for gpu, seed in q.registry.uses}
+    assert mapping[1] == 0  # first task -> primary
+    assert mapping[2] == 1  # second task -> the other GPU
+
+
+def test_three_images_run_in_parallel_and_refill():
+    backend = ConcurrentBackend()
+    q, _ = _queue(backend, events=[], gpus=[0, 1])
+    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=2, seed=100), 3)
+    _wait_done(q, job.id)
+    mapping = {seed: gpu for gpu, seed in q.registry.uses}
+    assert mapping[100] == 0          # first -> primary
+    assert mapping[101] == 1          # second -> the other GPU
+    assert mapping[102] in (0, 1)     # third -> whichever freed first
+    assert set(mapping.values()) == {0, 1}
+    assert backend.max_active == 2    # two GPUs truly generated at once
+
+
+def test_primary_wins_tie_when_both_free():
+    q, _ = _queue(MockBackend(), events=[], gpus=[0, 1])
+    j1 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 1)
+    _wait_done(q, j1.id)
+    j2 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=2), 1)
+    _wait_done(q, j2.id)
+    mapping = {seed: gpu for gpu, seed in q.registry.uses}
+    assert mapping[1] == 0
+    assert mapping[2] == 0           # both GPUs free again -> primary
+
+
+def test_interrupt_cancels_only_that_job_gpus():
+    backend = MockBackend(steps_delay=0.2)
+    events = []
+    q, _ = _queue(backend, events, gpus=[0, 1])
+    # batch 2 occupies BOTH GPUs
+    j1 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=20, seed=1), 2)
+    deadline = time.time() + 5
+    while time.time() < deadline and \
+            sum(1 for e in events if e["type"] == "progress") < 2:
+        time.sleep(0.01)
+    # a second job goes pending behind the busy GPUs
+    j2 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=50), 1)
+    time.sleep(0.1)  # let j1 start on both GPUs
+    q.interrupt(j1.id)
+    time.sleep(0.5)
+    assert j1.interrupted
+    assert j1.results == {}
+    # exactly the two GPUs running j1 were cancelled
+    assert sorted(q.registry.cancels) == [0, 1]
+    # the other job is unaffected and still completes
+    _wait_done(q, j2.id)
+    assert set(j2.results) == {0}
+
+
+def test_model_switch_mid_queue_uses_each_model():
+    backend = MockBackend()
+    events = []
+    q, _ = _queue(backend, events, gpus=[0, 1])
+    j1 = q.submit("model-a", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 1)
+    _wait_done(q, j1.id)
+    j2 = q.submit("model-b", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=2), 1)
+    _wait_done(q, j2.id)
+    assert q.registry.model_uses == [(0, "model-a"), (0, "model-b")]
+
+
+def test_lone_image_uses_other_gpu_when_primary_busy():
+    backend = MockBackend(steps_delay=0.15)
+    events = []
+    q, _ = _queue(backend, events, gpus=[0, 1])
+    j1 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=20, seed=1), 1)
+    deadline = time.time() + 5
+    while time.time() < deadline and not any(
+        e["type"] == "progress" and e["job"] == j1.id for e in events
+    ):
+        time.sleep(0.01)
+    # primary is now busy; a *new* lone image must not stall for it
+    j2 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=100), 1)
+    _wait_done(q, j2.id)
+    mapping = {seed: gpu for gpu, seed in q.registry.uses}
+    assert mapping[1] == 0
+    assert mapping[100] == 1

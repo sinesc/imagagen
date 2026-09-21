@@ -22,7 +22,7 @@ from imagagen.config import load_config  # noqa: E402
 from imagagen.models import ModelRegistry  # noqa: E402
 
 cfg = load_config(ROOT)
-reg = ModelRegistry(cfg, gpu=1)
+reg = ModelRegistry(cfg, gpus=[1])
 info = reg.models[0]
 print("loading", info.name, "...", flush=True)
 t0 = time.time()

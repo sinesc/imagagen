@@ -99,10 +99,17 @@ class EventHub:
 
 
 class _MockRegistry:
-    """Registry stand-in for tests / GPU-less runs: single fixed backend."""
+    """Registry stand-in for tests / GPU-less runs: single fixed backend.
+
+    Mirrors the (multi-GPU) ``ModelRegistry`` interface closely enough for
+    the generation queue and the /api endpoints: one fake GPU 0, one shared
+    backend, no real CUDA.
+    """
 
     def __init__(self, backend: ModelBackend) -> None:
         self._backend = backend
+        self.gpus = [0]
+        self.primary = 0
 
     def list(self) -> list[dict]:
         return [{"id": self._backend.model_id, "name": self._backend.name}]
@@ -110,14 +117,27 @@ class _MockRegistry:
     def models(self):
         return []
 
+    def get(self, model_id: str):
+        import types
+
+        if model_id != self._backend.model_id:
+            return None
+        return types.SimpleNamespace(name=self._backend.name)
+
     def current_id(self) -> str | None:
         return self._backend.model_id
 
     def current_backend(self) -> ModelBackend:
         return self._backend
 
-    def backend_for(self, model_id: str) -> ModelBackend:
+    def backend_for(self, model_id: str, gpu: int | None = None) -> ModelBackend:
         return self._backend
+
+    def run(self, model_id: str, gpu: int, request, progress=None):
+        return self._backend.generate(request, progress), self._backend
+
+    def cancel(self, gpu: int | None = None) -> None:
+        self._backend.cancel()
 
 
 # ---------------- request bodies ----------------
@@ -268,13 +288,9 @@ def create_app(
     if backend is not None:  # test injection (e.g. MockBackend)
         registry = _MockRegistry(backend)
     else:
-        from .gpus import select_gpu
-
-        # Resolve the generation GPU up front (ini primary-gpu, or auto:
-        # most free VRAM among non-ignored GPUs); the registry re-checks.
-        registry = ModelRegistry(config, emit=hub.emit,
-                                 gpu=select_gpu(config.primary_gpu,
-                                                config.ignore_gpus))
+        # The registry resolves its own GPU pool from the config (primary
+        # first, then the remaining usable non-ignored GPUs).
+        registry = ModelRegistry(config, emit=hub.emit)
     queue = GenerationQueue(registry=registry, canvas=canvas, emit=hub.emit,
                             wildcards_dir=config.wildcards_dir)
     queue.start()
@@ -318,11 +334,15 @@ def create_app(
         from .gpus import gpu_info, select_gpu
 
         selected = select_gpu(config.primary_gpu, config.ignore_gpus)
+        primary = getattr(registry, "primary", selected)
+        pool = list(getattr(registry, "gpus", [selected] if selected is not None else []))
         return {
             "status": "ok",
             "root": str(config.root),
             "gpu": selected,
             "gpus": gpu_info(config.ignore_gpus, selected),
+            "primary": primary,
+            "pool": pool,
         }
 
     # --- models & model configurations (Phase 4) ---

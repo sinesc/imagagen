@@ -82,7 +82,7 @@ def show(frac, msg):
 
 def main() -> None:
     cfg = load_config(ROOT)
-    reg = ModelRegistry(cfg, gpu=1)
+    reg = ModelRegistry(cfg, gpus=[1])
     info = reg.models[0]
     print("loading", info.name, "...", flush=True)
     t0 = time.time()

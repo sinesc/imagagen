@@ -91,7 +91,7 @@ def main(gpu: int | None) -> None:
     store = ConfigStore(cfg, lambda: [])
     assert store.entries() == []  # empty user/model-configs dir in the temp root
 
-    reg = ModelRegistry(cfg, gpu=gpu)
+    reg = ModelRegistry(cfg, gpus=[gpu])
     info = reg.models[0]
     print("loading", info.name, "...", flush=True)
     t0 = time.time()

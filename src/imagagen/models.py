@@ -165,15 +165,39 @@ class ModelInfo:
         return {"id": self.id, "name": self.name}
 
 
+class _GpuState:
+    """Per-GPU residency state: one backend copy, one RLock.
+
+    The lock serializes load/unload/generate on that GPU. A backend must
+    never be moved or swapped while another thread is inside
+    ``generate()`` (concurrent ``.to()``/forward on the same module
+    corrupts CUDA state and can segfault the process).
+    """
+
+    __slots__ = ("gpu", "lock", "backend", "model_id")
+
+    def __init__(self, gpu: int) -> None:
+        self.gpu = gpu
+        self.lock = threading.RLock()
+        self.backend = None
+        self.model_id: str | None = None
+
+
 class ModelRegistry:
-    def __init__(self, config, emit=None, gpu: int | None = None) -> None:
+    def __init__(self, config, emit=None,
+                 gpus: list[int] | None = None) -> None:
         self.config = config
         self.emit = emit or (lambda e: None)
         self.models: list[ModelInfo] = self.discover()
-        self._lock = threading.Lock()  # serializes load/unload/generate
+        if gpus is None:
+            from .gpus import gpu_order
+
+            gpus = gpu_order(config.primary_gpu, config.ignore_gpus)
+        self.gpus: list[int] = list(gpus)
+        self.primary: int | None = self.gpus[0] if self.gpus else None
+        self._gpu_states: dict[int, _GpuState] = {}
+        self._meta_lock = threading.Lock()
         self._current_id: str | None = None
-        self._backend = None
-        self.gpu = gpu  # None -> resolved on first use (ini/auto-pick)
 
     def discover(self) -> list[ModelInfo]:
         models = []
@@ -196,66 +220,113 @@ class ModelRegistry:
         return None
 
     def current_backend(self):
-        with self._lock:
-            return self._backend
+        if self.primary is None or self.primary not in self._gpu_states:
+            return None
+        return self._gpu_states[self.primary].backend
 
     def current_id(self) -> str | None:
-        with self._lock:
+        with self._meta_lock:
             return self._current_id
 
-    def backend_for(self, model_id: str):
-        """Return the backend for model_id, loading it (and unloading the
-        previous one) if necessary. Blocks while a generation is running."""
-        info = self.get(model_id)
-        if info is None:
-            raise ValueError(f"unknown model: {model_id}")
-        with self._lock:
-            if self._current_id == model_id and self._backend is not None:
-                return self._backend
-            self._unload_locked()
-            self.emit({"type": "status", "message": f"loading {info.name} …"})
-            from .sdxl_backend import SdxlBackend
+    def _get_gpu_state(self, gpu: int) -> _GpuState:
+        with self._meta_lock:
+            return self._gpu_states.setdefault(gpu, _GpuState(gpu))
 
-            self._backend = SdxlBackend(info, self._resolve_device(),
-                                        config=self.config)
-            self._current_id = model_id
-            self.emit({"type": "status", "message": f"loaded {info.name}"})
-            return self._backend
-
-    def _resolve_device(self):
-        """Pick the torch device for generation (cached after first call).
-
-        Explicit ``gpu`` (from /api/health-time selection) wins; otherwise
-        the ini settings decide: primary-gpu, or auto-pick the most-free
-        non-ignored GPU.
-        """
-        import torch
-
-        if self.gpu is None:
-            from .gpus import select_gpu
-
-            self.gpu = select_gpu(self.config.primary_gpu,
-                                  self.config.ignore_gpus)
-        if self.gpu is None:
-            raise RuntimeError(
-                f"no usable GPU for generation (primary-gpu="
-                f"{self.config.primary_gpu if self.config.primary_gpu is not None else 'auto'}, "
-                f"ignore-gpus={sorted(self.config.ignore_gpus) or '-'}); "
-                "check nvidia-smi and imagagen.ini"
-            )
-        return torch.device(f"cuda:{self.gpu}")
-
-    def _unload_locked(self) -> None:
-        if self._backend is not None:
-            self._backend.unload()
-            self._backend = None
-            self._current_id = None
+    def _unload_state_locked(self, state: _GpuState) -> None:
+        if state.backend is not None:
+            state.backend.unload()
+            state.backend = None
+            state.model_id = None
         import gc
 
         gc.collect()
         try:
             import torch
 
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                with torch.cuda.device(state.gpu):
+                    torch.cuda.empty_cache()
         except Exception:
             pass
+
+    def _load_backend_locked(self, state: _GpuState, model_id: str):
+        """Ensure ``model_id`` is loaded on ``state.gpu`` and return it.
+
+        Caller must hold ``state.lock``.
+        """
+        if state.backend is not None and state.model_id == model_id:
+            return state.backend
+        self._unload_state_locked(state)
+        info = self.get(model_id)
+        if info is None:
+            raise ValueError(f"unknown model: {model_id}")
+        import torch
+
+        from .sdxl_backend import SdxlBackend
+
+        self.emit({"type": "status",
+                   "message": f"loading {info.name} on GPU {state.gpu} …"})
+        state.backend = SdxlBackend(info, torch.device(f"cuda:{state.gpu}"),
+                                    config=self.config)
+        state.model_id = model_id
+        with self._meta_lock:
+            self._current_id = model_id
+        self.emit({"type": "status",
+                   "message": f"loaded {info.name} on GPU {state.gpu}"})
+        return state.backend
+
+    def backend_for(self, model_id: str, gpu: int | None = None):
+        """Return the backend for model_id on ``gpu`` (or the primary),
+        loading it (and unloading any other model on that GPU) if needed.
+
+        Blocks while a generation is running on that GPU. Used by
+        /api/models/select pre-warm, ``from_config`` and dev scripts; the
+        generation queue uses :meth:`run` instead.
+        """
+        if gpu is None:
+            gpu = self.primary
+        if gpu is None:
+            from .gpus import select_gpu
+
+            gpu = select_gpu(self.config.primary_gpu, self.config.ignore_gpus)
+        if gpu is None:
+            raise RuntimeError(
+                f"no usable GPU for generation (primary-gpu="
+                f"{self.config.primary_gpu if self.config.primary_gpu is not None else 'auto'}, "
+                f"ignore-gpus={sorted(self.config.ignore_gpus) or '-'}); "
+                "check nvidia-smi and imagagen.ini"
+            )
+        state = self._get_gpu_state(gpu)
+        with state.lock:
+            return self._load_backend_locked(state, model_id)
+
+    def run(self, model_id: str, gpu: int, request, progress=None):
+        """Atomically ensure ``model_id`` is loaded on ``gpu`` and run one
+        generation.
+
+        Returns ``(GenerateResult, ModelBackend)``. The per-GPU lock is held
+        for the whole generation, so a model swap on the same GPU blocks
+        until it finishes; other GPUs are unaffected.
+        """
+        state = self._get_gpu_state(gpu)
+        with state.lock:
+            backend = self._load_backend_locked(state, model_id)
+            return backend.generate(request, progress), backend
+
+    def cancel(self, gpu: int | None = None) -> None:
+        """Cancel in-flight generation on one GPU (or all loaded GPUs).
+
+        This deliberately does NOT take the per-GPU generation lock: an
+        interrupt must not block behind the very generation it is trying to
+        cancel. ``ModelBackend.cancel`` only flips a flag checked per step.
+        """
+        with self._meta_lock:
+            if gpu is None:
+                states = list(self._gpu_states.values())
+            else:
+                state = self._gpu_states.get(gpu)
+                states = [state] if state is not None else []
+        for state in states:
+            backend = state.backend
+            if backend is not None:
+                backend.cancel()

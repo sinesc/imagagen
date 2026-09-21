@@ -882,12 +882,9 @@ class SdxlBackend(ModelBackend):
 
 def from_config(config) -> ModelBackend | None:
     """Load the first discovered SDXL model, or None when nothing usable exists."""
-    from .gpus import available_gpus
     from .models import ModelRegistry
 
-    if not available_gpus():
-        return None
     registry = ModelRegistry(config)
-    if not registry.models:
+    if not registry.models or not registry.gpus:
         return None
     return registry.backend_for(registry.models[0].id)

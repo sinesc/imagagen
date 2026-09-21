@@ -1,19 +1,23 @@
 """Generation queue.
 
-One worker thread per visible GPU; a worker picks any pending task (dynamic
-assignment — faster GPUs naturally drain more work). Only one model may be in
-VRAM, so loading/unloading is serialized by the registry's model lock.
+One worker thread per GPU in the registry pool. A central dispatcher
+assigns pending tasks to *free* GPUs in pool order (primary first, then by
+index); a GPU is free when it is not running a task and its per-GPU queue
+is empty. Each GPU therefore generates at most one image at a time, but
+different GPUs run in parallel. Model loading/unloading is serialized per
+GPU by the registry's per-GPU lock.
 
 A "job" is a user generation request expanded into N single-image tasks
 (batch). Tasks of a job carry ascending seeds from the job's base seed.
 Interrupting a job drops its pending tasks and cancels any in-flight image
-(partial images are never emitted).
+on the GPUs that are running that job (partial images are never emitted).
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +27,6 @@ import numpy as np
 from . import wildcards
 from .backends import GenerateRequest, ModelBackend
 from .generation import InpaintPlan
-from .gpus import available_gpus
 
 log = logging.getLogger(__name__)
 
@@ -77,27 +80,33 @@ class GenerationQueue:
         # per seed before generation (None = no wildcard processing)
         self._wildcards_dir = wildcards_dir
         self._jobs: dict[int, Job] = {}
+        self._gpus: list[int] = []
         self._pending: list[_Task] = []
+        self._gpu_queues: dict[int, deque] = {}
+        self._gpu_running: dict[int, _Task] = {}
         self._pending_lock = threading.Lock()
         self._cond = threading.Condition(self._pending_lock)
         self._next_job_id = 1
-        self._workers: list[threading.Thread] = []
+        self._workers: dict[int, threading.Thread] = {}
         self._stop = False
         self._job_lock = threading.Lock()
 
-    def start(self, workers: int | None = None) -> None:
-        if workers is None:
-            # one worker per visible, non-ignored GPU (dynamic assignment;
-            # generation on a single backend is serialized by its lock)
-            ignored = getattr(
-                getattr(self.registry, "config", None), "ignore_gpus", frozenset()
-            )
-            workers = max(1, len(available_gpus(ignored)))
-        self._workers = [
-            threading.Thread(target=self._worker_loop, name=f"gen-worker-{i}", daemon=True)
-            for i in range(workers)
-        ]
-        for t in self._workers:
+    def start(self, gpus: list[int] | None = None) -> None:
+        if gpus is None:
+            # One worker per GPU in the registry's pool. In CPU/mock mode
+            # (no usable CUDA devices) fall back to a single fake GPU 0.
+            gpus = getattr(self.registry, "gpus", None)
+            if not gpus:
+                gpus = [0]
+        self._gpus = list(gpus)
+        self._pending = []
+        self._gpu_queues = {g: deque() for g in self._gpus}
+        self._gpu_running = {}
+        self._stop = False
+        for g in self._gpus:
+            t = threading.Thread(target=self._worker_loop, args=(g,),
+                                 name=f"gen-worker-{g}", daemon=True)
+            self._workers[g] = t
             t.start()
 
     def stop(self) -> None:
@@ -174,7 +183,7 @@ class GenerationQueue:
         with self._cond:
             for i in range(batch_size):
                 self._pending.append(_Task(job.id, i, base_seed + i))
-            self._cond.notify_all()
+            self._dispatch()
         self.emit({"type": "job_started", "job": job.id, "batch_size": batch_size,
                    "base_seed": base_seed})
         if job.source_png is not None:
@@ -192,52 +201,87 @@ class GenerationQueue:
         if job is None or job.interrupted:
             return
         job.interrupted = True
+        cancel_gpus = set()
         with self._cond:
             self._pending = [t for t in self._pending if t.job_id != job_id]
-            self._cond.notify_all()
-        backend = self.registry.current_backend()
-        if backend is not None:
-            backend.cancel()
+            for g in self._gpus:
+                q = self._gpu_queues[g]
+                filtered = [t for t in q if t.job_id != job_id]
+                q.clear()
+                q.extend(filtered)
+                rt = self._gpu_running.get(g)
+                if rt is not None and rt.job_id == job_id:
+                    cancel_gpus.add(g)
+            self._dispatch()
+        # Cancel OUTSIDE the queue lock: it touches backends (not queue
+        # state) and must not block while a worker is still in
+        # registry.run() for this job.
+        for g in cancel_gpus:
+            self.registry.cancel(g)
         self.emit({"type": "job_interrupted", "job": job_id})
 
     # --- internals ---
-    def _worker_loop(self) -> None:
+    def _worker_loop(self, gpu: int) -> None:
         while not self._stop:
-            task = self._take_task()
-            if task is None:
-                return
-            self._run_task(task)
-
-    def _take_task(self) -> _Task | None:
-        with self._cond:
-            while not self._stop:
-                for i, t in enumerate(self._pending):
-                    job = self.job(t.job_id)
-                    if job is None or job.interrupted:
-                        self._pending.pop(i)
-                        continue
-                    self._pending.pop(i)
-                    return t
-                try:
+            with self._cond:
+                while not self._gpu_queues[gpu] and not self._stop:
                     self._cond.wait(timeout=0.5)
-                except TimeoutError:
-                    continue
-            return None
+                if self._stop:
+                    return
+                task = self._gpu_queues[gpu].popleft()
+                self._gpu_running[gpu] = task
+            try:
+                self._run_task(task, gpu)
+            except Exception:
+                log.exception("generation worker gpu=%d crashed", gpu)
+            finally:
+                with self._cond:
+                    self._gpu_running.pop(gpu, None)
+                    self._dispatch()
 
-    def _run_task(self, task: _Task) -> None:
+    def _dispatch(self) -> None:
+        """Assign pending tasks to free GPUs (primary first).
+
+        The caller must hold ``self._cond``. A GPU is *free* iff it is not
+        running a task AND its per-GPU queue is empty. Pruning mutates the
+        deques **in place** (``clear`` + ``extend``) so a worker holding a
+        reference to a deque never reads a stale object.
+        """
+        self._pending = [
+            t for t in self._pending
+            if (j := self.job(t.job_id)) is not None and not j.interrupted
+        ]
+        for g in self._gpus:
+            q = self._gpu_queues[g]
+            filtered = [
+                t for t in q
+                if (j := self.job(t.job_id)) is not None and not j.interrupted
+            ]
+            q.clear()
+            q.extend(filtered)
+        free = [
+            g for g in self._gpus
+            if g not in self._gpu_running and not self._gpu_queues[g]
+        ]
+        while self._pending and free:
+            task = self._pending.pop(0)
+            gpu = free.pop(0)  # self._gpus is primary-ordered
+            self._gpu_queues[gpu].append(task)
+        self._cond.notify_all()
+
+    def _run_task(self, task: _Task, gpu: int) -> None:
+        # Called with NO queue lock held: the worker released ``self._cond``
+        # after popping the task. registry.run() takes the per-GPU lock for
+        # the whole generation, so a model swap on this GPU blocks until we
+        # finish (other GPUs are unaffected). Lock order is always
+        # cond -> (release) -> gpu-lock, never the reverse.
         job = self.job(task.job_id)
         if job is None or job.interrupted:
             return
-        try:
-            # model loading can fail (e.g. OOM) -- surface it like a gen error
-            backend: ModelBackend = self.registry.backend_for(job.model_id)
-        except Exception as e:
-            self.emit({"type": "error", "job": job.id,
-                       "message": f"{type(e).__name__}: {e}"})
-            self._settle(job, task.index)
-            return
+        info = self.registry.get(job.model_id)
         d = job.request.model_dump(exclude={"seed"})
-        d.update(seed=task.seed, model_id=backend.model_id, model_name=backend.name)
+        d.update(seed=task.seed, model_id=job.model_id,
+                 model_name=info.name if info is not None else job.model_id)
         req = GenerateRequest.model_validate(d)
 
         # Wildcards are resolved per task, using this task's seed: each image
@@ -272,14 +316,15 @@ class GenerationQueue:
                            "fraction": fraction, "message": message})
 
         try:
-            result = backend.generate(req, progress=progress)
+            result, backend = self.registry.run(job.model_id, gpu, req, progress)
         except InterruptedError:
             if not job.interrupted:
                 self.emit({"type": "error", "job": job.id,
                            "message": "generation interrupted"})
             return
-        except Exception as e:  # surface backend errors to the UI
-            self.emit({"type": "error", "job": job.id, "message": f"{type(e).__name__}: {e}"})
+        except Exception as e:  # model load (OOM) or backend error
+            self.emit({"type": "error", "job": job.id,
+                       "message": f"{type(e).__name__}: {e}"})
             self._settle(job, task.index)
             return
 
