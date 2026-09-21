@@ -209,6 +209,43 @@ def test_zoom_wheel_fit_pan(page, server):
     assert new_oy - oy == pytest.approx(40, abs=2)
 
 
+def test_holder_resize_keeps_cursor_mapping_in_sync(page, server):
+    """A canvas-holder resize WITHOUT a window resize (dragging the sidebar
+    resizer; the persisted sidebar_width restored late from /api/ui-state)
+    must resync the canvas backing store: #canvas is a replaced element
+    clamped to the holder (max-width/max-height: 100%), so a stale backing
+    store is silently rescaled to fit the new box and the whole render
+    (image, brush outline, strokes) drifts from the mouse by a factor of
+    distance-from-top-left."""
+    base, _ = server
+    _open(page, base)
+    _show(page, base, 200, 150)
+    before_w = page.evaluate("holderBox().w")
+
+    # what a sidebar resizer drag / late ui-state restore does
+    page.evaluate("document.getElementById('controls').style.width = '640px'")
+    page.wait_for_timeout(400)  # let the ResizeObserver tick land
+
+    holder_w, ratio = page.evaluate(
+        """() => {
+            const c = document.getElementById('canvas');
+            const r = c.getBoundingClientRect();
+            return [holderBox().w,
+                    c.width / (r.width * (window.devicePixelRatio || 1))];
+        }""")
+    assert holder_w < before_w - 50  # the holder actually shrank
+    # 1 backing pixel must map to exactly 1 device pixel (1 CSS px * dpr)
+    assert abs(ratio - 1) < 0.01, \
+        f"backing store not in step with the resized box: scale {ratio:.3f}"
+
+    # and a stroke still lands exactly under the cursor
+    set_input(page, "#brush-color", "#00ff00")
+    dot(page, 90, 70)
+    assert wait_until(lambda: canvas_px(base, 90, 70) == (0, 255, 0)), \
+        f"off-target after holder resize: {canvas_px(base, 90, 70)}"
+    assert canvas_px(base, 10, 10) == BG
+
+
 def test_brush_outline_follows_cursor(page, server):
     base, _ = server
     _open(page, base)

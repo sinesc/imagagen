@@ -49,10 +49,25 @@ function holderBox() {
 function viewResize() {
   const { w, h } = holderBox();
   view.dpr = window.devicePixelRatio || 1;
-  cv().width = Math.max(1, Math.floor(w * view.dpr));
-  cv().height = Math.max(1, Math.floor(h * view.dpr));
+  const bw = Math.max(1, Math.floor(w * view.dpr));
+  const bh = Math.max(1, Math.floor(h * view.dpr));
+  if (bw !== cv().width || bh !== cv().height) {
+    cv().width = bw;
+    cv().height = bh;
+  }
   viewRedraw();
 }
+
+// The holder box can change WITHOUT a window resize: dragging the sidebar
+// resizer, the persisted sidebar width arriving late from /api/ui-state
+// (the restore lands after boot, racing the canvas image load), a manually
+// resized prompt textarea, toolbar reflow. #canvas is a replaced element
+// clamped to the holder (max-width/max-height: 100%), so a backing store
+// sized for the old box is silently rescaled to fit the new one -- the
+// whole render (image, brush outline, strokes) drifts from the mouse by a
+// factor of distance-from-top-left. Keep the backing store in step.
+// (document.getElementById: canvas.js is parsed before app.js defines $)
+new ResizeObserver(viewResize).observe(document.getElementById("canvas-holder"));
 
 function viewFit() {
   if (!view.has) return;
