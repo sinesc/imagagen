@@ -473,6 +473,22 @@ button.danger:hover { background: #a33; }
 }
 
 /* ---------------- dialogs (model configs, presets) ---------------- */
+/* covers the whole UI until the websocket is connected (visible from the
+   first paint, app.js hides it on ws.onopen) */
+#loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  color: #eee;
+  font-size: 1.25rem;
+  letter-spacing: 0.05em;
+}
+#loading-overlay[hidden] { display: none; }
+
 #dialog {
   position: fixed;
   inset: 0;

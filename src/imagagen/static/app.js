@@ -1890,6 +1890,7 @@ let statusIsError = false;
 let ws = null;
 function connectWS() {
   ws = new WebSocket(`ws://${location.host}/api/ws`);
+  ws.onopen = () => { $("loading-overlay").hidden = true; };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     switch (msg.type) {

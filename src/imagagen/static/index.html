@@ -168,6 +168,10 @@
     </main>
   </div>
 
+  <!-- covers the UI until the first websocket connection is up (app.js
+       hides it on ws.onopen) -->
+  <div id="loading-overlay">loading…</div>
+
   <div id="dialog" hidden>
     <div id="dialog-box">
       <div id="dialog-title-row">
