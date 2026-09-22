@@ -143,6 +143,12 @@ def load_config(root: Path | str | None = None) -> Config:
     # import time): cache hub files in the project, keep the console quiet.
     os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(config.hf_cache_dir))
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+    # Reclaim CUDA caching-allocator pool fragmentation (the ~1.5 GB
+    # "inactive split" that empty_cache cannot free). Required headroom for
+    # the 12.7 GB-resident Flux weights on a 16 GB card; benefits SDXL too.
+    # Must be set before the first CUDA allocation (this runs at startup).
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     # torchvision-less image-processor fallbacks are exactly what we want
     # (PIL backend); stop transformers from announcing them on first import
     os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
