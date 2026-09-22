@@ -1,27 +1,34 @@
+# python
 .venv/
 .python313/
 __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
-dist/
+
+# reference code
+dev/implementations/
+
+# output folder (no gitkeep to allow symlinking some other folder)
+output/*
+
+# weights
+models/*
+!models/.gitkeep
+loras/*
+!loras/.gitkeep
+
+# user state
+cache/*
+!cache/.gitkeep
 user/ui-state.json
 user/imagagen.ini
 user/styles.csv
-
-# user data directories (created at runtime)
-models/*
-loras/*
 user/brushes/*
-user/presets/*
-user/model-configs/*
-cache/*
-output/*
-user/wildcards/*
-!models/.gitkeep
-!loras/.gitkeep
 !user/brushes/.gitkeep
+user/presets/*
 !user/presets/.gitkeep
+user/model-configs/*
 !user/model-configs/.gitkeep
-!cache/.gitkeep
+user/wildcards/*
 !user/wildcards/.gitkeep
