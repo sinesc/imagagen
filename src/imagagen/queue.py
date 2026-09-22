@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -61,6 +62,8 @@ class Job:
     finished: set[int] = field(default_factory=set)  # indices settled (ok or error)
     first_emitted: bool = False
     done_emitted: bool = False
+    # monotonic clock at submit: used for the runtime in the completion log
+    submitted_at: float = field(default_factory=time.monotonic)
     # image metadata: the user's RAW prompt (request.prompt is the
     # style-applied one) plus the styles' actual contents, so the PNG
     # round-trips as "same prompt + same style list"
@@ -507,8 +510,12 @@ class GenerationQueue:
             job.finished.add(index)
             if not job.done_emitted and len(job.finished) >= job.batch_size:
                 job.done_emitted = True
-                log.info("batch completed: job %d (%d/%d images completed)",
-                         job.id, len(job.results), job.batch_size)
+                runtime = time.monotonic() - job.submitted_at
+                log.info(
+                    "batch completed: job %d (%d/%d images completed, "
+                    "%.1fs)",
+                    job.id, len(job.results), job.batch_size, runtime,
+                )
                 self.emit({"type": "done", "job": job.id})
 
 
