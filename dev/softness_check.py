@@ -78,7 +78,7 @@ def main() -> None:
         warnings.simplefilter("ignore")
         pipe = StableDiffusionXLPipeline.from_single_file(
             str(model_path), torch_dtype=torch.float16)
-        vae_path = config.root / "models" / "sdxl_vae.safetensors"
+        vae_path = config.infra_dir / "sdxl_vae.safetensors"
         if vae_path.is_file():
             pipe.vae = AutoencoderKL.from_single_file(str(vae_path),
                                                       torch_dtype=torch.float16)

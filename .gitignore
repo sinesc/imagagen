@@ -17,6 +17,8 @@ models/*
 !models/.gitkeep
 loras/*
 !loras/.gitkeep
+infra/*
+!infra/.gitkeep
 
 # user state
 cache/*

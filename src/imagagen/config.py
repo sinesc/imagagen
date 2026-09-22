@@ -57,6 +57,11 @@ class Config:
         return self.root / "loras"
 
     @property
+    def infra_dir(self) -> Path:
+        """Optional encoder/decoder weights (VAEs, text encoders, ...)."""
+        return self.root / "infra"
+
+    @property
     def brushes_dir(self) -> Path:
         """User brushes (grey PNGs), searched after the provided ones."""
         return self.user_dir / "brushes"
@@ -236,6 +241,7 @@ def ensure_dirs(config: Config) -> None:
         config.models_dir,
         config.segmentation_models_dir,
         config.loras_dir,
+        config.infra_dir,
         config.user_dir,
         config.brushes_dir,
         config.wildcards_dir,

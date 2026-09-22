@@ -43,7 +43,7 @@ Precision (matching Forge's kdiff path exactly):
   solver in fp16 (10-bit mantissa) measurably flattens detail/contrast.
 - only the UNet itself runs in fp16 (input cast right before the call,
   like Forge's calculate_input + .to(computation_dtype))
-- the improved VAE (models/sdxl_vae.safetensors, ft-MSE) is swapped in when
+- the improved VAE (infra/sdxl_vae.safetensors, ft-MSE) is swapped in when
   present: the stock SDXL VAE baked into the checkpoint overflows to NaN at
   high-magnitude latents (the classic "black image" bug), while the improved
   VAE is fp16-stable and renders color better. All reference images were
@@ -418,11 +418,12 @@ class SdxlBackend(ModelBackend):
             # Swap in the improved fp16-stable VAE (ft-MSE) if present: the
             # stock SDXL VAE baked into the checkpoint overflows to NaN at
             # high-magnitude latents (uniformly black images). Prefer the
-            # project's models/ dir, fall back to next to the model's
-            # grandparent dir (the pre-Config-location behavior).
+            # project's infra/ dir (home for encoder/decoder weights),
+            # fall back to next to the model's grandparent dir (the
+            # pre-Config-location behavior).
             vae_path = None
             if config is not None:
-                candidate = config.models_dir / "sdxl_vae.safetensors"
+                candidate = config.infra_dir / "sdxl_vae.safetensors"
                 if candidate.is_file():
                     vae_path = candidate
             if vae_path is None:
@@ -438,7 +439,7 @@ class SdxlBackend(ModelBackend):
                 # infers a stock v1 VAE and fetches that repo's config. Point
                 # it at the identical config committed under res/ instead, so
                 # the swap is fully offline (weights still come from the file).
-                # vae_path is <root>/models/sdxl_vae.safetensors, so res/ is
+                # vae_path is <root>/infra/sdxl_vae.safetensors, so res/ is
                 # its grandparent dir.
                 vae_cfg = vae_path.parent.parent / "res" / "sdxl_vae.config.json"
                 self.pipe.vae = AutoencoderKL.from_single_file(

@@ -67,9 +67,10 @@ live in `user/model-configs/`, generation-setting presets in
 (all created/edited from the UI and safe to edit by hand).
 
 Optional: put an improved VAE (`sdxl_vae.safetensors`, e.g. the ft-MSE
-"Improved VAE") in `models/`. The stock SDXL VAE overflows to NaN in fp16 for
-high-magnitude latents; the improved VAE is fp16-stable and renders color
-better. If it is present, it is swapped in automatically.
+"Improved VAE") in `infra/` (the home for encoder/decoder weights). The
+stock SDXL VAE overflows to NaN in fp16 for high-magnitude latents; the
+improved VAE is fp16-stable and renders color better. If it is present, it
+is swapped in automatically.
 
 ### VRAM
 
