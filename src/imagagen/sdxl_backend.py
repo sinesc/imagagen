@@ -401,8 +401,17 @@ class SdxlBackend(ModelBackend):
         if vae_path is not None:
             from diffusers import AutoencoderKL
 
+            # from_single_file would otherwise download the VAE's
+            # architecture config (vae/config.json) from the HF hub: the
+            # checkpoint has no embedded diffusers metadata, so diffusers
+            # infers a stock v1 VAE and fetches that repo's config. Point
+            # it at the identical config committed under res/ instead, so
+            # the swap is fully offline (weights still come from the file).
+            # vae_path is <root>/models/sdxl_vae.safetensors, so res/ is
+            # its grandparent dir.
+            vae_cfg = vae_path.parent.parent / "res" / "sdxl_vae.config.json"
             self.pipe.vae = AutoencoderKL.from_single_file(
-                str(vae_path), torch_dtype=torch.float16
+                str(vae_path), config=str(vae_cfg), torch_dtype=torch.float16
             )
         self.pipe.to(self.device)
         # The VAE decodes in bf16 (Forge's default on sm_80+ GPUs): same
