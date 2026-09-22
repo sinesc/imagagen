@@ -23,21 +23,52 @@ server start (the mock-backend test suite never touches it).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-# Quiet the tflite runtime / glog chatter before mediapipe is first
-# imported (otherwise every segmenter load prints "Created TensorFlow
-# Lite XNNPACK delegate for CPU" and glog warnings to the console).
+# Best-effort quieting of *other* native glog/TF C++ log levels (mediapipe
+# is imported lazily, so these must be set before first use). They cannot
+# reach the TFLite "Created XNNPACK delegate" printf or the glog
+# inference_feedback_manager line (see _quiet_stderr), which is why the
+# model load itself is wrapped in an fd-2 redirect.
 os.environ.setdefault("GLOG_minloglevel", "2")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 log = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _quiet_stderr():
+    """Point fd 2 (stderr) at /dev/null for the enclosed block.
+
+    TFLite/MediaPipe's native code writes its ``Created TensorFlow Lite
+    XNNPACK delegate`` notice and glog/absl warnings (e.g.
+    ``inference_feedback_manager.cc``) straight to the stderr *file
+    descriptor*; env vars and Python ``logging``/``warnings`` filters all
+    operate above the fd and cannot reach them. Redirecting fd 2 around
+    the C model load is the only reliable way to keep that noise out of
+    the console. This is process-wide and inherently not thread-safe, but
+    segmenter loading runs under ``SegmentationService._lock`` and the
+    window is a few milliseconds, so the only output at risk is a stray
+    stderr write in that instant.
+    """
+    sys.stderr.flush()
+    saved_fd = os.dup(2)
+    with open(os.devnull, "wb") as devnull:
+        os.dup2(devnull.fileno(), 2)
+        try:
+            yield
+        finally:
+            sys.stderr.flush()
+            os.dup2(saved_fd, 2)
+    os.close(saved_fd)
 
 
 # The selfie model's per-class confidences are not sparse: every class
@@ -92,7 +123,9 @@ class SegmentationService:
             running_mode=mp.tasks.vision.RunningMode.IMAGE,
             output_category_mask=True,
         )
-        return vision.ImageSegmenter.create_from_options(options)
+        # The native load writes to the stderr fd directly; hide it.
+        with _quiet_stderr():
+            return vision.ImageSegmenter.create_from_options(options)
 
     def _make_image(self, rgb: np.ndarray) -> object:
         """Wrap an HxWx3 uint8 numpy array as the segmenter's input image."""
