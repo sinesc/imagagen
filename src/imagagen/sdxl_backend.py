@@ -529,7 +529,9 @@ class SdxlBackend(ModelBackend):
 
     def unload(self) -> None:
         with self._lock:  # never move the pipeline while a generation is running
-            self.pipe.to("cpu")
+            # fp16 pipeline is only parked on CPU to free VRAM; no inference
+            # runs there, so silence diffusers' dtype/device warning
+            self.pipe.to("cpu", silence_dtype_warnings=True)
 
     def generate(self, request: GenerateRequest, progress=None) -> GenerateResult:
         with self._lock:
