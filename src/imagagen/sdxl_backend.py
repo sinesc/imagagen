@@ -167,6 +167,21 @@ log = logging.getLogger(__name__)
 
 SIGMA_DATA = 1.0
 
+# Serializes every operation that CREATES torch parameters across ALL backends
+# (one per GPU, each on its own worker thread): model init (SdxlBackend.__init__
+# / from_single_file) and LoRA apply/unload (_apply_loras). Both go through
+# peft/transformers, whose ``_init_on_device`` context manager MONKEY-PATCHES
+# GLOBAL torch state (``nn.Module.register_parameter``, ``torch.empty``/``zeros``/...
+# ); that patch is not thread-safe. Two threads creating parameters concurrently
+# interleave the global patches, and a parameter registration runs through the
+# wrong thread's ``register_empty_parameter``, which copies ``param.__dict__``
+# (including transformers' ``_is_hf_initialized`` flag) into ``Parameter.__new__``
+# kwargs -> ``TypeError: Parameter.__new__() got an unexpected keyword argument
+# "_is_hf_initialized"``. Holding this lock makes parameter creation
+# single-threaded process-wide. (It is always acquired innermost -- after
+# state.lock / self._lock -- so no deadlock.)
+_PARAM_INIT_LOCK = threading.RLock()
+
 
 class _ModelSamplingDiscrete:
     """k-diffusion ModelSamplingDiscrete: t == sigma, x0 == xphi."""
@@ -387,42 +402,48 @@ class SdxlBackend(ModelBackend):
         self.config = config  # project Config (loras dir, VRAM options)
         self._active_loras: tuple[tuple[str, float], ...] | None = None
 
-        with warnings.catch_warnings():
-            # loading a partially-cached pipeline emits dtype-casting and
-            # image-processor warnings that are harmless for fp16 use
-            warnings.simplefilter("ignore")
-            self.pipe = StableDiffusionXLPipeline.from_single_file(
-                str(info.path), torch_dtype=torch.float16
-            )
-        # Swap in the improved fp16-stable VAE (ft-MSE) if present: the
-        # stock SDXL VAE baked into the checkpoint overflows to NaN at
-        # high-magnitude latents (uniformly black images). Prefer the
-        # project's models/ dir, fall back to next to the model's grandparent
-        # dir (the pre-Config-location behavior).
-        vae_path = None
-        if config is not None:
-            candidate = config.models_dir / "sdxl_vae.safetensors"
-            if candidate.is_file():
-                vae_path = candidate
-        if vae_path is None:
-            candidate = info.path.parent.parent / "sdxl_vae.safetensors"
-            if candidate.is_file():
-                vae_path = candidate
-        if vae_path is not None:
-            from diffusers import AutoencoderKL
+        # Model init creates torch parameters (unet + transformers text
+        # encoders + VAE). peft/transformers monkey-patch GLOBAL torch state
+        # during that init (see _PARAM_INIT_LOCK), so serialize it with LoRA
+        # apply -- a model load on one GPU must never interleave with a LoRA
+        # injection (or another model load) on another GPU.
+        with _PARAM_INIT_LOCK:
+            with warnings.catch_warnings():
+                # loading a partially-cached pipeline emits dtype-casting and
+                # image-processor warnings that are harmless for fp16 use
+                warnings.simplefilter("ignore")
+                self.pipe = StableDiffusionXLPipeline.from_single_file(
+                    str(info.path), torch_dtype=torch.float16
+                )
+            # Swap in the improved fp16-stable VAE (ft-MSE) if present: the
+            # stock SDXL VAE baked into the checkpoint overflows to NaN at
+            # high-magnitude latents (uniformly black images). Prefer the
+            # project's models/ dir, fall back to next to the model's
+            # grandparent dir (the pre-Config-location behavior).
+            vae_path = None
+            if config is not None:
+                candidate = config.models_dir / "sdxl_vae.safetensors"
+                if candidate.is_file():
+                    vae_path = candidate
+            if vae_path is None:
+                candidate = info.path.parent.parent / "sdxl_vae.safetensors"
+                if candidate.is_file():
+                    vae_path = candidate
+            if vae_path is not None:
+                from diffusers import AutoencoderKL
 
-            # from_single_file would otherwise download the VAE's
-            # architecture config (vae/config.json) from the HF hub: the
-            # checkpoint has no embedded diffusers metadata, so diffusers
-            # infers a stock v1 VAE and fetches that repo's config. Point
-            # it at the identical config committed under res/ instead, so
-            # the swap is fully offline (weights still come from the file).
-            # vae_path is <root>/models/sdxl_vae.safetensors, so res/ is
-            # its grandparent dir.
-            vae_cfg = vae_path.parent.parent / "res" / "sdxl_vae.config.json"
-            self.pipe.vae = AutoencoderKL.from_single_file(
-                str(vae_path), config=str(vae_cfg), torch_dtype=torch.float16
-            )
+                # from_single_file would otherwise download the VAE's
+                # architecture config (vae/config.json) from the HF hub: the
+                # checkpoint has no embedded diffusers metadata, so diffusers
+                # infers a stock v1 VAE and fetches that repo's config. Point
+                # it at the identical config committed under res/ instead, so
+                # the swap is fully offline (weights still come from the file).
+                # vae_path is <root>/models/sdxl_vae.safetensors, so res/ is
+                # its grandparent dir.
+                vae_cfg = vae_path.parent.parent / "res" / "sdxl_vae.config.json"
+                self.pipe.vae = AutoencoderKL.from_single_file(
+                    str(vae_path), config=str(vae_cfg), torch_dtype=torch.float16
+                )
         self.pipe.to(self.device)
         # The VAE decodes in bf16 (Forge's default on sm_80+ GPUs): same
         # 8-bit mantissa as fp16 but 8x the exponent range. The improved
@@ -454,7 +475,12 @@ class SdxlBackend(ModelBackend):
                 if getattr(self.pipe, "text_encoder_2", None) is not None:
                     self.pipe.text_encoder_2.cpu()
             if config.unet_quantization == "nf4":
-                _quantize_unet_nf4(self.pipe.unet, self.device)
+                # Quantization replaces UNet linear layers with bnf4bit
+                # (creates parameters) -- serialize it like the other
+                # parameter-creation steps so it never interleaves with a
+                # concurrent LoRA injection / model init on another GPU.
+                with _PARAM_INIT_LOCK:
+                    _quantize_unet_nf4(self.pipe.unet, self.device)
                 torch.cuda.empty_cache()
 
     def _encode_prompt_chunked(self, prompt: str, device) -> tuple:
@@ -625,44 +651,51 @@ class SdxlBackend(ModelBackend):
             if path is None:
                 raise ValueError(f"LoRA not found: {name!r} (looked in loras/)")
             paths.append(path)
-        # Drop whatever is currently applied before rebuilding. Unload based
-        # on the *actual* UNet state as well as the cache, so adapters left
-        # behind by a previously failed load are cleared too.
-        self._unload_loras()
-        if not key:
-            return
-        tags, weights = [], []
-        try:
-            for i, (name, weight) in enumerate(key):
-                tag = f"imagagen_{i}"
-                # diffusers 0.40 returns None on success (older versions
-                # returned a (failed, succeeded) tuple); keep the check for
-                # both shapes.
-                res = self.pipe.load_lora_weights(
-                    self._lora_state_dict(paths[i]), adapter_name=tag
-                )
-                if res is None:
-                    pass
-                elif isinstance(res, tuple) and res[0]:
-                    raise ValueError(f"failed to load LoRA {name!r}: {res[0]}")
-                elif res:
-                    raise ValueError(f"failed to load LoRA {name!r}: {res}")
-                tags.append(tag)
-                weights.append(weight)
-            if weights:
-                self.pipe.set_adapters(tags, weights)
-        except Exception:
-            # A partial injection must not persist: remove the adapters that
-            # were already added, then re-raise the real error.
+        # The unload + injection below go through diffusers/peft, which
+        # monkey-patch GLOBAL torch state for the text-encoder path (see
+        # _PARAM_INIT_LOCK). Serialize it with model init so two GPU workers
+        # never interleave those patches.
+        with _PARAM_INIT_LOCK:
+            # Drop whatever is currently applied before rebuilding. Unload
+            # based on the *actual* UNet state as well as the cache, so
+            # adapters left behind by a previously failed load are cleared
+            # too.
             self._unload_loras()
-            raise
-        self._active_loras = key
-        log.info("LoRA load: %s", format_loras(list(key)))
+            if not key:
+                return
+            tags, weights = [], []
+            try:
+                for i, (name, weight) in enumerate(key):
+                    tag = f"imagagen_{i}"
+                    # diffusers 0.40 returns None on success (older versions
+                    # returned a (failed, succeeded) tuple); keep the check
+                    # for both shapes.
+                    res = self.pipe.load_lora_weights(
+                        self._lora_state_dict(paths[i]), adapter_name=tag
+                    )
+                    if res is None:
+                        pass
+                    elif isinstance(res, tuple) and res[0]:
+                        raise ValueError(f"failed to load LoRA {name!r}: {res[0]}")
+                    elif res:
+                        raise ValueError(f"failed to load LoRA {name!r}: {res}")
+                    tags.append(tag)
+                    weights.append(weight)
+                if weights:
+                    self.pipe.set_adapters(tags, weights)
+            except Exception:
+                # A partial injection must not persist: remove the adapters
+                # that were already added, then re-raise the real error.
+                self._unload_loras()
+                raise
+            self._active_loras = key
+            log.info("LoRA load: %s", format_loras(list(key)))
 
     def _unload_loras(self) -> None:
         """Remove every applied LoRA adapter from the pipeline.
 
-        Runs under ``self._lock``. Clears based on the *actual* UNet state
+        Runs under ``self._lock`` and ``_PARAM_INIT_LOCK`` (it is only called
+        from ``_apply_loras``). Clears based on the *actual* UNet state
         (``peft_config``) in addition to the ``_active_loras`` cache, so it
         also recovers from a previously failed (partial) load that left
         adapters injected while the cache was reset to ``None``.
