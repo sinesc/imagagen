@@ -602,6 +602,14 @@ class SdxlBackend(ModelBackend):
         """Inject the requested LoRAs into the pipeline (cached per set).
 
         Must run under ``self._lock`` (it mutates the UNet's modules).
+
+        The apply is all-or-nothing: a set becomes ``_active_loras`` only once
+        every adapter is injected AND weighted. If any injection fails partway,
+        the adapters already injected are removed again so the pipeline is left
+        clean. (Without this, a half-injected set leaves ``imagagen_0`` in the
+        UNet while ``_active_loras`` is still ``None``; the next load reuses the
+        same adapter name and raises ``Adapter name ... already in use`` instead
+        of surfacing the real failure -- and keeps failing until restart.)
         """
         key = tuple((n, float(w)) for n, w in loras)
         if key == self._active_loras:
@@ -617,33 +625,57 @@ class SdxlBackend(ModelBackend):
             if path is None:
                 raise ValueError(f"LoRA not found: {name!r} (looked in loras/)")
             paths.append(path)
-        if self._active_loras is not None:
-            # drop the previous set entirely, then rebuild
-            log.info("LoRA unload: %s", format_loras(list(self._active_loras)))
-            self.pipe.unload_lora_weights()
-            self._active_loras = None
+        # Drop whatever is currently applied before rebuilding. Unload based
+        # on the *actual* UNet state as well as the cache, so adapters left
+        # behind by a previously failed load are cleared too.
+        self._unload_loras()
         if not key:
             return
         tags, weights = [], []
-        for i, (name, weight) in enumerate(key):
-            tag = f"imagagen_{i}"
-            # diffusers 0.40 returns None on success (older versions returned
-            # a (failed, succeeded) tuple); keep the check for both shapes.
-            res = self.pipe.load_lora_weights(
-                self._lora_state_dict(paths[i]), adapter_name=tag
-            )
-            if res is None:
-                pass
-            elif isinstance(res, tuple) and res[0]:
-                raise ValueError(f"failed to load LoRA {name!r}: {res[0]}")
-            elif res:
-                raise ValueError(f"failed to load LoRA {name!r}: {res}")
-            tags.append(tag)
-            weights.append(weight)
-        if weights:
-            self.pipe.set_adapters(tags, weights)
+        try:
+            for i, (name, weight) in enumerate(key):
+                tag = f"imagagen_{i}"
+                # diffusers 0.40 returns None on success (older versions
+                # returned a (failed, succeeded) tuple); keep the check for
+                # both shapes.
+                res = self.pipe.load_lora_weights(
+                    self._lora_state_dict(paths[i]), adapter_name=tag
+                )
+                if res is None:
+                    pass
+                elif isinstance(res, tuple) and res[0]:
+                    raise ValueError(f"failed to load LoRA {name!r}: {res[0]}")
+                elif res:
+                    raise ValueError(f"failed to load LoRA {name!r}: {res}")
+                tags.append(tag)
+                weights.append(weight)
+            if weights:
+                self.pipe.set_adapters(tags, weights)
+        except Exception:
+            # A partial injection must not persist: remove the adapters that
+            # were already added, then re-raise the real error.
+            self._unload_loras()
+            raise
         self._active_loras = key
         log.info("LoRA load: %s", format_loras(list(key)))
+
+    def _unload_loras(self) -> None:
+        """Remove every applied LoRA adapter from the pipeline.
+
+        Runs under ``self._lock``. Clears based on the *actual* UNet state
+        (``peft_config``) in addition to the ``_active_loras`` cache, so it
+        also recovers from a previously failed (partial) load that left
+        adapters injected while the cache was reset to ``None``.
+        """
+        if self._active_loras is None and \
+                not getattr(self.pipe.unet, "peft_config", None):
+            return  # nothing applied: nothing to unload
+        if self._active_loras is not None:
+            log.info("LoRA unload: %s", format_loras(list(self._active_loras)))
+        else:
+            log.warning("LoRA unload: clearing leftover adapters (no active set tracked)")
+        self.pipe.unload_lora_weights()
+        self._active_loras = None
 
     def _encode_init(self, pipe, arr: np.ndarray, device):
         """VAE-encode an HxWx3 uint8 image to its latent (the deterministic
