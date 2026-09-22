@@ -406,6 +406,18 @@ class GenerationQueue:
                            "message": "generation interrupted"})
             return
         except Exception as e:  # model load (OOM) or backend error
+            # Also surface the failure in the server console (a batch that
+            # settles N-1/B with no traceback in the terminal otherwise hides
+            # its cause in the WebSocket stream only). exc_info captures the
+            # full traceback; the message carries the exception itself.
+            log.exception(
+                "job %d image %d: generation failed: %s "
+                "(model=%s loras=%s gpu=%d)",
+                job.id, task.index, e,
+                info.name if info is not None else job.model_id,
+                format_loras(req.loras),
+                gpu,
+            )
             self.emit({"type": "error", "job": job.id,
                        "message": f"{type(e).__name__}: {e}"})
             self._settle(job, task.index)

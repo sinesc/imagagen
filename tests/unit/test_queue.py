@@ -298,6 +298,46 @@ def test_wildcard_error_settles_task_with_error_event(tmp_path):
     assert job.results == {}
 
 
+def test_generation_error_is_logged_to_console(caplog):
+    # A backend/generation exception (OOM, LoRA load failure, ...) must
+    # reach the server console, not only the WebSocket: before this the
+    # except block only emitted a WS error event, so a batch settling
+    # N-1/B with no traceback in the terminal hid its cause.
+    import logging
+
+    class FailingBackend(MockBackend):
+        def generate(self, request, progress=None):
+            raise ValueError("boom: LoRA load failed")
+
+    events = []
+    with caplog.at_level(logging.ERROR, logger="imagagen.queue"):
+        q, _ = _queue(FailingBackend(), events)
+        job = q.submit(
+            "m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 2)
+        deadline = time.time() + 10
+        while time.time() < deadline and not job.done_emitted:
+            time.sleep(0.02)
+    # both tasks settled via the error path (no results)
+    assert job.done_emitted
+    assert job.results == {}
+    # the WS error events are still emitted (one per failed task)
+    errs = [e for e in events if e["type"] == "error"]
+    assert len(errs) == 2
+    assert all("ValueError" in e["message"] and "boom" in e["message"]
+               for e in errs)
+    # ...and the failure also landed in the server console with context
+    logged = [r for r in caplog.records
+              if "generation failed" in r.getMessage()]
+    assert logged
+    assert any("ValueError" not in r.getMessage()  # message carries str(exc)
+               and "boom" in r.getMessage()
+               and "model=Fake Model" in r.getMessage()
+               for r in logged)
+    # a traceback is attached (exc_info), not just a one-line message
+    assert all(r.exc_info for r in logged)
+    assert logged[0].exc_info[0].__name__ == "ValueError"
+
+
 def test_live_image_ids_contains_results_and_source():
     backend = MockBackend()
     events = []
