@@ -104,6 +104,7 @@ Self attention guidance (SAG, Forge builtin extension; see sag.py):
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import warnings
 
@@ -120,6 +121,13 @@ from .soft_inpaint import SoftInpainting, adaptive_change_alpha, latent_blend
 warnings.filterwarnings(
     "ignore", message="Pipelines loaded with `dtype=torch.float16` cannot run with `cpu` device.*"
 )
+
+# diffusers warns on every ModelMixin .to(dtype) that some modules "should
+# be kept in float32" even when the fp32 list is empty, and there is no way
+# to avoid the casts themselves (the internal fp16 cast at load time and
+# our deliberate bf16 VAE cast). The list is always [] here, so nothing is
+# actually kept in fp32 and nothing is lost.
+logging.getLogger("diffusers.models.modeling_utils").setLevel(logging.ERROR)
 
 SIGMA_DATA = 1.0
 
