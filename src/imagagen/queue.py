@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 
 from . import wildcards
-from .backends import GenerateRequest, ModelBackend
+from .backends import GenerateRequest, ModelBackend, format_loras
 from .generation import InpaintPlan
 
 log = logging.getLogger(__name__)
@@ -219,6 +219,18 @@ class GenerationQueue:
             self._dispatch()
         self.emit({"type": "job_started", "job": job.id, "batch_size": batch_size,
                    "base_seed": base_seed})
+        # Cold models warm up alone on the primary GPU first (see module
+        # docstring), then join the pool; the log says which pool the batch
+        # will use and notes the warm-up when the model is cold.
+        suffix = ("" if job.model_id == self._warmed_model
+                  else f" (model cold: starts on GPU {self._gpus[0]})")
+        log.info(
+            "batch queued: job %d: %d images, %d total steps "
+            "(%d steps each), model: %s, GPUs: %s%s",
+            job.id, batch_size, job.request.steps * batch_size,
+            job.request.steps, job.model_id,
+            ", ".join(str(g) for g in self._gpus), suffix,
+        )
         if job.source_png is not None:
             # right after job_started: the UI shows the source before any
             # result arrives. A source thumbnail exists exactly when the
@@ -234,6 +246,8 @@ class GenerationQueue:
         if job is None or job.interrupted:
             return
         job.interrupted = True
+        log.info("batch canceled: job %d (%d/%d images completed)",
+                 job.id, job.completed, job.batch_size)
         cancel_gpus = set()
         with self._cond:
             self._pending = [t for t in self._pending if t.job_id != job_id]
@@ -397,6 +411,31 @@ class GenerationQueue:
             self._settle(job, task.index)
             return
 
+        uniform = _uniform_color(result.image)
+        if uniform is not None:
+            r, g, b = uniform
+            log.error(
+                "job %d image %d: generated image is a uniform color "
+                "(%d, %d, %d) -- usually NaN/inf in the solver state or a "
+                "VAE decode overflow (check VRAM, the VAE, unet "
+                "quantization). seed=%d model=%s loras=%s size=%dx%d "
+                "steps=%s cfg=%s sampler=%s scheduler=%s denoise=%s "
+                "init_image=%s init_mask=%s soft_inpainting=%s sag=%s "
+                "vae_dtype=%s gpu=%d prompt=%r",
+                job.id, task.index, r, g, b,
+                task.seed,
+                info.name if info is not None else job.model_id,
+                format_loras(req.loras),
+                req.width, req.height, req.steps, req.cfg,
+                req.sampler or backend.default_sampler,
+                req.scheduler or backend.default_scheduler,
+                req.denoise,
+                req.init_image is not None, req.init_mask is not None,
+                req.soft_inpainting is not None, req.sag is not None,
+                getattr(backend, "vae_dtype", "?"),
+                gpu, _short(req.prompt),
+            )
+
         # The image is fully generated and decoded: this model is now warm.
         # From here on its tasks may run in parallel on multiple GPUs
         # (releases the warm-up gate in _dispatch). An interrupted or
@@ -456,7 +495,28 @@ class GenerationQueue:
             job.finished.add(index)
             if not job.done_emitted and len(job.finished) >= job.batch_size:
                 job.done_emitted = True
+                log.info("batch completed: job %d (%d/%d images completed)",
+                         job.id, len(job.results), job.batch_size)
                 self.emit({"type": "done", "job": job.id})
+
+
+def _uniform_color(image: np.ndarray) -> tuple[int, int, int] | None:
+    """(r, g, b) when every pixel of `image` is identical, else None.
+
+    A uniform generation is a classic symptom of NaN/inf in the solver
+    state or a VAE decode overflow (e.g. the stock VAE on high-magnitude
+    latents): the clamp + uint8 cast then lands on one constant value.
+    """
+    if image.ndim != 3 or image.size == 0:
+        return None
+    if image.min() != image.max():
+        return None
+    return tuple(int(c) for c in image[0, 0])
+
+
+def _short(text: str, limit: int = 100) -> str:
+    text = " ".join(text.split())
+    return text[: limit - 1] + "…" if len(text) > limit else text
 
 
 def _plain_png(image: np.ndarray) -> bytes:

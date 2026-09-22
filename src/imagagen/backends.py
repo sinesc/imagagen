@@ -67,6 +67,13 @@ class GenerateResult:
 ProgressCallback = Callable[[float, str], None]  # fraction 0..1, message
 
 
+def format_loras(loras: list[tuple[str, float]] | tuple[tuple[str, float], ...]) -> str:
+    """`name (weight), ...` for log messages; `-` when empty."""
+    if not loras:
+        return "-"
+    return ", ".join(f"{name} ({weight:g})" for name, weight in loras)
+
+
 class ModelBackend(ABC):
     """A loadable, generatable model (e.g. one SDXL checkpoint)."""
 

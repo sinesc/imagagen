@@ -8,11 +8,16 @@ adds RAM residency for the last-unloaded model).
 
 from __future__ import annotations
 
+import logging
+import time
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from .backends import format_loras
 from .metadata import forge_lora_hash
+
+log = logging.getLogger(__name__)
 
 
 _MODEL_SUFFIXES = (".safetensors", ".ckpt")
@@ -234,6 +239,7 @@ class ModelRegistry:
 
     def _unload_state_locked(self, state: _GpuState) -> None:
         if state.backend is not None:
+            log.info("model unload: %s on GPU %d", state.backend.name, state.gpu)
             state.backend.unload()
             state.backend = None
             state.model_id = None
@@ -249,10 +255,15 @@ class ModelRegistry:
         except Exception:
             pass
 
-    def _load_backend_locked(self, state: _GpuState, model_id: str):
+    def _load_backend_locked(
+        self, state: _GpuState, model_id: str,
+        loras: list[tuple[str, float]] | None = None,
+    ):
         """Ensure ``model_id`` is loaded on ``state.gpu`` and return it.
 
-        Caller must hold ``state.lock``.
+        Caller must hold ``state.lock``. ``loras`` is the LoRA set this load
+        is being prepared for (the queue applies it per generation); it is
+        only logged.
         """
         if state.backend is not None and state.model_id == model_id:
             return state.backend
@@ -264,6 +275,9 @@ class ModelRegistry:
 
         from .sdxl_backend import SdxlBackend
 
+        log.info("model load start: %s on GPU %d (LoRAs: %s)",
+                 info.name, state.gpu, format_loras(loras or []))
+        started = time.monotonic()
         self.emit({"type": "status",
                    "message": f"loading {info.name} on GPU {state.gpu} …"})
         state.backend = SdxlBackend(info, torch.device(f"cuda:{state.gpu}"),
@@ -271,6 +285,8 @@ class ModelRegistry:
         state.model_id = model_id
         with self._meta_lock:
             self._current_id = model_id
+        log.info("model load done: %s on GPU %d (%.1fs)",
+                 info.name, state.gpu, time.monotonic() - started)
         self.emit({"type": "status",
                    "message": f"loaded {info.name} on GPU {state.gpu}"})
         return state.backend
@@ -310,7 +326,8 @@ class ModelRegistry:
         """
         state = self._get_gpu_state(gpu)
         with state.lock:
-            backend = self._load_backend_locked(state, model_id)
+            backend = self._load_backend_locked(
+                state, model_id, loras=getattr(request, "loras", None))
             return backend.generate(request, progress), backend
 
     def cancel(self, gpu: int | None = None) -> None:

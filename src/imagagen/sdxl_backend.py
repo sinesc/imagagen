@@ -111,7 +111,7 @@ import warnings
 import numpy as np
 
 from . import kdiff
-from .backends import GenerateRequest, GenerateResult, ModelBackend
+from .backends import GenerateRequest, GenerateResult, ModelBackend, format_loras
 from .sag import SagRecorder, compute_sag_mask, create_blur_map, install_sag_hooks
 from .soft_inpaint import SoftInpainting, adaptive_change_alpha, latent_blend
 
@@ -162,6 +162,8 @@ class _NoLoraKeysFilter(logging.Filter):
 
 
 logging.getLogger("diffusers.loaders.lora_base").addFilter(_NoLoraKeysFilter())
+
+log = logging.getLogger(__name__)
 
 SIGMA_DATA = 1.0
 
@@ -615,6 +617,7 @@ class SdxlBackend(ModelBackend):
             paths.append(path)
         if self._active_loras is not None:
             # drop the previous set entirely, then rebuild
+            log.info("LoRA unload: %s", format_loras(list(self._active_loras)))
             self.pipe.unload_lora_weights()
             self._active_loras = None
         if not key:
@@ -638,6 +641,7 @@ class SdxlBackend(ModelBackend):
         if weights:
             self.pipe.set_adapters(tags, weights)
         self._active_loras = key
+        log.info("LoRA load: %s", format_loras(list(key)))
 
     def _encode_init(self, pipe, arr: np.ndarray, device):
         """VAE-encode an HxWx3 uint8 image to its latent (the deterministic
