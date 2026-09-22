@@ -314,6 +314,15 @@ class SdxlBackend(ModelBackend):
         import torch
         from diffusers import StableDiffusionXLPipeline
 
+        # diffusers' "Loading pipeline components..." tqdm bar: this is a
+        # single synchronous load, not an interactive terminal, so the bar
+        # only interleaves with the server log (generation progress goes
+        # through the progress callback instead). Affects the whole
+        # process, which is fine: nothing else in imagagen uses tqdm.
+        from diffusers.utils.logging import disable_progress_bar
+
+        disable_progress_bar()
+
         # Backstop in case load_config() was not used: keep any hub files
         # from_single_file fetches in the persistent project-local cache.
         if config is not None:
