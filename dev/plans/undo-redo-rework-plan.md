@@ -336,7 +336,7 @@ class CanvasImage:
   not dropped.
 
 ### Devtools
-- `devtools/e2e_inpaint_ui_flow.py`: still valid as-is (mask retention now
+- `dev/e2e_inpaint_ui_flow.py`: still valid as-is (mask retention now
   trivial; thumb selection via `/api/canvas/thumb` unchanged). Re-run it
   after the change to confirm end-to-end.
 
@@ -351,7 +351,7 @@ class CanvasImage:
    `prune`, WS `image_id` — with `test_queue.py`.
 3. Frontend (`app.js`, `index.html`) — with the UI tests.
 4. Full suite: `tests/unit`, `tests/integration`, `tests/ui` (Playwright),
-   then `devtools/e2e_inpaint_ui_flow.py` for the live GPU pass.
+   then `dev/e2e_inpaint_ui_flow.py` for the live GPU pass.
 
 ## Notes
 

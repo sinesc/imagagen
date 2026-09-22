@@ -3,7 +3,7 @@
 The MediaPipe segmenter is injected with fakes: these tests cover the
 service's model discovery, class validation, union/alpha math, and the
 canvas mask write (undo), without mediapipe or a real .tflite file. The
-real model + inference is exercised by devtools/segmentation_check.py
+real model + inference is exercised by dev/segmentation_check.py
 and the (skipping) browser test in tests/ui/test_segmentation_ui.py.
 """
 

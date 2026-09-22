@@ -2,11 +2,11 @@
 
 Runs the segmentation service against models/segmentation/*.tflite on a
 reference image (or a CLI image) and writes:
-  - devtools/references/segmentation-preview-<model-stem>.png  (mask over image)
-  - devtools/references/segmentation-mask-<model-stem>.png     (raw alpha)
+  - dev/references/segmentation-preview-<model-stem>.png  (mask over image)
+  - dev/references/segmentation-mask-<model-stem>.png     (raw alpha)
 
 Usage:
-  .venv/bin/python devtools/segmentation_check.py [image.png]
+  .venv/bin/python dev/segmentation_check.py [image.png]
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def main() -> int:
     image_path = (
         Path(sys.argv[1])
         if len(sys.argv) > 1
-        else REPO / "devtools/references/woman-with-dog-mask-generator-testing.png"
+        else REPO / "dev/references/woman-with-dog-mask-generator-testing.png"
     )
     img = Image.open(image_path).convert("RGB")
     rgb = np.asarray(img)
@@ -40,7 +40,7 @@ def main() -> int:
         print("no models in models/segmentation/ (put a .tflite there)")
         return 1
 
-    out_dir = REPO / "devtools" / "references"
+    out_dir = REPO / "dev" / "references"
     out_dir.mkdir(parents=True, exist_ok=True)
     ok = True
     for m in models:

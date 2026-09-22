@@ -12,7 +12,7 @@ Checks each image for NaN and for a collapsed (black/flat) render, saves
 the PNGs, prints PASS/FAIL.
 
 Usage (from the project root):
-    .venv/bin/python devtools/multigpu_blackcheck.py [outdir]
+    .venv/bin/python dev/multigpu_blackcheck.py [outdir]
 """
 
 import sys
@@ -41,7 +41,7 @@ def check(tag: str, arr: np.ndarray) -> bool:
         img = arr.astype(np.float64)
         nan = bool(np.isnan(img).any())
         mean = float(img.mean())
-        # structure check (same heuristic as devtools/gen.py): downscale to
+        # structure check (same heuristic as dev/gen.py): downscale to
         # 16x16 and compare its std to the raw std -- a flat image has
         # downscaled std ~ 0 while a real image keeps most of its std
         from PIL import Image as _I

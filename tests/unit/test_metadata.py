@@ -213,7 +213,7 @@ def test_parse_no_lora_hashes():
 def test_forge_lora_hash_is_sha256_of_basename():
     import hashlib
 
-    # reference value: devtools/references/cute-kitten-dmd2.png
+    # reference value: dev/references/cute-kitten-dmd2.png
     assert (
         metadata.forge_lora_hash("DMD2fp32XL1.0.safetensors")
         == hashlib.sha256(b"DMD2fp32XL1.0.safetensors").hexdigest()[:12]

@@ -4,7 +4,7 @@ Catches regressions in the seeded-noise path (initial noise and the
 per-step ancestral/SDE streams, which must both be derived from the seed).
 
 Usage (from the project root):
-    .venv/bin/python devtools/seed_check.py
+    .venv/bin/python dev/seed_check.py
 """
 
 import sys

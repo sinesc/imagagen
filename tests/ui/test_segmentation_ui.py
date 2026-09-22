@@ -15,7 +15,7 @@ from conftest import mask_arr, wait_until
 
 REPO = Path(__file__).resolve().parents[2]
 MODEL = REPO / "models" / "segmentation" / "selfie_multiclass_256x256.tflite"
-REF_IMAGE = REPO / "devtools/references" / "woman-with-dog-mask-generator-testing.png"
+REF_IMAGE = REPO / "dev/references" / "woman-with-dog-mask-generator-testing.png"
 
 
 @pytest.fixture

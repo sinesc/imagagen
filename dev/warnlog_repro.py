@@ -1,7 +1,7 @@
 """Reproduce a cold server start + one generation and capture the console log.
 
 Usage (project root):
-    .venv/bin/python devtools/warnlog_repro.py /tmp/warnlog.txt [port]
+    .venv/bin/python dev/warnlog_repro.py /tmp/warnlog.txt [port]
 
 Starts the real server on the given port, hits the endpoints a UI session
 hits on startup (segmentation models), submits one txt2img generation with

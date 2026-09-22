@@ -10,7 +10,7 @@ should match the stock pipeline's trajectory within fp16 noise
 Also saves both final images for visual (or ascii_view.py) comparison.
 
 Usage (from the project root; needs GPU + cached HF files):
-    .venv/bin/python devtools/pipeline_reference.py
+    .venv/bin/python dev/pipeline_reference.py
 """
 
 import torch
@@ -87,7 +87,7 @@ def main() -> None:
         a = (out.cpu().numpy()[0].transpose(1, 2, 0) * 255).astype("uint8")
         Image.fromarray(a).save("/tmp/ref_mine.png")
         print("saved /tmp/ref_pipeline.png (stock) and /tmp/ref_mine.png (our loop)")
-        print("compare with: python devtools/ascii_view.py /tmp/ref_pipeline.png")
+        print("compare with: python dev/ascii_view.py /tmp/ref_pipeline.png")
 
 
 if __name__ == "__main__":

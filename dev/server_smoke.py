@@ -4,7 +4,7 @@ The server must already be running (default port 8899). Exercises the full
 stack: HTTP generate request -> queue -> backend -> WebSocket events.
 
 Usage (from the project root, server running):
-    .venv/bin/python devtools/server_smoke.py [port]
+    .venv/bin/python dev/server_smoke.py [port]
 """
 
 import asyncio

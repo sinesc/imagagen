@@ -7,7 +7,7 @@ Starts the real server (no --mock), then verifies:
   4. all 3 images complete
 
 Usage (from the project root):
-    .venv/bin/python devtools/multigpu_smoke.py [port]
+    .venv/bin/python dev/multigpu_smoke.py [port]
 """
 
 import asyncio

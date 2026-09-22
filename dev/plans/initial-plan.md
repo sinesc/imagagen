@@ -152,7 +152,7 @@ Key architectural decisions:
     `ModelBackend` interface, producing deterministic noise/gradients; all
     queue/inpaint/import/UI flows are testable CPU-only (fast, deterministic,
     no VRAM needed for the CI-style suite; the workspace does have GPUs — see
-    "Testing strategy" — and real-GPU verification lives in `devtools/`).
+    "Testing strategy" — and real-GPU verification lives in `dev/`).
   - pytest + httpx AsyncClient integration tests against the API.
   - ruff + a smoke-test script hitting the main endpoints.
 - Deliverable: server runs, directory layout created on first start, tests green.
@@ -265,7 +265,7 @@ Implementation notes:
   hood — the plan's robust choice, and it also normalizes the common on-disk key
   layouts), one injected adapter per LoRA, per-LoRA weights via `set_adapters`;
   the active set is cached so unchanged generations don't re-inject. `peft>=0.10`
-  added to the dependencies. Verified on GPU by `devtools/smoke_sdxl_lora.py`
+  added to the dependencies. Verified on GPU by `dev/smoke_sdxl_lora.py`
   (real A1111/sgm-format LoRA: active at 1.0, inert at 0.0, deterministic cache
   hit, merge with a second adapter, clean unload). One diffusers-0.40 /
   transformers-5 skew had to be fixed: the A1111 converter emits
@@ -319,7 +319,7 @@ Implementation notes:
   checkbox per class (background excluded, default: all others); model +
   classes persisted in ui-state. `mediapipe` added to the deps (needs the
   libEGL/libGLES system libs); a fake segmenter factory is injected in unit /
-  integration tests, the real model is covered by `devtools/segmentation_check.py`
+  integration tests, the real model is covered by `dev/segmentation_check.py`
   and a Playwright test (skips without the tflite file).
 - Deliverable (deferred parts): registry-driven UI; new sampler/scheduler/tool
   addable by dropping a module.
@@ -339,7 +339,7 @@ Implementation notes:
 
 **This workspace has two GPUs** (checked 2025-07: `nvidia-smi`) — index 0: RTX
 5070 Ti 16GB, index 1: RTX 4060 Ti 16GB; both comfortably run SDXL. Servers and
-devtools select one via the `primary-gpu` ini setting (or
+dev select one via the `primary-gpu` ini setting (or
 `CUDA_VISIBLE_DEVICES`). Real-GPU verification is therefore part of normal
 workflow here, not something deferred to "a GPU machine".
 
@@ -349,8 +349,8 @@ workflow here, not something deferred to "a GPU machine".
   **But the mock never exercises the torch code paths**: the SDXL inpaint
   crash (3D tensor into `F.interpolate`) passed all 143 tests and only showed
   up in the UI. After any change to `sdxl_backend.py`'s sampling, run
-  `devtools/smoke_sdxl_inpaint.py` (and ideally
-  `devtools/e2e_inpaint_ui_flow.py`) on a GPU.
+  `dev/smoke_sdxl_inpaint.py` (and ideally
+  `dev/e2e_inpaint_ui_flow.py`) on a GPU.
 - Unit tests: output naming, prompt sanitization, scheduler sigma shapes (known
   values for Karras/Polyexponential at fixed step counts), mask bbox/enlarge math,
   AR-scale+center math (including the 100→250×200 example), dilate/erode,
@@ -359,7 +359,7 @@ workflow here, not something deferred to "a GPU machine".
 - Sampler correctness: compare Euler a / DPM++ 2M outputs against `k_diffusion`
   reference runs on a tiny fake model (CPU) — catches wiring bugs (sigma scaling,
   CFG rescaling, LoRA application points) without an SDXL GPU.
-- On the local GPUs: `devtools/` scripts automate the smoke test (real SDXL
+- On the local GPUs: `dev/` scripts automate the smoke test (real SDXL
   txt2img, inpaint both modes with protected-region assertions, seed
   determinism, sampler/scheduler combos over HTTP+WS, offline cache check,
   pipeline reference diff). Manual: model switch unload/reload, two-GPU queue

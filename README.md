@@ -8,7 +8,7 @@ spec and `PLAN.md` for the implementation plan.
 ```bash
 uv sync --extra dev          # syncs into .venv (see below)
 .venv/bin/python -m pytest   # run tests (mock backend, no GPU needed)
-bash devtools/smoke.sh        # start mock server + hit endpoints
+bash dev/smoke.sh        # start mock server + hit endpoints
 ```
 
 ## Run

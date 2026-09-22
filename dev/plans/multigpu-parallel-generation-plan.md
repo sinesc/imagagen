@@ -317,7 +317,7 @@ Key invariants:
 
 - `from_config(config)`: update to `registry.backend_for(registry.models[0].id)` (gpu=None → primary). No other changes needed.
 
-### 6. `devtools/*.py` scripts
+### 6. `dev/*.py` scripts
 
 Update constructor calls: `ModelRegistry(cfg, gpu=1)` → `ModelRegistry(cfg, gpus=[1])`.
 Update `backend_for(id)` calls — they still work (gpu=None → primary=1).
@@ -430,7 +430,7 @@ def test_primary_wins_tie_when_both_free():
 
 Uses MockBackend via `_MockRegistry` (single gpu [0]). Behavior unchanged.
 
-#### New: `devtools/multigpu_smoke.py`
+#### New: `dev/multigpu_smoke.py`
 
 End-to-end real-GPU smoke test (both GPUs free):
 1. Start the real server (no `--mock`).
@@ -457,9 +457,9 @@ Update the comment block to explain the multi-GPU behavior:
 3. **`queue.py`**: Rewrite worker/dispatch logic. Update `_run_task` signature. Run `test_queue.py` (existing tests with updated FakeRegistry).
 4. **`app.py`**: Update `_MockRegistry`, `create_app`, health endpoint. Run integration tests.
 5. **`sdxl_backend.py`**: Update `from_config`. 
-6. **`devtools/*.py`**: Update constructor calls.
+6. **`dev/*.py`**: Update constructor calls.
 7. **New tests**: `test_gpus.py` additions, `test_queue.py` multi-GPU tests.
-8. **`devtools/multigpu_smoke.py`**: Real 2-GPU end-to-end verification.
+8. **`dev/multigpu_smoke.py`**: Real 2-GPU end-to-end verification.
 9. **`user/imagagen.ini`**: Update comments.
 
 ## Verification Checklist
@@ -469,7 +469,7 @@ Update the comment block to explain the multi-GPU behavior:
 - [ ] `uv run --extra dev pytest tests/integration/test_api.py -v`
 - [ ] `uv run --extra dev pytest tests/unit/test_model_discovery.py -v`
 - [ ] `uv run --extra dev pytest tests/unit/test_config.py -v`
-- [ ] Real GPU: `devtools/multigpu_smoke.py` — 3 images on 2 GPUs, both show VRAM activity, total time ≈ 2× single
+- [ ] Real GPU: `dev/multigpu_smoke.py` — 3 images on 2 GPUs, both show VRAM activity, total time ≈ 2× single
 - [ ] Real GPU: single image → only primary GPU active
 - [ ] Interrupt during multi-GPU batch → only the interrupted job's GPUs cancelled
 - [ ] Model switch mid-queue → no crash, pending tasks use new model on correct GPU

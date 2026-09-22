@@ -914,7 +914,7 @@ class SdxlBackend(ModelBackend):
             # k-diffusion [0.1, 10]. For SDXL that is ~[0.03, ~14.6]: start
             # from the true terminal noise level and refine down to almost
             # zero residual noise. The [0.1, 10] clamp renders visibly
-            # flatter/grainier (see devtools/softness_check.py). The LCM
+            # flatter/grainier (see dev/softness_check.py). The LCM
             # sampler instead uses its 50-slot range (see _LcmSchedule).
             if lcm is not None:
                 sigma_min, sigma_max = lcm.min_sigma, lcm.max_sigma

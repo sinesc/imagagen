@@ -1,7 +1,7 @@
 """Regenerate the Forge reference cases with the local backend for comparison.
 
-Usage: uv run python devtools/gen_refs.py [dmd2|zoom3|all]
-Writes PNGs to devtools/references/imagagen/ (same prompt/params as Forge refs).
+Usage: uv run python dev/gen_refs.py [dmd2|zoom3|all]
+Writes PNGs to dev/references/imagagen/ (same prompt/params as Forge refs).
 """
 import sys
 from pathlib import Path
@@ -32,7 +32,7 @@ def main():
     cfg = load_config()
     reg = ModelRegistry(cfg, gpus=[1])  # leave GPU 0 to the user
     backend = reg.backend_for([m for m in reg.models if m.name == "epicrealismXL11.0"][0].id)
-    out_dir = Path("devtools/references/imagagen")
+    out_dir = Path("dev/references/imagagen")
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, c in CASES.items():
         if which not in ("all", name):

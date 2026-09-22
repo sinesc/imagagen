@@ -21,7 +21,7 @@ Expectation (same seed/prompt/settings otherwise):
 Saves individual PNGs plus a side-by-side composite with an amplified
 diff map of (B - base) restricted to the protected side.
 
-Usage:  .venv/bin/python devtools/soft_inpaint_check.py
+Usage:  .venv/bin/python dev/soft_inpaint_check.py
 (No other server/model should be holding GPU 1.)
 """
 

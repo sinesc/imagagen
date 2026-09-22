@@ -1,9 +1,9 @@
 """Render a PNG as ASCII art + per-region color stats.
 
-Useful in sessions where the agent has no vision: `python devtools/ascii_view.py output/1-foo.png`.
+Useful in sessions where the agent has no vision: `python dev/ascii_view.py output/1-foo.png`.
 
 Usage:
-    python devtools/ascii_view.py <image.png> [width] [height]
+    python dev/ascii_view.py <image.png> [width] [height]
 """
 
 import sys

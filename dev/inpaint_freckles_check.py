@@ -1,4 +1,4 @@
-"""Reproduce the Forge reference inpaint (devtools/references/inpainting/).
+"""Reproduce the Forge reference inpaint (dev/references/inpainting/).
 
 Runs "inpaint masked" on original(forge).png with the exact settings from
 forge-inpaint-normal.png's metadata (12 steps, Euler a, Polyexponential,
@@ -27,7 +27,7 @@ from imagagen.config import load_config  # noqa: E402
 from imagagen.generation import with_inpaint  # noqa: E402
 from imagagen.models import ModelRegistry  # noqa: E402
 
-REF = ROOT / "devtools/references/inpainting"
+REF = ROOT / "dev/references/inpainting"
 PROMPT = (
     "cinematic film still woman at the beach, clear sky, "
     "beautiful turquoise ocean . shallow depth of field, vignette, "

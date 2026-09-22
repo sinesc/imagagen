@@ -11,7 +11,7 @@ before the queue's warm-up gate. Verifies:
   3. a second batch afterwards is also clean (post-warm parallel runs)
 
 Usage (from the project root):
-    .venv/bin/python devtools/multigpu_firstbatch_check.py [port]
+    .venv/bin/python dev/multigpu_firstbatch_check.py [port]
 """
 
 import asyncio
