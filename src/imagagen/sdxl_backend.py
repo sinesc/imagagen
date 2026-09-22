@@ -122,6 +122,14 @@ warnings.filterwarnings(
     "ignore", message="Pipelines loaded with `dtype=torch.float16` cannot run with `cpu` device.*"
 )
 
+# With two or more LoRAs, one peft adapter per LoRA is injected into the
+# same UNet and then blended with set_adapters, so every injection after
+# the first finds an existing peft_config. That multi-adapter state is the
+# intended design (per-LoRA weights), not a bug.
+warnings.filterwarnings(
+    "ignore", message=r"Already found a `peft_config` attribute in the model.*"
+)
+
 # diffusers warns on every ModelMixin .to(dtype) that some modules "should
 # be kept in float32" even when the fp32 list is empty, and there is no way
 # to avoid the casts themselves (the internal fp16 cast at load time and
