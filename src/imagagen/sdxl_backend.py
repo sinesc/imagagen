@@ -143,6 +143,18 @@ class _BnbCudaFallbackFilter(logging.Filter):
 # records)
 logging.getLogger("bitsandbytes.cextension").addFilter(_BnbCudaFallbackFilter())
 
+
+# Every LoRA this project ships is UNet-only (no text-encoder part), so
+# diffusers warns "No LoRA keys associated to CLIPTextModel..." at every
+# application. It is correct for those files and diffusers itself says the
+# warning is safe to ignore when the checkpoint had no text-encoder params.
+class _NoLoraKeysFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "No LoRA keys associated to" not in record.getMessage()
+
+
+logging.getLogger("diffusers.loaders.lora_base").addFilter(_NoLoraKeysFilter())
+
 SIGMA_DATA = 1.0
 
 
