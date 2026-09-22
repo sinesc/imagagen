@@ -403,6 +403,10 @@ class GenerationQueue:
 
         try:
             result, backend = self.registry.run(job.model_id, gpu, req, progress)
+            if req.loras and not backend.supports_loras:
+                log.warning(
+                    "job %d: ignoring %d LoRA(s) -- %s does not support LoRAs",
+                    job.id, len(req.loras), backend.name)
         except InterruptedError:
             if not job.interrupted:
                 self.emit({"type": "error", "job": job.id,
@@ -588,7 +592,7 @@ def _result_to_png(
         denoise=req.denoise if job is not None and job.plan is not None else None,
         model_name=backend.name,
         model_hash=backend.model_hash,
-        loras=req.loras,
+        loras=req.loras if backend.supports_loras else [],
         styles=job.meta_styles if job is not None else None,
         soft_inpainting=req.soft_inpainting,
         sag=req.sag,

@@ -19,6 +19,7 @@ dependencies = [
     "scipy>=1.11",
     "torchsde>=0.2.6",
     "mediapipe>=0.10.13",  # person mask generation (Phase 5); needs libEGL/libGLES system libs
+    "gguf>=0.19.0",
 ]
 
 [project.optional-dependencies]

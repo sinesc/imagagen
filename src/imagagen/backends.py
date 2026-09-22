@@ -86,6 +86,9 @@ class ModelBackend(ABC):
     default_scheduler: str = "Karras"
     #: md5[:16] of the first 100MB of the checkpoint ("" for mocks)
     model_hash: str = ""
+    #: whether attached LoRAs are actually applied to the weights (False:
+    #: they are ignored and kept out of the PNG metadata)
+    supports_loras: bool = True
 
     @abstractmethod
     def generate(

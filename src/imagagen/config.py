@@ -239,9 +239,13 @@ def ensure_dirs(config: Config) -> None:
     """Create the data-directory layout if it does not exist yet."""
     for d in (
         config.models_dir,
+        config.models_dir / "sdxl",
+        config.models_dir / "flux",
         config.segmentation_models_dir,
         config.loras_dir,
         config.infra_dir,
+        config.infra_dir / "tokenizer_clip",
+        config.infra_dir / "tokenizer_t5",
         config.user_dir,
         config.brushes_dir,
         config.wildcards_dir,

@@ -95,7 +95,46 @@ def default_noise_sampler(x: torch.Tensor):
 _STEP_SEED_OFFSET = 1_000_000
 
 
+def get_sigmas_flux(n: int, image_seq_len: int, device,
+                    base_seq_len: int = 256, max_seq_len: int = 4096,
+                    base_shift: float = 0.5, max_shift: float = 1.15) -> torch.Tensor:
+    """FLUX (flow-matching) sigma schedule with the resolution-dependent shift.
+
+    The base sigmas are ``linspace(1.0, 1/n, n)``; ``mu`` is a linear function
+    of the image token count (``image_seq_len`` = ``(h//16)*(w//16)``) and an
+    exponential time shift redistributes the steps (more steps spent at high
+    noise). A terminal 0 is appended (the sampler integrates down to sigma 0).
+    """
+    t = torch.linspace(1.0, 1.0 / n, n, device=device)
+    m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+    b = base_shift - m * base_seq_len
+    mu = image_seq_len * m + b
+    exp_mu = math.exp(mu)
+    t = exp_mu / (exp_mu + (1.0 / t - 1.0))
+    return torch.cat([t, torch.zeros(1, device=device, dtype=t.dtype)])
+
+
 # ---------------------------------------------------------------- euler ----
+
+
+@torch.no_grad()
+def sample_euler(model, x, sigmas, extra_args=None, callback=None):
+    """Plain (non-ancestral) Euler step, flow-matching / x0 contract.
+
+    The wrapped model is called as ``model(x, sigma)`` and returns the x0
+    estimate; the velocity is ``v = (x - x0) / sigma`` and the step integrates
+    ``x += v * (sigma_next - sigma)``. This is FLUX's sampler.
+    """
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback({"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i],
+                      "denoised": denoised})
+        sigma = sigmas[i]
+        x = x + (x - denoised) / sigma * (sigmas[i + 1] - sigma)
+    return x
 
 
 @torch.no_grad()

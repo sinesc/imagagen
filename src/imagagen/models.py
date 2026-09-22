@@ -1,9 +1,11 @@
 """Model registry: discovery, loading, single-model VRAM residency.
 
-Phase 1: one SDXL checkpoint family (models/sdxl/, subdirectories are
-scanned recursively). Only one
-model is in VRAM at a time; switching unloads the previous one (Phase 6
-adds RAM residency for the last-unloaded model).
+Two checkpoint families live under ``models/<family>/`` (subdirectories
+are scanned recursively): ``sdxl`` (SDXL, ``.safetensors``) and ``flux``
+(FLUX.1, ``.gguf``). The directory name IS the family and selects the
+backend class (:meth:`ModelRegistry._new_backend`). Only one model is in
+VRAM at a time; switching unloads the previous one (Phase 6 adds RAM
+residency for the last-unloaded model).
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from .metadata import forge_lora_hash
 log = logging.getLogger(__name__)
 
 
-_MODEL_SUFFIXES = (".safetensors", ".ckpt")
+_MODEL_SUFFIXES = (".safetensors", ".ckpt", ".gguf")
 
 
 def _walk_files(base: Path) -> list[Path]:
@@ -162,12 +164,13 @@ def resolve_lora_names(
 
 @dataclass
 class ModelInfo:
-    id: str  # relative path within models/sdxl, no extension, e.g. "test-dir/JuggernautXL9.0"
+    id: str  # relative path within models/<family>, no extension
     name: str  # same as id (the path makes nested models distinguishable in the UI)
     path: Path
+    family: str = "sdxl"  # "sdxl" | "flux" -- selects the backend class
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "name": self.name}
+        return {"id": self.id, "name": self.name, "family": self.family}
 
 
 class _GpuState:
@@ -204,15 +207,27 @@ class ModelRegistry:
         self._meta_lock = threading.Lock()
         self._current_id: str | None = None
 
+    # (family, models/<family>/, allowed file suffixes). The directory name
+    # IS the family. Only the GGUF transformer is loadable for flux right
+    # now; the ~12 GB fp8/nf4 .safetensors variants are deliberately left
+    # out of discovery so they never surface as un-loadable entries.
+    _FAMILIES = (
+        ("sdxl", ".safetensors"),
+        ("flux", ".gguf"),
+    )
+
     def discover(self) -> list[ModelInfo]:
         models = []
-        sdxl_dir = self.config.models_dir / "sdxl"
-        if sdxl_dir.is_dir():
-            files = sorted(f for f in _walk_files(sdxl_dir)
-                           if f.suffix == ".safetensors")
+        for family, *suffixes in self._FAMILIES:
+            fam_dir = self.config.models_dir / family
+            if not fam_dir.is_dir():
+                continue
+            files = sorted(f for f in _walk_files(fam_dir)
+                           if f.suffix in suffixes)
             for f in files:
-                rel = f.relative_to(sdxl_dir).with_suffix("").as_posix()
-                models.append(ModelInfo(id=rel, name=rel, path=f))
+                rel = f.relative_to(fam_dir).with_suffix("").as_posix()
+                models.append(ModelInfo(id=rel, name=rel, path=f,
+                                        family=family))
         return models
 
     def list(self) -> list[dict]:
@@ -255,6 +270,22 @@ class ModelRegistry:
         except Exception:
             pass
 
+    def _new_backend(self, info: ModelInfo, device):
+        """Instantiate the backend for ``info.family``.
+
+        Lazy import so a family with no checkpoint on disk never forces its
+        (heavy) dependencies to load.
+        """
+        import torch
+
+        if info.family == "flux":
+            from .flux_backend import FluxBackend
+
+            return FluxBackend(info, torch.device(device), config=self.config)
+        from .sdxl_backend import SdxlBackend
+
+        return SdxlBackend(info, torch.device(device), config=self.config)
+
     def _load_backend_locked(
         self, state: _GpuState, model_id: str,
         loras: list[tuple[str, float]] | None = None,
@@ -273,15 +304,12 @@ class ModelRegistry:
             raise ValueError(f"unknown model: {model_id}")
         import torch
 
-        from .sdxl_backend import SdxlBackend
-
         log.info("model load start: %s on GPU %d (LoRAs: %s)",
                  info.name, state.gpu, format_loras(loras or []))
         started = time.monotonic()
         self.emit({"type": "status",
                    "message": f"loading {info.name} on GPU {state.gpu} …"})
-        state.backend = SdxlBackend(info, torch.device(f"cuda:{state.gpu}"),
-                                    config=self.config)
+        state.backend = self._new_backend(info, torch.device(f"cuda:{state.gpu}"))
         state.model_id = model_id
         with self._meta_lock:
             self._current_id = model_id

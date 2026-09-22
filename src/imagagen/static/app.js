@@ -789,6 +789,37 @@ async function selectModel(id) {
   }
 }
 
+// Refetch the sampler/scheduler lists for the selected model's family and
+// rebuild the main dropdowns. A Flux model offers only its Euler sampler
+// (no schedulers); an SDXL model offers the full SDXL sets. The selection is
+// kept only when it is still valid for the new family, else it resets to
+// "Model default".
+async function refreshSamplers() {
+  const sel = $("model");
+  const entry = state.entries.find((x) => x.id === sel.value) || state.entries[0];
+  if (!entry) return;
+  let s;
+  try {
+    s = await (await fetch(
+      `/api/samplers?model_id=${encodeURIComponent(entry.model_id)}`
+    )).json();
+  } catch (e) {
+    console.error("samplers:", e);
+    return;
+  }
+  state.samplers = s.samplers;
+  state.schedulers = s.schedulers;
+  for (const id of ["sampler", "scheduler"]) {
+    const s2 = $(id);
+    const cur = s2.value;
+    const list = id === "sampler" ? state.samplers : state.schedulers;
+    s2.innerHTML = "";
+    s2.append(opt("", "Model default"));
+    list.forEach((n) => s2.append(opt(n, n)));
+    s2.value = list.includes(cur) ? cur : "";
+  }
+}
+
 async function refreshModels(keepSelection = true) {
   const m = await (await fetch("/api/models")).json();
   if (m.error) throw new Error(m.error);
@@ -1877,6 +1908,7 @@ async function init() {
   fillPresetSelect($("preset"));
   applyUiState(u && u.state);
   syncMode();
+  await refreshSamplers(); // family-correct sampler lists for the selected model
   updatePromptTokens(); // the restored prompt may be non-empty
 }
 
@@ -1985,6 +2017,7 @@ $("btn-redo").onclick = async () => {
 };
 $("model").onchange = (e) => {
   selectModel(e.target.value);
+  refreshSamplers(); // sampler lists follow the model's family
   scheduleSaveUiState(0);
 };
 

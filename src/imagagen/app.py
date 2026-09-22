@@ -363,7 +363,22 @@ def create_app(
         return {"models": [e.to_dict() for e in entries], "current": current}
 
     @app.get("/api/samplers")
-    def list_samplers() -> dict:
+    def list_samplers(model_id: str | None = None) -> dict:
+        """Samplers/schedulers for a model's family.
+
+        ``model_id`` selects the family so a Flux model offers only its
+        Euler sampler (and no schedulers); without it (or for SDXL) the
+        SDXL sets are returned, as before.
+        """
+        family = "sdxl"
+        if model_id is not None:
+            info = app.state.registry.get(model_id)
+            if info is not None:
+                family = info.family
+        if family == "flux":
+            from .flux_backend import SAMPLERS, SCHEDULERS
+
+            return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
         from .sdxl_backend import SAMPLERS, SCHEDULERS
 
         return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
