@@ -215,7 +215,12 @@ class FluxBackend(ModelBackend):
             arr = np.asarray(Image.fromarray(arr).resize(size, Image.LANCZOS))
         t = torch.from_numpy(np.ascontiguousarray(arr)).to(device)
         t = t.permute(2, 0, 1).float()[None] / 127.5 - 1.0
-        lat = self.vae.encode(t.to(self.vae.dtype)).latent_dist.mode().float()
+        # inference_mode: the VAE's default-grad weights would otherwise
+        # build an autograd graph, and the tiny init latent would pin the
+        # entire encoder's activation tensors (~6 GiB at 1024 px) for the
+        # whole generate call
+        with torch.inference_mode():
+            lat = self.vae.encode(t.to(self.vae.dtype)).latent_dist.mode().float()
         return (lat - self.vae.config.shift_factor) * self.vae.config.scaling_factor
 
     def cancel(self) -> None:
@@ -248,6 +253,23 @@ class FluxBackend(ModelBackend):
         h = max(16, (request.height // 16) * 16)
         lh, lw = h // 8, w // 8
         image_seq_len = (lh // 2) * (lw // 2)
+
+        # VAE tiling: vae-tiling=true in imagagen.ini forces it; otherwise
+        # automatic above 2 MP, where the untiled 16-channel decode working
+        # set (~4 GiB/MP on top of the ~7 GiB of resident weights) OOMs a
+        # 16 GB card. Below that threshold tiling stays OFF: the flux VAE
+        # decoder is strongly non-local (a large receptive field), so unlike
+        # the SDXL VAE a tiled decode changes the image, not just the seams
+        # (measured max ~45/255 at 512 px tiles, 1024 px image) -- a crash
+        # at 2 MP is the floor, quality is not worth trading below it.
+        # The small tile size (512 px / 64 latent) is what makes images tile
+        # at all: the VAE default (1024 / 128) only kicks in above 1024 px.
+        if self.config is not None:
+            self.vae.use_tiling = self.config.vae_tiling or w * h > 2_000_000
+            if self.vae.use_tiling:
+                self.vae.tile_sample_min_size = 512
+                self.vae.tile_latent_min_size = 64
+                self.vae.tile_overlap_factor = 0.5
 
         # distilled (model configuration default) vs classic CFG: see module
         # docstring. The guidance embedding is ALWAYS active on this
@@ -371,6 +393,10 @@ class FluxBackend(ModelBackend):
             image = self.vae.decode(latents, return_dict=False)[0].float()
             image = (image / 2 + 0.5).clamp(0, 1)
         arr = (image.cpu().numpy()[0].transpose(1, 2, 0) * 255).astype(np.uint8)
+        # give the sampling/decode working set back to the driver so the
+        # idle footprint is the resident weights (~7 GiB), not the pool's
+        # peak
+        torch.cuda.empty_cache()
         return GenerateResult(image=arr, seed=request.seed)
 
 
