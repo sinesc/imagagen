@@ -200,6 +200,24 @@ class FluxBackend(ModelBackend):
 
     # ------------------------------------------------------------- ctrl ----
 
+    def _encode_init(self, arr: np.ndarray, device, size: tuple[int, int]):
+        """VAE-encode an HxWx3 uint8 image to its solver-space latent
+        (the deterministic ``latent_dist.mode()`` -- A1111's "Full" encode),
+        the inverse of the decode transform ``x / scaling + shift``.
+
+        ``size`` is the snapped ``(w, h)`` generation size. The init image
+        arrives at the un-snapped request size, so it is LANCZOS-resized
+        when the two differ (the 16-px snap can shrink the request).
+        """
+        if arr.shape[:2] != (size[1], size[0]):
+            from PIL import Image
+
+            arr = np.asarray(Image.fromarray(arr).resize(size, Image.LANCZOS))
+        t = torch.from_numpy(np.ascontiguousarray(arr)).to(device)
+        t = t.permute(2, 0, 1).float()[None] / 127.5 - 1.0
+        lat = self.vae.encode(t.to(self.vae.dtype)).latent_dist.mode().float()
+        return (lat - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+
     def cancel(self) -> None:
         self._cancel = True
 
@@ -268,7 +286,41 @@ class FluxBackend(ModelBackend):
         noise = torch.randn(
             (1, 16, lh, lw), device=device, dtype=torch.float32, generator=gen
         )
-        noise = noise * float(sigmas[0])  # sigmas[0] == 1.0 (flow-matching)
+
+        # --- img2img / inpainting (A1111/Forge convention, see sdxl_backend)
+        # ---
+        # With an init image: start from the init latent instead of pure
+        # noise, truncate the sigma schedule at the denoising strength, and
+        # (with an init mask) lock the protected region (mask 0) to the init
+        # content at every step. init_mask marks the *inpaint* region, so
+        # protected = 1 - mask.
+        init_latent = None
+        mask_t = None
+        sigma_sched = sigmas
+        if request.init_image is not None:
+            init_latent = self._encode_init(request.init_image, device, (w, h))
+            # A1111: t_enc = int(min(strength, 0.999) * steps); the schedule
+            # starts at sigmas[steps - 1 - t_enc] (strength 1.0 -> full)
+            t_enc = int(min(request.denoise, 0.999) * steps)
+            sigma_sched = sigmas[steps - 1 - t_enc :]
+            # flow-matching const noise_scaling at the truncated start sigma
+            # (sigma * noise + (1 - sigma) * latent): the noise amplitude IS
+            # the denoise strength
+            noise = init_latent + noise * sigma_sched[0]
+            if request.init_mask is not None:
+                # (1,1,H,W) -> bilinear to the latent grid; this shape
+                # broadcasts against the (1,16,lh,lw) solver tensors
+                m = torch.from_numpy(
+                    np.ascontiguousarray(request.init_mask)
+                ).to(device).float().div(255.0)[None, None]
+                m = torch.nn.functional.interpolate(
+                    m, size=(lh, lw), mode="bilinear")
+                mask_t = 1.0 - m
+                # only the inpaint region starts re-noised; the protected
+                # region starts at the clean init latent
+                noise = noise * (1.0 - mask_t) + init_latent * mask_t
+        else:
+            noise = noise * float(sigmas[0])  # sigmas[0] == 1.0
 
         transformer = self.transformer
 
@@ -276,7 +328,14 @@ class FluxBackend(ModelBackend):
             if self._cancel:
                 raise InterruptedError("cancelled")
             self._step += 1
-            x_bf = x.to(torch.bfloat16)
+            xwork = x
+            if mask_t is not None:
+                # per-step lock (Forge's cfg_denoiser): before the model
+                # call, the protected region (mask_t == 1) is replaced by
+                # init latent + fresh noise at the current sigma level
+                xwork = x * (1.0 - mask_t) \
+                    + (init_latent + torch.randn_like(x) * sigma) * mask_t
+            x_bf = xwork.to(torch.bfloat16)
             t = sigma.to(torch.bfloat16)
             v_cond = transformer(x_bf, t, context, y, guidance=g)
             if not distilled:
@@ -289,13 +348,22 @@ class FluxBackend(ModelBackend):
             if progress and self._step <= self._steps_total:
                 progress(self._step / self._steps_total,
                          f"step {self._step}/{self._steps_total}")
-            return x - sigma * v
+            x0 = xwork - sigma * v
+            if mask_t is not None:
+                # hard lock: the protected x0 estimate is locked back to
+                # the init latent
+                x0 = x0 * (1.0 - mask_t) + init_latent * mask_t
+            return x0
 
         self._step = 0
-        self._steps_total = len(sigmas) - 1
+        self._steps_total = max(1, len(sigma_sched) - 1)
 
         with torch.inference_mode():
-            x = kdiff.sample_euler(model_fn, noise, sigmas, extra_args={})
+            x = kdiff.sample_euler(model_fn, noise, sigma_sched, extra_args={})
+            if init_latent is not None and mask_t is not None:
+                # final lock: the protected region is exactly the init
+                # latent
+                x = x * (1.0 - mask_t) + init_latent * mask_t
 
             # --- VAE decode (kept under inference_mode so the result has no grad) ---
             latents = (x / self.vae.config.scaling_factor) + self.vae.config.shift_factor

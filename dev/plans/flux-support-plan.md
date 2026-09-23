@@ -4,7 +4,7 @@ Support the provided FLUX.1-dev GGUF transformer (plus the provided CLIP-L,
 T5-XXL and Flux VAE) as a **second model family** alongside SDXL. Generation,
 inpaint, LoRA, metadata and the UI all work for Flux models.
 
-## Status (txt2img working)
+## Status (txt2img + img2img/inpaint working)
 
 Implemented and verified end-to-end on the 16 GB GPU:
 
@@ -22,6 +22,13 @@ Implemented and verified end-to-end on the 16 GB GPU:
   `sample_euler` (x0-contract flow-matching Euler).
 - `flux_backend.py` — `FluxBackend(ModelBackend)`: load/encode/sample/decode,
   T5+CLIP offloaded to CPU after encode, `supports_loras = False`, `model_hash`.
+- `flux_backend.py` — **img2img/inpaint**: `_encode_init` (deterministic
+  `latent_dist.mode()` VAE encode, inverse of the decode scaling), denoise
+  sigma-schedule truncation, const flow-matching `noise_scaling` init state,
+  per-step + final latent mask lock (mirrors `sdxl_backend`; plan:
+  `dev/plans/flux-img2img-plan.md`, verified by `dev/smoke_flux_img2img.py` —
+  note the Flux VAE decode is not spatially local, so protected-region pixel
+  checks must use a fully-protected run as reference, see memory).
 - Wiring: `models.py` (family detection, `.gguf`, `_new_backend` dispatch),
   `config.py` (`ensure_dirs` for `models/{sdxl,flux}` + tokenizer dirs),
   `app.py` (family-aware `/api/samplers`), `backends.py` (`supports_loras`),
@@ -47,8 +54,8 @@ T5 working set ~0.4 GB (inference_mode) so 1024² peaks ~13.1 GB.
 - **Other flux checkpoints** on disk (`.safetensors` fp8/nf4, ~12 GB each):
   need a separate fp8/nf4 load path; left out of discovery so they never
   surface as un-loadable entries.
-- Inpaint/img2img + soft inpainting for Flux (const `noise_scaling`
-  `sigma*noise + (1-sigma)*latent`); SAG is not applicable.
+- Soft inpainting for Flux (can reuse the x0-blend path; secondary). SAG
+  is not applicable (UNet mid-block hook).
 - UI: hide/disable the LoRA section for flux models (currently the LoRA
   dropdown is family-agnostic).
 
