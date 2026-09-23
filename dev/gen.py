@@ -40,6 +40,10 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--sampler", default=None)
     p.add_argument("--scheduler", default=None)
+    p.add_argument("--distilled", dest="distilled", action="store_true",
+                   default=True, help="Flux: CFG = embedded guidance (default)")
+    p.add_argument("--no-distilled", dest="distilled", action="store_false",
+                   help="Flux: classic CFG with the negative prompt")
     p.add_argument("--model", default=None,
                    help="model id as listed by /api/models (default: current)")
     p.add_argument("--out", default="/tmp/gen.png")
@@ -50,15 +54,21 @@ def main() -> int:
         m for m in reg.models if m.id == args.model or m.path.name == args.model)
     backend = reg.backend_for(model.id)
 
-    free, _ = torch.cuda.mem_get_info(0)
+    dev = backend.device
+    free, total = torch.cuda.mem_get_info(
+        dev.index if isinstance(dev, torch.device) else 0)
+    print(f"{dev}: {free // 2**20} MiB free of {total // 2**20} MiB",
+          flush=True)
     t0 = time.time()
     res = backend.generate(GenerateRequest(
         prompt=args.prompt, negative_prompt=args.negative,
         width=args.width, height=args.height, steps=args.steps, cfg=args.cfg,
-        seed=args.seed, sampler=args.sampler, scheduler=args.scheduler),
+        seed=args.seed, sampler=args.sampler, scheduler=args.scheduler,
+        distilled=args.distilled),
         progress=lambda f, s: None)
     dt = time.time() - t0
-    free2, _ = torch.cuda.mem_get_info(0)
+    free2, _ = torch.cuda.mem_get_info(
+        dev.index if isinstance(dev, torch.device) else 0)
 
     a = res.image.astype(float)
     small = np.array(Image.fromarray(res.image).resize((16, 16))).astype(float)

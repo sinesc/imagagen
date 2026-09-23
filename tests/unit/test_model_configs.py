@@ -63,6 +63,28 @@ def test_file_layout(tmp_path):
                               "steps": None, "cfg": None, "loras": []}
 
 
+def test_distilled_flag_default_and_roundtrip(tmp_path):
+    # entry-level flag (not per-mode): defaults True (the historical Flux
+    # behavior) for file and in-memory default entries alike
+    s = store(tmp_path)
+    assert all(e.distilled is True for e in s.entries())
+    assert all(
+        e.to_dict()["distilled"] is True for e in s.entries())
+    s.save(ModelConfig(name="My A", model="sdxl/a.safetensors", distilled=False))
+    e = s.resolve("my-a")
+    assert e.distilled is False
+    # survives a reload from disk (the store reads the files fresh)
+    assert store(tmp_path).resolve("my-a").distilled is False
+    on_disk = json.loads(
+        (tmp_path / "user" / "model-configs" / "my-a.json").read_text())
+    assert on_disk["distilled"] is False
+    # t2i/i2i share the flag (it is not part of the mode sections)
+    assert "distilled" not in on_disk["t2i"] and "distilled" not in on_disk["i2i"]
+    # create_from copies it
+    e2 = s.create_from("My A copy", "my-a")
+    assert e2.distilled is False
+
+
 def test_save_updates_existing_and_rejects_collisions(tmp_path):
     s = store(tmp_path)
     s.save(ModelConfig(name="Tuned", model="sdxl/a.safetensors"))

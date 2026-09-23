@@ -65,6 +65,7 @@ def test_models_endpoint(client):
         "id": "mock/mock.safetensors",
         "name": "Mock Model",
         "model_id": "mock/mock.safetensors",
+        "distilled": True,
         "t2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None, "loras": []},
         "i2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None, "loras": []},
         "is_default": True,

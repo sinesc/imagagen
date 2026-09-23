@@ -102,6 +102,7 @@ def build_parameters(
     styles: list[dict] | None = None,
     soft_inpainting: SoftInpainting | None = None,
     sag: SelfAttentionGuidance | None = None,
+    distilled: bool | None = None,
 ) -> str:
     """Format the `parameters` text chunk exactly like A1111/Forge does.
 
@@ -116,6 +117,10 @@ def build_parameters(
     on the meta line under the Forge SAG extension's exact extra-parameter
     keys (raw snake_case: ``sag_enabled`` & co.), so Forge can read them
     back.
+
+    ``distilled``: Flux only (None = not a Flux model, line omitted). Written
+    in BOTH states (like the SAG flags) so the mode the image was generated
+    with is recorded next to the CFG value it was interpreted as.
     """
     lines = [prompt]
     if negative_prompt:
@@ -164,6 +169,10 @@ def build_parameters(
             "Soft inpainting difference contrast: "
             f"{soft_inpainting.composite_difference_contrast:g}"
         )
+    if distilled is not None:
+        # written unconditionally (like the Forge extension), so a dropped
+        # image records the mode in BOTH states
+        tail.append(f"Distilled: {distilled}")
     if sag is not None:
         # written unconditionally (like the Forge extension), so a dropped
         # image can restore the checkbox in BOTH states

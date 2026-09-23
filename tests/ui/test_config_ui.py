@@ -66,6 +66,8 @@ def test_create_and_edit_model_config(page, server):
     page.click("#cfg-edit")
     wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
     assert page.locator(".cfg-mode").count() == 2
+    # the mock model is SDXL: no "distilled model" checkbox (Flux only)
+    assert page.locator(".cfg-distilled").count() == 0
     page.locator(".cfg-mode").first.locator(".cfg-cfg").fill("4.25")
     page.locator(".cfg-mode").first.locator(".cfg-steps").fill("12")
     page.locator(".cfg-mode").first.locator(".cfg-sampler").select_option("DPM++ 2M")
@@ -74,6 +76,7 @@ def test_create_and_edit_model_config(page, server):
     import json
 
     on_disk = json.loads((root / "user" / "model-configs" / "mock-tuned.json").read_text())
+    assert on_disk["distilled"] is True  # unchanged default (inert for SDXL)
     assert on_disk["t2i"]["cfg"] == 4.25
     assert on_disk["t2i"]["steps"] == 12
     assert on_disk["t2i"]["sampler"] == "DPM++ 2M"

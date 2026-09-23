@@ -13,6 +13,7 @@ const state = {
   entries: [], // model configurations from /api/models
   samplers: [],
   schedulers: [],
+  family: "sdxl", // selected model's family ("sdxl" | "flux")
   loras: [], // lora names from /api/loras
   loraSettings: {}, // name -> settings .json next to the .safetensors ({"preferred weight", ...})
   presets: [], // preset names
@@ -809,6 +810,7 @@ async function refreshSamplers() {
   }
   state.samplers = s.samplers;
   state.schedulers = s.schedulers;
+  state.family = s.family || "sdxl";
   for (const id of ["sampler", "scheduler"]) {
     const s2 = $(id);
     const cur = s2.value;
@@ -884,11 +886,22 @@ function openConfigDialog(entry) {
   nameIn.value = entry.name;
   const modelIn = el("input", { class: "cfg-model", type: "text", readonly: "" });
   modelIn.value = entry.model_id;
+  // distilled model: Flux-only flag (the CFG value becomes the embedded
+  // guidance); hidden for SDXL configurations, where it is inert
+  const isFlux = state.family === "flux";
+  const distilledIn = el("input", { class: "cfg-distilled", type: "checkbox" });
+  distilledIn.checked = entry.distilled !== false;
   const f1 = modeFieldset("text to image", entry.t2i);
   const f2 = modeFieldset("image to image / inpaint", entry.i2i);
   const box = el("div", { class: "cfg-dialog" },
     el("label", {}, "name", nameIn),
     el("label", { class: "muted" }, "model", modelIn),
+    ...(isFlux ? [el("label", {
+      title: "checked (default): the CFG values below are the embedded " +
+        "guidance (distilled CFG; one pass per step, the negative prompt is " +
+        "ignored). unchecked: classic CFG with the negative prompt " +
+        "(two passes per step, about 2x the time).",
+    }, "distilled model", distilledIn)] : []),
     f1, f2);
   openDialog("Model configuration", box, async () => {
     const name = nameIn.value.trim();
@@ -901,6 +914,7 @@ function openConfigDialog(entry) {
         id: entry.id,
         name,
         model: entry.model_id,
+        distilled: isFlux ? distilledIn.checked : entry.distilled,
         t2i: readCfgSection(f1),
         i2i: readCfgSection(f2),
       });

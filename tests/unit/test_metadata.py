@@ -53,6 +53,25 @@ def test_denoise_roundtrip():
     assert "denoise" not in metadata.parse_parameters(params)
 
 
+def test_distilled_roundtrip():
+    # both states are recorded (like the SAG flags); omitted for non-Flux
+    # (distilled=None), where the line must not appear at all
+    for value in (True, False):
+        params = metadata.build_parameters(
+            prompt="p", negative_prompt="", steps=20, sampler="Euler",
+            scheduler="Flow", cfg=3.5, seed=1, width=1024, height=1024,
+            model_name="flux", model_hash="h", distilled=value,
+        )
+        assert f"Distilled: {value}" in params
+        assert metadata.parse_parameters(params)["Distilled"] == str(value)
+    params = metadata.build_parameters(
+        prompt="p", negative_prompt="", steps=20, sampler="Euler a",
+        scheduler="Karras", cfg=7.0, seed=1, width=512, height=512,
+        model_name="sdxl", model_hash="h",
+    )
+    assert "Distilled" not in params
+
+
 def test_parameters_format_like_forge():
     params = metadata.build_parameters(
         prompt="hello", negative_prompt="", steps=10, sampler="Euler a",

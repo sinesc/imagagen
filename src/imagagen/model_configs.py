@@ -20,6 +20,7 @@ File layout (one JSON per configuration, filename = sanitized name):
     {
       "name": "My SDXL Model + DMD2 Lora",
       "model": "whatever",  # model id: path within models/sdxl, no extension
+      "distilled": true,  # Flux only: CFG = embedded guidance (see ModelConfig)
       "t2i": {"sampler": null, "scheduler": null, "cfg": null,
               "loras": [{"name": "dmd2", "weight": 0.8}]},  # rel. to loras/<type>/
       "i2i": {"sampler": null, "scheduler": null, "cfg": null, "loras": []}
@@ -61,6 +62,11 @@ class ModeConfig(BaseModel):
 class ModelConfig(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     model: str = Field(min_length=1)  # model id, e.g. "test-dir/JuggernautXL9.0"
+    # Flux only (inert for SDXL): True = the configuration's CFG value is the
+    # embedded guidance (distilled, one pass per step, no negative prompt);
+    # False = classic CFG with the negative prompt (two passes per step). The
+    # semantics apply to both directions, hence entry level, not ModeConfig.
+    distilled: bool = True
     t2i: ModeConfig = Field(default_factory=ModeConfig)
     i2i: ModeConfig = Field(default_factory=ModeConfig)
 
@@ -83,12 +89,14 @@ class ConfigEntry:
     t2i: ModeConfig
     i2i: ModeConfig
     is_default: bool
+    distilled: bool = True
 
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "name": self.name,
             "model_id": self.model_id,
+            "distilled": self.distilled,
             "t2i": self.t2i.model_dump(),
             "i2i": self.i2i.model_dump(),
             "is_default": self.is_default,
@@ -144,6 +152,7 @@ class ConfigStore:
                 raise ConfigError(f"duplicate configuration name(s): {sorted(dupes)}")
             out = [
                 ConfigEntry(id=file_ids[i], name=files[i].name, model_id=files[i].model,
+                            distilled=files[i].distilled,
                             t2i=files[i].t2i, i2i=files[i].i2i, is_default=False)
                 for i in range(len(files))
             ]
@@ -153,6 +162,7 @@ class ConfigStore:
                     continue
                 out.append(
                     ConfigEntry(id=m["id"], name=m["name"], model_id=m["id"],
+                                distilled=True,  # = current Flux behavior
                                 t2i=ModeConfig(), i2i=ModeConfig(), is_default=True)
                 )
             out.sort(key=lambda e: e.name.lower())
@@ -217,7 +227,7 @@ class ConfigStore:
         (concept.md: create = copy of the currently selected configuration)."""
         src = self.resolve(based_on)
         return self.save(
-            ModelConfig(name=name, model=src.model_id,
+            ModelConfig(name=name, model=src.model_id, distilled=src.distilled,
                         t2i=src.t2i.model_copy(deep=True), i2i=src.i2i.model_copy(deep=True)),
         )
 

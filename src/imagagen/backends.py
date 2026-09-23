@@ -38,6 +38,10 @@ class GenerateRequest(BaseModel):
     model_id: str = ""
     model_name: str = ""
     loras: list[tuple[str, float]] = Field(default_factory=list)
+    # Flux: the CFG value is the embedded guidance (distilled, one pass per
+    # step, negative prompt ignored) when True; classic CFG with the
+    # negative prompt (two passes per step) when False. Inert for SDXL.
+    distilled: bool = True
     # inpainting
     init_image: np.ndarray | None = None  # HxWx3 uint8
     init_mask: np.ndarray | None = None  # HxW uint8, 0..255 (255 = inpaint here)
@@ -89,6 +93,8 @@ class ModelBackend(ABC):
     #: whether attached LoRAs are actually applied to the weights (False:
     #: they are ignored and kept out of the PNG metadata)
     supports_loras: bool = True
+    #: the model is a Flux (the "Distilled:" PNG metadata line applies)
+    is_flux: bool = False
 
     @abstractmethod
     def generate(

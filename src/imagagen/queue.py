@@ -596,6 +596,9 @@ def _result_to_png(
         styles=job.meta_styles if job is not None else None,
         soft_inpainting=req.soft_inpainting,
         sag=req.sag,
+        # only Flux records its distilled/classic-CFG mode (the flag is
+        # inert on SDXL, so don't add a misleading line there)
+        distilled=req.distilled if backend.is_flux else None,
     )
     img, pnginfo = metadata.attach_metadata(Image.fromarray(image), params)
     buf = BytesIO()

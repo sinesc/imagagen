@@ -122,7 +122,9 @@ class _MockRegistry:
 
         if model_id != self._backend.model_id:
             return None
-        return types.SimpleNamespace(name=self._backend.name)
+        # family mirrors ModelInfo (the mock is an SDXL stand-in); endpoints
+        # like /api/samplers read it
+        return types.SimpleNamespace(name=self._backend.name, family="sdxl")
 
     def current_id(self) -> str | None:
         return self._backend.model_id
@@ -375,13 +377,15 @@ def create_app(
             info = app.state.registry.get(model_id)
             if info is not None:
                 family = info.family
+        from .sdxl_backend import SAMPLERS as SDXL_SAMPLERS, SCHEDULERS as SDXL_SCHEDULERS
+
         if family == "flux":
             from .flux_backend import SAMPLERS, SCHEDULERS
 
-            return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
-        from .sdxl_backend import SAMPLERS, SCHEDULERS
-
-        return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
+            return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS),
+                    "family": family}
+        return {"samplers": list(SDXL_SAMPLERS), "schedulers": list(SDXL_SCHEDULERS),
+                "family": family}
 
     @app.get("/api/loras")
     def loras() -> dict:
@@ -603,6 +607,9 @@ def create_app(
             # the configuration has no override -> built-in default
             steps=rsteps if rsteps is not None else 25,
             cfg=cfg if cfg is not None else DEFAULT_CFG,
+            # the distilled flag is a configuration property (not a user
+            # form field): it comes straight from the selected entry
+            distilled=entry.distilled,
             seed=body.seed,
             sampler=sampler,
             scheduler=scheduler,

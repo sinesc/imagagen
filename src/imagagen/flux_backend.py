@@ -13,10 +13,16 @@ Architecture (FLUX.1-dev, the ``agFluxQ4KS`` GGUF):
 - sampling is plain flow-matching Euler (``kdiff.sample_euler``) over the
   resolution-dependent shifted sigma schedule (``kdiff.get_sigmas_flux``).
 
-FLUX.1-dev is *guidance-distilled*: there is no negative prompt and no
-classifier-free-guidance pass. The "CFG" value is embedded in the forward as
-the ``guidance`` embedding (default 3.5), so a generation is a single
-transformer pass per step.
+FLUX.1-dev is *guidance-distilled*: the "CFG" value can be embedded in the
+forward as the ``guidance`` embedding (BFL default 3.5), so a generation is a
+single transformer pass per step and no negative prompt is needed. A model
+configuration can also select *classic CFG*: the guidance embedding stays at
+3.5 (the layer is part of the network, always added to the time embedding),
+and the CFG value runs a second, unconditional pass with the negative
+prompt, ``v = v_uncond + cfg * (v_cond - v_uncond)`` (two passes per step,
+~2x time) -- the ComfyUI/Forge "distilled CFG" toggle. Whether a checkpoint
+actually has the ``guidance_in`` embedding is detected from its state dict
+(schnell-class checkpoints lack it and can only run classic CFG).
 
 Precision: the transformer and VAE run in bf16 (FLUX is bf16-native; fp16
 overflows), and the solver state ``x`` runs in fp32 (the model output is cast
@@ -73,8 +79,11 @@ _TRANSFORMER_ARCH = dict(
 _FLOW_SHIFT = dict(base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift=1.15)
 
 # FLUX.1-dev's embedded guidance default (the "CFG" value when the request
-# leaves it at the model default).
+# leaves it at the model default; also the fixed embedded value in classic
+# CFG mode).
 DEFAULT_GUIDANCE = 3.5
+# classic CFG (distilled unchecked): the "model default" CFG value
+DEFAULT_CFG = 1.0
 
 SAMPLERS = {"Euler": kdiff.sample_euler}
 # Flux has no scheduler concept: the resolution-dependent shifted sigma
@@ -87,6 +96,8 @@ class FluxBackend(ModelBackend):
     default_scheduler = "Flow"
     supports_loras = False  # LoRA support is not implemented yet
   # sigmas are computed internally, no registry
+
+    is_flux = True
 
     def __init__(self, info, device, config=None) -> None:
         self.model_id = info.id
@@ -123,6 +134,13 @@ class FluxBackend(ModelBackend):
         with gguf_linear_scope(torch.device("cpu"), torch.bfloat16):
             self.transformer = FluxTransformer2DModel(**_TRANSFORMER_ARCH)
         sd = load_gguf_state_dict(self.model_path)
+        # guidance-embedding checkpoints (FLUX.1-dev) carry the guidance_in
+        # MLP weights; schnell-class checkpoints don't and can only run
+        # classic CFG (distilled requested is silently demoted, like Forge)
+        self.supports_distilled = "guidance_in.in_layer.weight" in sd
+        if not self.supports_distilled:
+            log.info("%s: no guidance embedding -- distilled mode unavailable",
+                     self.name)
         self.transformer.load_state_dict(sd, strict=False)
         del sd
         self.transformer.to(device)
@@ -213,17 +231,34 @@ class FluxBackend(ModelBackend):
         lh, lw = h // 8, w // 8
         image_seq_len = (lh // 2) * (lw // 2)
 
-        # guidance-distilled: the "CFG" is the embedded guidance (no uncond)
-        guidance = request.cfg if request.cfg > 0 else DEFAULT_GUIDANCE
+        # distilled (model configuration default) vs classic CFG: see module
+        # docstring. The guidance embedding is ALWAYS active on this
+        # architecture; distilled maps the CFG value onto it (one pass),
+        # classic CFG keeps it at 3.5 and adds an unconditional pass.
+        distilled = request.distilled and self.supports_distilled
+        if distilled:
+            guidance = request.cfg if request.cfg > 0 else DEFAULT_GUIDANCE
+            cfg = None
+        else:
+            guidance = DEFAULT_GUIDANCE
+            cfg = request.cfg if request.cfg > 0 else DEFAULT_CFG
+            if not request.distilled:
+                log.info("%s: classic CFG %.4g (embedded guidance %.4g)",
+                         self.name, cfg, guidance)
         g = torch.full((1,), guidance, device=device, dtype=torch.bfloat16)
 
         # --- text encode (bring encoders to te_device, then park on CPU) ---
         self._text_to(self.te_device)
         with torch.inference_mode():
             context, y = self._encode_prompt(request.prompt)
+            if not distilled:
+                context_neg, y_neg = self._encode_prompt(request.negative_prompt)
         if self.te_device != "cpu":
             context = context.to(device)
             y = y.to(device)
+            if not distilled:
+                context_neg = context_neg.to(device)
+                y_neg = y_neg.to(device)
             self._text_offload()
 
         # --- sigma schedule + noise ---
@@ -243,8 +278,14 @@ class FluxBackend(ModelBackend):
             self._step += 1
             x_bf = x.to(torch.bfloat16)
             t = sigma.to(torch.bfloat16)
-            v = transformer(x_bf, t, context, y, guidance=g)
-            v = v.float()
+            v_cond = transformer(x_bf, t, context, y, guidance=g)
+            if not distilled:
+                if self._cancel:
+                    raise InterruptedError("cancelled")
+                v_uncond = transformer(
+                    x_bf, t, context_neg, y_neg, guidance=g)
+                v_cond = v_uncond + cfg * (v_cond - v_uncond)
+            v = v_cond.float()
             if progress and self._step <= self._steps_total:
                 progress(self._step / self._steps_total,
                          f"step {self._step}/{self._steps_total}")
