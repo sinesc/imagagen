@@ -132,8 +132,8 @@ class FluxBackend(ModelBackend):
         # --- text encoders ---
         self.clip = load_clip_l(str(infra / "clip_l.safetensors"), device)
         self.t5 = load_t5_encoder(str(infra / "t5xxl_fp8_e4m3fn.safetensors"), device)
-        self.clip_tok = CLIPTokenizer.from_pretrained(str(infra / "tokenizer_clip"))
-        self.t5_tok = AutoTokenizer.from_pretrained(str(infra / "tokenizer_t5"))
+        self.clip_tok = CLIPTokenizer.from_pretrained(str(config.res_dir / "tokenizer_clip"))
+        self.t5_tok = AutoTokenizer.from_pretrained(str(config.res_dir / "tokenizer_t5"))
 
         # text encoders live on `te_device` (GPU by default); they are parked
         # on CPU between generations to free VRAM for sampling

@@ -250,8 +250,6 @@ def ensure_dirs(config: Config) -> None:
         config.segmentation_models_dir,
         config.loras_dir,
         config.infra_dir,
-        config.infra_dir / "tokenizer_clip",
-        config.infra_dir / "tokenizer_t5",
         config.user_dir,
         config.brushes_dir,
         config.wildcards_dir,
