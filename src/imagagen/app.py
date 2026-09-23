@@ -112,7 +112,8 @@ class _MockRegistry:
         self.primary = 0
 
     def list(self) -> list[dict]:
-        return [{"id": self._backend.model_id, "name": self._backend.name}]
+        return [{"id": self._backend.model_id, "name": self._backend.name,
+                 "family": "sdxl"}]
 
     def models(self):
         return []
@@ -362,7 +363,17 @@ def create_app(
         ids = {e.id for e in entries}
         if current not in ids and entries:
             current = entries[0].id
-        return {"models": [e.to_dict() for e in entries], "current": current}
+        # attach each entry's model family so the UI can decide which
+        # family-specific controls to show (e.g. Flux's "distilled model")
+        # synchronously -- reading it from an extra /api/samplers fetch would
+        # race the model load and hide the control until that fetch settled
+        family_of = {m["id"]: m["family"] for m in app.state.registry.list()}
+        models = []
+        for e in entries:
+            d = e.to_dict()
+            d["family"] = family_of.get(e.model_id, "sdxl")
+            models.append(d)
+        return {"models": models, "current": current}
 
     @app.get("/api/samplers")
     def list_samplers(model_id: str | None = None) -> dict:
@@ -377,15 +388,13 @@ def create_app(
             info = app.state.registry.get(model_id)
             if info is not None:
                 family = info.family
-        from .sdxl_backend import SAMPLERS as SDXL_SAMPLERS, SCHEDULERS as SDXL_SCHEDULERS
-
         if family == "flux":
             from .flux_backend import SAMPLERS, SCHEDULERS
 
-            return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS),
-                    "family": family}
-        return {"samplers": list(SDXL_SAMPLERS), "schedulers": list(SDXL_SCHEDULERS),
-                "family": family}
+            return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
+        from .sdxl_backend import SAMPLERS, SCHEDULERS
+
+        return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
 
     @app.get("/api/loras")
     def loras() -> dict:

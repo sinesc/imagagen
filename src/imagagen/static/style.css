@@ -594,6 +594,18 @@ button.danger:hover { background: #a33; }
 /* a few extra px between the model input and the mode fieldsets */
 .cfg-dialog .cfg-mode:first-of-type { margin-top: 0.35rem; }
 
+/* the Flux "distilled model" row: #dialog-body label is flex-column
+   (label-over-control), so the checkbox row opts back into a row layout,
+   checkbox left of the label, vertically centred (cf. #dialog-body
+   .seg-class) */
+#dialog-body .cfg-distilled-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+}
+
 /* model configuration dialog: per-mode fieldsets */
 .cfg-mode {
   /* UA fieldset margins made the box narrower than (and offset from) the

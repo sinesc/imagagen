@@ -48,8 +48,12 @@ no guidance embedding (distilled requested but impossible).
 
 ### src/imagagen/app.py
 - `/api/generate`: `GenerateRequest(..., distilled=entry.distilled, ...)`.
-- `/api/samplers`: response gains `"family": family` (UI shows the checkbox
-  only for flux configurations).
+- `/api/models`: each entry gains `"family"` (looked up from the registry by
+  `model_id`), so the UI knows the family synchronously. (An earlier version
+  put it on `/api/samplers`, but that response is fetched asynchronously on
+  model switch and races the model load -- the checkbox then stayed hidden
+  until the fetch settled.)
+- `_MockRegistry.list()` gains `"family": "sdxl"` (mock is an SDXL stand-in).
 
 ### src/imagagen/flux_backend.py
 - `__init__`: `self.supports_distilled` from the state dict keys (above).
@@ -71,11 +75,16 @@ no guidance embedding (distilled requested but impossible).
   write the checkbox (it lives in user/model-configs files).
 
 ### src/imagagen/static/app.js
-- `state.family` set from the `/api/samplers` response in `refreshSamplers`.
-- `openConfigDialog`: when `state.family === "flux"`, add a "distilled model"
+- `openConfigDialog`: when `entry.family === "flux"` (from `/api/models`, so it
+  is correct even before the model finished loading), add a "distilled model"
   checkbox row (between the model row and the first fieldset) initialized from
   `entry.distilled`, with a title explaining both modes; POST body includes
   `distilled` (checkbox when flux, else `entry.distilled` unchanged).
+- The row is `<label class="cfg-distilled-row"><input class="cfg-distilled"
+  type=checkbox>distilled model</label>`; `style.css` gives it a flex row with
+  the checkbox left of the label, vertically centred (mirrors the existing
+  `#dialog-body .seg-class` pattern, since `#dialog-body label` is
+  flex-column / label-over-control).
 
 ### Tests
 - `tests/unit/test_model_configs.py`: `distilled` defaults True (file +

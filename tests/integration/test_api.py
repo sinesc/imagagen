@@ -61,10 +61,13 @@ def test_models_endpoint(client):
     # the model selector lists configurations (Phase 4); with no files in
     # model-configs/ that is just the in-memory default of the mock model
     body = client.get("/api/models").json()
+    # family rides along (derived from the model) so the UI can decide which
+    # family-specific controls to show without a second fetch
     assert body["models"] == [{
         "id": "mock/mock.safetensors",
         "name": "Mock Model",
         "model_id": "mock/mock.safetensors",
+        "family": "sdxl",
         "distilled": True,
         "t2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None, "loras": []},
         "i2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None, "loras": []},
