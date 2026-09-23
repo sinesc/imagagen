@@ -65,6 +65,16 @@ def gen(prompt, seed, denoise, mask=None):
     return backend.generate(req, progress=show).image
 
 
+def gen_soft(prompt, seed, denoise, mask):
+    """gen() with soft inpainting (the Forge builtin extension) enabled at
+    its defaults."""
+    from imagagen.soft_inpaint import SoftInpainting
+    req = GenerateRequest(prompt=prompt, width=512, height=512, steps=15,
+                         seed=seed, init_image=img0, init_mask=mask,
+                         denoise=denoise, soft_inpainting=SoftInpainting())
+    return backend.generate(req, progress=show).image
+
+
 def backend_rt(arr):
     """The backend's own decode(encode(arr)): what a fully latent-locked
     generation of ``arr`` decodes to (the exact target of the lock)."""
@@ -162,6 +172,24 @@ b = gen("a cat on a branch, forest", 99, 0.75)
 da = np.abs(a.astype(int) - b.astype(int)).max()
 print(f"  max abs diff: {da} (expect 0)", flush=True)
 assert da == 0, f"maskless img2img is not deterministic: max diff {da}"
+
+# 6c. soft inpainting (Forge builtin extension): the per-step hard x0 lock
+#     is replaced by the latent blend, the final lock is skipped, and the
+#     protected side is restored by the adaptive pixel composite. The
+#     inpaint side must still be regenerated and the protected side
+#     preserved (the composite restores the original pixels there).
+print("\n[6c] soft inpainting, denoise 0.8, protected left half", flush=True)
+soft_user_mask = np.zeros((512, 512), np.uint8)
+soft_user_mask[:, :256] = 255  # protect the left half
+img6c = gen_soft("a cat on a branch, forest", 46, 0.8, 255 - soft_user_mask)
+Image.fromarray(img6c).save("/tmp/smoke_flux_soft_inpaint.png")
+lft = np.abs(img6c[:, :256].astype(int) - img0[:, :256].astype(int)).mean()
+rgt = np.abs(img6c[:, 256:].astype(int) - img0[:, 256:].astype(int)).mean()
+print(f"  protected left:  mean abs diff {lft:.2f} (expect < right)", flush=True)
+print(f"  inpainted right: mean abs diff {rgt:.2f} (expect large)", flush=True)
+assert rgt > 5, f"inpaint region unchanged: {rgt:.2f}"
+assert lft < rgt, (f"protected side changed MORE than the inpaint side "
+                  f"({lft:.2f} >= {rgt:.2f}): soft composite not applied")
 
 free, total = torch.cuda.mem_get_info(1)
 print(f"\nVRAM: {free // 2**20} MiB free of {total // 2**20} MiB "
