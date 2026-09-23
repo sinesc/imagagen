@@ -325,10 +325,16 @@ class FluxBackend(ModelBackend):
             # starts at sigmas[steps - 1 - t_enc] (strength 1.0 -> full)
             t_enc = int(min(request.denoise, 0.999) * steps)
             sigma_sched = sigmas[steps - 1 - t_enc :]
-            # flow-matching const noise_scaling at the truncated start sigma
-            # (sigma * noise + (1 - sigma) * latent): the noise amplitude IS
-            # the denoise strength
-            noise = init_latent + noise * sigma_sched[0]
+            # flow-matching state at the truncated start sigma: the valid
+            # state at noise level sigma is sigma*noise + (1-sigma)*latent
+            # (Forge's PredictionFlux 'const' noise_scaling). The SDXL-style
+            # `latent + sigma*noise` is NOT a valid flow state: the model
+            # reads it as a properly noised init image amplified by
+            # 1/(1-sigma) (~5x at sigma 0.8) and denoises it into a bright,
+            # high-contrast, blurry reconstruction (the "burned" inpaint
+            # with a bright halo around the mask)
+            s0 = sigma_sched[0]
+            noise = s0 * noise + (1.0 - s0) * init_latent
             if request.init_mask is not None:
                 # (1,1,H,W) -> bilinear to the latent grid; this shape
                 # broadcasts against the (1,16,lh,lw) solver tensors
@@ -354,9 +360,11 @@ class FluxBackend(ModelBackend):
             if mask_t is not None:
                 # per-step lock (Forge's cfg_denoiser): before the model
                 # call, the protected region (mask_t == 1) is replaced by
-                # init latent + fresh noise at the current sigma level
+                # fresh noise re-noised to the current sigma level (same
+                # 'const' flow scaling as the init state)
                 xwork = x * (1.0 - mask_t) \
-                    + (init_latent + torch.randn_like(x) * sigma) * mask_t
+                    + (sigma * torch.randn_like(x)
+                       + (1.0 - sigma) * init_latent) * mask_t
             x_bf = xwork.to(torch.bfloat16)
             t = sigma.to(torch.bfloat16)
             v_cond = transformer(x_bf, t, context, y, guidance=g)

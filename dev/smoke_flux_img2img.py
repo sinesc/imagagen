@@ -13,7 +13,11 @@ Mirrors dev/smoke_sdxl_inpaint.py for the flux model family:
    protected side must change less than the inpainted side. (Not bit-exact
    to the init image: the Flux VAE decode has a large receptive field, so
    the protected pixels see the regenerated half -- same as A1111/Forge.)
-6. determinism: maskless img2img, same seed twice -> identical image
+6a. tone preservation: denoise 0.55 must not shift the scene tone
+   (catches an invalid img2img init state -- the init must be the valid
+   flow-matching state sigma*noise + (1-sigma)*init, as in Forge's
+   PredictionFlux 'const' noise_scaling)
+6b. determinism: maskless img2img, same seed twice -> identical image
    (masked inpaint is intentionally not reproducible: the per-step lock
    noise is fresh each step, exactly like the SDXL backend)
 """
@@ -130,8 +134,29 @@ assert right > 5, f"inpaint region unchanged: {right:.2f}"
 assert left < right, (f"protected side changed MORE than the inpaint side "
                       f"({left:.2f} >= {right:.2f}): lock not applied")
 
-# 6. determinism: maskless img2img is seed-deterministic
-print("\n[6] determinism: maskless img2img, same seed twice", flush=True)
+# 6a. tone preservation at medium strength: the img2img init state must be
+#     the valid flow-matching state sigma*noise + (1-sigma)*init (Forge
+#     PredictionFlux, prediction_type='const'). The invalid SDXL-style
+#     `init + sigma*noise` state is NOT a valid flow state: the model reads
+#     it as the init image amplified by 1/(1-sigma) (~5x at the truncated
+#     sigma 0.74 of denoise 0.55/15 steps) and redraws it with a heavy tone
+#     shift and over-regeneration (pre-fix on this base: -18/255 brightness
+#     and 64% of full-strength diff at denoise 0.55)
+print("\n[6a] tone preservation, denoise 0.55", flush=True)
+img6a = gen("a cat on a branch, forest", 45, 0.55)
+bri = img6a.astype(int).mean() - img0.astype(int).mean()
+d6a = np.abs(img6a.astype(int) - img0.astype(int)).mean()
+print(f"  brightness shift {bri:+.2f}/255, mean abs diff {d6a:.2f} "
+      f"({d6a / d2:.0%} of the [2] denoise 0.75 diff)", flush=True)
+assert abs(bri) <= 10.0, (
+    f"denoise 0.55 shifted the tone by {bri:+.1f}/255: the init state is "
+    f"not the valid flow-matching state (sigma*noise + (1-sigma)*init)")
+assert d6a <= 0.75 * d2, (
+    f"denoise 0.55 regenerated {d6a / d2:.0%} of the denoise 0.75 diff: "
+    f"too strong for half the strength")
+
+# 6b. determinism: maskless img2img is seed-deterministic
+print("\n[6b] determinism: maskless img2img, same seed twice", flush=True)
 a = gen("a cat on a branch, forest", 99, 0.75)
 b = gen("a cat on a branch, forest", 99, 0.75)
 da = np.abs(a.astype(int) - b.astype(int)).max()
