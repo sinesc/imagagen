@@ -820,6 +820,32 @@ async function refreshSamplers() {
   }
 }
 
+// Refetch the LoRA list for the selected model's family and drop any
+// main-form rows whose LoRA is no longer in that family's list (e.g. an
+// SDXL LoRA selected before switching to a Flux model). Mirrors
+// refreshSamplers().
+async function refreshLoras() {
+  const sel = $("model");
+  const entry = state.entries.find((x) => x.id === sel.value) || state.entries[0];
+  if (!entry) return;
+  let r;
+  try {
+    r = await (await fetch(
+      `/api/loras?family=${encodeURIComponent(entry.family)}`
+    )).json();
+  } catch (e) {
+    console.error("loras:", e);
+    return;
+  }
+  state.loras = r.loras;
+  if (r.settings) state.loraSettings = r.settings;
+  const list = $("loras");
+  [...list.querySelectorAll(".lora-row")].forEach((row) => {
+    const name = row.querySelector(".lora-name").value;
+    if (name && !r.loras.includes(name)) row.remove();
+  });
+}
+
 async function refreshModels(keepSelection = true) {
   const m = await (await fetch("/api/models")).json();
   if (m.error) throw new Error(m.error);
@@ -1922,6 +1948,7 @@ async function init() {
   applyUiState(u && u.state);
   syncMode();
   await refreshSamplers(); // family-correct sampler lists for the selected model
+  await refreshLoras(); // family-correct LoRA list for the selected model
   updatePromptTokens(); // the restored prompt may be non-empty
 }
 
@@ -2031,6 +2058,7 @@ $("btn-redo").onclick = async () => {
 $("model").onchange = (e) => {
   selectModel(e.target.value);
   refreshSamplers(); // sampler lists follow the model's family
+  refreshLoras(); // LoRA list follows the model's family
   scheduleSaveUiState(0);
 };
 

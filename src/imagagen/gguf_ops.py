@@ -247,6 +247,7 @@ class GgufLinear(torch.nn.Module):
         self.dummy = torch.nn.Parameter(torch.empty(1, device=_DEVICE, dtype=_DTYPE))
         self.weight = None
         self.bias = None
+        self.lora_deltas: list[tuple[torch.nn.Parameter, torch.nn.Parameter, int, int]] = []
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                              missing_keys, unexpected_keys, error_msgs):
@@ -285,7 +286,48 @@ class GgufLinear(torch.nn.Module):
             weight = weight.to(device=x.device)
             weight = dequantize_tensor(weight).to(device=x.device, dtype=x.dtype)
         bias = self.bias.to(device=x.device) if self.bias is not None else None
-        return torch.nn.functional.linear(x, weight, bias)
+        out = torch.nn.functional.linear(x, weight, bias)
+        if self.lora_deltas:
+            # runtime LoRA deltas (Forge's online mode): the base weight
+            # stays quantized, each delta adds its (rank, in) @ (out, rank)
+            # product to a slice of the output rows. A/B are registered
+            # parameters, so .to(device)/unload moves them with the weight
+            # and they cost one extra GEMM pair per module.
+            for a, b, r0, r1 in self.lora_deltas:
+                out[..., r0:r1] += (x @ a.t()) @ b.t()
+        return out
+
+    def set_lora_deltas(self, deltas) -> None:
+        """Install runtime LoRA deltas (replaces any previous set).
+
+        ``deltas``: ``(A, B, r0, r1)`` tuples; ``A`` is ``(rank,
+        in_features)``, ``B`` is ``(r1 - r0, rank)`` (any device/dtype,
+        moved to the weight's). The A/B tensors are registered as
+        parameters (named ``lora_A_N`` / ``lora_B_N``) so ``.to(device)``
+        moves them with the module. Call under the shared
+        ``_PARAM_INIT_LOCK`` (parameter creation is not thread-safe across
+        backends, see backends.py).
+        """
+        self.clear_lora_deltas()
+        w = self.weight
+        device = w.data.device if w is not None else None
+        dtype = getattr(w, "computation_dtype", None) or (w.dtype if w is not None else None)
+        self.lora_deltas = []
+        for i, (a, b, r0, r1) in enumerate(deltas):
+            if device is not None:
+                a = a.to(device=device, dtype=dtype)
+                b = b.to(device=device, dtype=dtype)
+            pa = torch.nn.Parameter(a.detach(), requires_grad=False)
+            pb = torch.nn.Parameter(b.detach(), requires_grad=False)
+            self.register_parameter(f"lora_A_{i}", pa)
+            self.register_parameter(f"lora_B_{i}", pb)
+            self.lora_deltas.append((pa, pb, r0, r1))
+
+    def clear_lora_deltas(self) -> None:
+        """Remove every installed LoRA delta (the module goes back to base)."""
+        self.lora_deltas = []
+        for name in [n for n in self._parameters if n.startswith("lora_")]:
+            self.register_parameter(name, None)
 
 
 # scope state (set by :func:`gguf_linear_scope`)

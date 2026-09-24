@@ -224,3 +224,16 @@ def test_save_empty_canvas_rejected(client):
 def test_generate_validation(client):
     r = client.post("/api/generate", json={"prompt": "x", "width": "abc"})
     assert r.status_code == 422
+
+
+def test_loras_family_filter(client, tmp_path):
+    # discovery scans loras/<family>/; the endpoint filters by the
+    # selected model's family (no parameter: all families, as before)
+    for family, name in (("sdxl", "FooXL"), ("flux", "Bar1.0")):
+        d = tmp_path / "loras" / family
+        d.mkdir(parents=True, exist_ok=True)
+        (d / (name + ".safetensors")).touch()
+    assert client.get("/api/loras").json()["loras"] == ["Bar1.0", "FooXL"]
+    assert client.get("/api/loras?family=sdxl").json()["loras"] == ["FooXL"]
+    assert client.get("/api/loras?family=flux").json()["loras"] == ["Bar1.0"]
+    assert client.get("/api/loras?family=nope").json()["loras"] == []

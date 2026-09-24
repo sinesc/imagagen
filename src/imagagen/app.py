@@ -397,8 +397,11 @@ def create_app(
         return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
 
     @app.get("/api/loras")
-    def loras() -> dict:
-        return {"loras": list_loras(config), "settings": all_settings(config)}
+    def loras(family: str | None = None) -> dict:
+        # family filters to loras/<family>/ so the UI only offers LoRAs
+        # for the selected model's family (default: all, as before)
+        return {"loras": list_loras(config, family=family),
+                "settings": all_settings(config)}
 
     @app.post("/api/loras/settings")
     def lora_settings_save(body: LoraSettingsBody) -> dict:

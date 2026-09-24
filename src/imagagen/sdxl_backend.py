@@ -111,7 +111,13 @@ import warnings
 import numpy as np
 
 from . import kdiff
-from .backends import GenerateRequest, GenerateResult, ModelBackend, format_loras
+from .backends import (
+    GenerateRequest,
+    GenerateResult,
+    ModelBackend,
+    _PARAM_INIT_LOCK,
+    format_loras,
+)
 from .sag import SagRecorder, compute_sag_mask, create_blur_map, install_sag_hooks
 from .soft_inpaint import SoftInpainting, adaptive_change_alpha, latent_blend
 
@@ -166,22 +172,6 @@ logging.getLogger("diffusers.loaders.lora_base").addFilter(_NoLoraKeysFilter())
 log = logging.getLogger(__name__)
 
 SIGMA_DATA = 1.0
-
-# Serializes every operation that CREATES torch parameters across ALL backends
-# (one per GPU, each on its own worker thread): model init (SdxlBackend.__init__
-# / from_single_file) and LoRA apply/unload (_apply_loras). Both go through
-# peft/transformers, whose ``_init_on_device`` context manager MONKEY-PATCHES
-# GLOBAL torch state (``nn.Module.register_parameter``, ``torch.empty``/``zeros``/...
-# ); that patch is not thread-safe. Two threads creating parameters concurrently
-# interleave the global patches, and a parameter registration runs through the
-# wrong thread's ``register_empty_parameter``, which copies ``param.__dict__``
-# (including transformers' ``_is_hf_initialized`` flag) into ``Parameter.__new__``
-# kwargs -> ``TypeError: Parameter.__new__() got an unexpected keyword argument
-# "_is_hf_initialized"``. Holding this lock makes parameter creation
-# single-threaded process-wide. (It is always acquired innermost -- after
-# state.lock / self._lock -- so no deadlock.)
-_PARAM_INIT_LOCK = threading.RLock()
-
 
 class _ModelSamplingDiscrete:
     """k-diffusion ModelSamplingDiscrete: t == sigma, x0 == xphi."""

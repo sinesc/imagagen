@@ -35,15 +35,23 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+from pathlib import Path
 
 import numpy as np
 import torch
 
 from . import kdiff
-from .backends import GenerateRequest, GenerateResult, ModelBackend
+from .backends import (
+    GenerateRequest,
+    GenerateResult,
+    ModelBackend,
+    _PARAM_INIT_LOCK,
+    format_loras,
+)
 from .clip_encoder import clip_pooled, load_clip_l
+from .flux_lora import FluxLoraSpec, merge_module_deltas, parse_lora
 from .flux_transformer import FluxTransformer2DModel
-from .gguf_ops import bake_gguf_model, gguf_linear_scope, load_gguf_state_dict
+from .gguf_ops import GgufLinear, bake_gguf_model, gguf_linear_scope, load_gguf_state_dict
 from .soft_inpaint import SoftInpainting, adaptive_change_alpha, latent_blend
 from .t5_encoder import load_t5_encoder
 
@@ -95,7 +103,7 @@ SCHEDULERS = {}
 class FluxBackend(ModelBackend):
     default_sampler = "Euler"
     default_scheduler = "Flow"
-    supports_loras = False  # LoRA support is not implemented yet
+    supports_loras = True  # runtime additive deltas (see _apply_loras)
   # sigmas are computed internally, no registry
 
     is_flux = True
@@ -112,6 +120,10 @@ class FluxBackend(ModelBackend):
         self._cancel = False
         self._step = 0
         self._steps_total = 1
+        self._active_loras: tuple[tuple[str, float], ...] | None = None
+        # path str -> (mtime, parsed specs); LoRA files are immutable per
+        # (path, mtime), so a re-apply of the same set skips the re-read
+        self._lora_cache: dict[str, tuple[float, list[FluxLoraSpec]]] = {}
 
         from diffusers import AutoencoderKL
         from diffusers.utils.logging import disable_progress_bar
@@ -240,6 +252,136 @@ class FluxBackend(ModelBackend):
             except Exception:
                 pass
 
+    # -------------------------------------------------------------- lora ----
+
+    def _lora_path(self, name: str) -> str | None:
+        """LoRA name (no extension) -> path under ``loras/flux/``.
+
+        The suffix is *appended*, never ``Path.with_suffix``: names may
+        themselves contain dots ("MetalSuitFlux1.0"), and with_suffix would
+        replace the ".0" instead of adding ".safetensors".
+        """
+        if self.config is None:
+            return None
+        p = self.config.loras_dir / "flux" / (name + ".safetensors")
+        return str(p) if p.is_file() else None
+
+    def _parse_lora(self, path: str) -> list[FluxLoraSpec]:
+        """Read + key-map a Flux LoRA (cached by ``(path, mtime)``).
+
+        Raises ``ValueError`` (unknown/unmappable keys, see flux_lora) on
+        files this transformer cannot consume.
+        """
+        cached = self._lora_cache.get(path)
+        mtime = Path(path).stat().st_mtime
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        specs = parse_lora(path)
+        self._lora_cache[path] = (mtime, specs)
+        return specs
+
+    def _module_for(self, path: str):
+        """Transformer submodule for a delta spec's module path."""
+        module = self.transformer
+        for part in path.split("."):
+            if not hasattr(module, part):
+                raise ValueError(f"no transformer module for LoRA path {path!r}")
+            module = getattr(module, part)
+        return module
+
+    def _merge_lora_deltas(self, loras: tuple[tuple[str, float], ...]):
+        """Resolve + map + merge a LoRA set into per-module delta specs.
+
+        Pure: returns ``{module path: [(A, B, r0, r1), ...]}`` (CPU
+        tensors; the weight * alpha/rank factor is pre-folded into A, and
+        deltas covering adjacent row slices of one module are merged so
+        each module costs ONE extra GEMM pair). Raises ``ValueError`` on a
+        missing file, an unmappable key, or a shape mismatch -- nothing is
+        mutated here, so a failing set leaves no partial state.
+        """
+        per_module: dict[str, dict[tuple[int, int], list[tuple[torch.Tensor, torch.Tensor]]]] = {}
+        for name, weight in loras:
+            if weight == 0.0:  # zero-weight LoRA: no delta at all
+                continue
+            path = self._lora_path(name)
+            if path is None:
+                raise ValueError(f"Flux LoRA not found: {name!r} (looked in loras/flux/)")
+            for spec in self._parse_lora(path):
+                rank = spec.A.shape[0]
+                if spec.B.shape[1] != rank:
+                    raise ValueError(
+                        f"{name!r}: mismatched LoRA rank for {spec.module} "
+                        f"(A {tuple(spec.A.shape)} vs B {tuple(spec.B.shape)})"
+                    )
+                if spec.B.shape[0] != spec.r1 - spec.r0:
+                    raise ValueError(
+                        f"{name!r}: {spec.module} LoRA covers {spec.B.shape[0]} "
+                        f"rows, expected {spec.r1 - spec.r0}"
+                    )
+                a = spec.A * (weight * spec.scale)
+                b = spec.B
+                if spec.swap:
+                    # standard [scale, shift] row order -> ours [shift, scale]
+                    half = b.shape[0] // 2
+                    b = torch.cat([b[half:], b[:half]], dim=0)
+                per_module.setdefault(spec.module, {}) \
+                    .setdefault((spec.r0, spec.r1), []).append((a, b))
+        return merge_module_deltas(per_module)
+
+    def _apply_loras(self, loras: list[tuple[str, float]]) -> None:
+        """Attach the requested LoRAs to the transformer (cached per set).
+
+        Must run under ``self._lock`` (called from ``_generate_impl``
+        before the sampling loop, as in the SDXL backend).
+
+        Runtime additive deltas (Forge's *online* mode): the fused Q4_K
+        weights stay quantized, and each affected :class:`GgufLinear`
+        computes ``base + (x @ A.t()) @ B.t()`` per forward. That is
+        mathematically identical to Forge's merge-and-re-quantize path
+        (which is unavailable here: there is no Q4_K_S quantizer to
+        re-quantize the merged weights into), lossless, and the deltas are
+        registered module parameters, so ``transformer.to()`` / ``unload()``
+        moves them and VRAM scales with the deltas (MetalSuit ~50 MB bf16).
+
+        All-or-nothing: a set becomes ``_active_loras`` only once every
+        module is patched; :meth:`_merge_lora_deltas` (parsing, mapping,
+        validation) runs before ANY module is touched, and parameter
+        registration runs under the shared ``_PARAM_INIT_LOCK``.
+        """
+        key = tuple((n, float(w)) for n, w in loras)
+        if key == self._active_loras:
+            return  # identical set: no-op
+        merged = self._merge_lora_deltas(key)  # may raise: state untouched
+        with _PARAM_INIT_LOCK:
+            # drop whatever is currently applied, then install the new set
+            self._unload_loras()
+            for path, deltas in merged.items():
+                module = self._module_for(path)
+                if not isinstance(module, GgufLinear):
+                    raise TypeError(
+                        f"{path!r} is not a GgufLinear ({type(module).__name__})"
+                    )
+                for a, b, r0, r1 in deltas:
+                    if a.shape[1] != module.in_features:
+                        raise ValueError(
+                            f"{path!r}: LoRA input dim {a.shape[1]} != "
+                            f"module in_features {module.in_features}"
+                        )
+                module.set_lora_deltas(deltas)
+        self._active_loras = key
+        log.info("Flux LoRA load: %s", format_loras(list(key)))
+
+    def _unload_loras(self) -> None:
+        """Clear every module's delta state (no cache bookkeeping).
+
+        Runs under ``_PARAM_INIT_LOCK``. Clears the *actual* module state
+        (not just ``_active_loras``), so leftover deltas from any earlier
+        state are removed too.
+        """
+        for module in self.transformer.modules():
+            if getattr(module, "lora_deltas", None):
+                module.clear_lora_deltas()
+
     # ----------------------------------------------------------- generate ----
 
     def generate(self, request: GenerateRequest, progress=None) -> GenerateResult:
@@ -249,6 +391,9 @@ class FluxBackend(ModelBackend):
     def _generate_impl(self, request: GenerateRequest, progress=None) -> GenerateResult:
         self._cancel = False
         device = self.device
+        # LoRA deltas must be in place before the sampling loop (as in the
+        # SDXL backend); runs under self._lock via generate()
+        self._apply_loras(request.loras)
         # Flux is 8x downsample then 2x2 patchify -> snap to 16 px
         w = max(16, (request.width // 16) * 16)
         h = max(16, (request.height // 16) * 16)

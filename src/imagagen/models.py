@@ -57,18 +57,24 @@ def _walk_files(base: Path) -> list[Path]:
     return out
 
 
-def _discover_loras(config) -> list[tuple[str, str, Path]]:
+def _discover_loras(config, family: str | None = None) -> list[tuple[str, str, Path]]:
     """(name, filename, path) for all LoRAs under
     ``loras/<model-type>/`` (subdirectories included, symlinked dirs
     followed), name relative to the model-type directory, without
     extension (e.g.
     ``("test-dir/FuturisticXL", "FuturisticXL.safetensors", <path>)``).
+
+    ``family`` restricts discovery to ``loras/<family>/`` (the UI filters
+    by the selected model's family, so SDXL LoRAs are not selectable for
+    Flux models and vice versa); ``None`` scans every family dir.
     """
     out: list[tuple[str, str, Path]] = []
     loras_dir = config.loras_dir
     if not loras_dir.is_dir():
         return out
-    for sub in sorted(loras_dir.iterdir()):
+    subs = ([loras_dir / family] if family is not None
+            else [sub for sub in sorted(loras_dir.iterdir()) if sub.is_dir()])
+    for sub in subs:
         if not sub.is_dir():
             continue
         files = _walk_files(sub)
@@ -80,11 +86,15 @@ def _discover_loras(config) -> list[tuple[str, str, Path]]:
     return out
 
 
-def list_loras(config) -> list[str]:
+def list_loras(config, family: str | None = None) -> list[str]:
     """All LoRAs under ``loras/<model-type>/`` (subdirectories included,
     symlinked dirs followed), as names relative to the model-type directory,
-    without extension (e.g. ``"dmd2"``, ``"test-dir/FuturisticXL"``)."""
-    return [name for name, _, _ in _discover_loras(config)]
+    without extension (e.g. ``"dmd2"``, ``"test-dir/FuturisticXL"``).
+
+    ``family`` (``"sdxl"``/``"flux"``) restricts to that model-type dir;
+    ``None`` (default) lists every family.
+    """
+    return [name for name, _, _ in _discover_loras(config, family)]
 
 
 def lora_files(config) -> dict[str, str]:
