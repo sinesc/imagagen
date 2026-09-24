@@ -348,15 +348,27 @@ class FluxBackend(ModelBackend):
                 ).to(device).float().div(255.0)[None, None]
                 m = torch.nn.functional.interpolate(
                     m, size=(lh, lw), mode="bilinear")
-                mask_t = 1.0 - m
+                # Sampling mask = the 50%-level BINARY mask, not the
+                # feathered brush: the flux VAE decoder is strongly
+                # non-local (receptive field >= 63 px), so it rings a
+                # feathered latent blend (the protected/regenerated mix
+                # across the brush feather) into a visible dark/bright halo
+                # ring along the feather (measured: a ~10-15 px oscillation
+                # band centred on the feather). A 1-latent-px step decodes
+                # invisibly (the hard-brush case, no halo). The feather is
+                # applied only by the final pixel composite
+                # (InpaintPlan.postprocess, the original init_mask).
+                m_lock = (m > 0.5).float()
+                mask_t = 1.0 - m_lock
                 # only the inpaint region starts re-noised; the protected
                 # region starts at the clean init latent
                 noise = noise * (1.0 - mask_t) + init_latent * mask_t
                 if soft is not None:
                     # the inpaint weight (1) replicated across all 16
                     # channels, as seen by the soft-inpaint latent blend and
-                    # the adaptive pixel composite
-                    nmask = m[0, 0].unsqueeze(0).expand(16, lh, lw)
+                    # the adaptive pixel composite (hardened like mask_t,
+                    # so the blend is per-region, not feathered)
+                    nmask = m_lock[0, 0].unsqueeze(0).expand(16, lh, lw)
         else:
             noise = noise * float(sigmas[0])  # sigmas[0] == 1.0
 

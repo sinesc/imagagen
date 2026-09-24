@@ -20,6 +20,13 @@ Mirrors dev/smoke_sdxl_inpaint.py for the flux model family:
 6b. determinism: maskless img2img, same seed twice -> identical image
    (masked inpaint is intentionally not reproducible: the per-step lock
    noise is fresh each step, exactly like the SDXL backend)
+6c. soft inpainting (Forge builtin extension) on a hard mask: the
+   inpaint side is regenerated and the protected side preserved
+6d. feathered mask: the sampling mask is hardened to its 50%-level
+   binary (the flux VAE decoder rings a feathered latent blend into a
+   visible halo, so the feather is applied only by the final pixel
+   composite): the protected side must be preserved and the inpaint
+   side regenerated, exactly like the hard-mask runs
 """
 import sys
 import time
@@ -190,6 +197,29 @@ print(f"  inpainted right: mean abs diff {rgt:.2f} (expect large)", flush=True)
 assert rgt > 5, f"inpaint region unchanged: {rgt:.2f}"
 assert lft < rgt, (f"protected side changed MORE than the inpaint side "
                   f"({lft:.2f} >= {rgt:.2f}): soft composite not applied")
+
+# 6d. feathered mask: the sampling mask is hardened to its 50%-level
+#     binary, so a feathered mask must sample like a hard one: the fully
+#     protected side (x >= 400) is preserved, the fully inpainted side
+#     (x < 100) is regenerated, and the 200-312 feather between them is
+#     applied only by the final pixel composite (postprocess).
+print("\n[6d] feathered mask, denoise 0.8", flush=True)
+feather = np.zeros((512, 512), np.uint8)
+feather[:, :200] = 255
+for x in range(200, 312):
+    feather[:, x] = int(round(255 * (312 - x) / 112))
+img6d = gen("a cat on a branch, forest", 47, 0.8, mask=feather)
+Image.fromarray(img6d).save("/tmp/smoke_flux_feathered.png")
+left6d = np.abs(img6d[:, :100].astype(int) - img0[:, :100].astype(int)).mean()
+right6d = np.abs(img6d[:, 412:].astype(int) - img0[:, 412:].astype(int)).mean()
+print(f"  inpainted left:   mean abs diff {left6d:.2f} (expect large)",
+      flush=True)
+print(f"  protected right:  mean abs diff {right6d:.2f} (expect < left)",
+      flush=True)
+assert left6d > 5, f"inpaint region unchanged: {left6d:.2f}"
+assert right6d < left6d, (f"protected side changed MORE than the inpaint "
+                          f"side ({right6d:.2f} >= {left6d:.2f}): "
+                          f"hardened lock not applied")
 
 free, total = torch.cuda.mem_get_info(1)
 print(f"\nVRAM: {free // 2**20} MiB free of {total // 2**20} MiB "
