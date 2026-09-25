@@ -3,9 +3,9 @@
 The 12B FLUX.1 transformer ships in three checkpoint formats, all handled
 here:
 
-- **GGUF Q4_K_S** (``agFluxQ4KS_v21.gguf``) — raw quantized bytes; the
-  Q4_K kernels, :class:`GgufParam` and the ``Linear`` replacement are
-  ported verbatim from the Forge reference
+- **GGUF Q4_K / Q4_0** (``agFluxQ4KS_v21.gguf``) — raw quantized bytes;
+  the Q4_K and Q4_0 kernels, :class:`GgufParam` and the ``Linear``
+  replacement are ported verbatim from the Forge reference
   (``dev/implementations/stable-diffusion-webui-forge/packages_3rdparty/gguf``
   and ``backend/operations*.py``) so the dequantized values match Forge
   bit-for-bit. The only PyPI dependency used is ``gguf``
@@ -57,6 +57,9 @@ QK_K = 256
 _Q4K_BLOCK_SIZE = 256
 _Q4K_TYPE_SIZE = 144
 _K_SCALE_SIZE = 12
+# Q4_0 block = 32 elements, 18 bytes (2-byte fp16 scale + 16 packed 4-bit values).
+_Q40_BLOCK_SIZE = 32
+_Q40_TYPE_SIZE = 18
 
 
 # ------------------------------------------------------------------ 4-bit ----
@@ -174,11 +177,34 @@ def q4k_dequantize_pytorch(x) -> torch.Tensor:
     return blocks.view(x.shape)
 
 
+# ---------------------------------------------------------------- Q4_0 ----
+# From the reference ``packages_3rdparty/gguf/quants.py`` (Q4_0).
+
+
+def q40_dequantize_pytorch(x) -> torch.Tensor:
+    """Dequantize raw Q4_0 bytes to the computation dtype (per forward pass).
+
+    Each 32-element block is 18 bytes: an fp16 scale ``d`` followed by 16
+    packed 4-bit values (byte ``j`` holds element ``j`` in the low nibble
+    and element ``j + 16`` in the high nibble);
+    ``value = d * (nibble - 8)``. Unlike Q4_K this is done directly on the
+    raw layout — no bake step is needed.
+    """
+    raw = x.data.view(torch.uint8)
+    n_blocks = raw.numel() // _Q40_TYPE_SIZE
+    blocks = raw.view(n_blocks, _Q40_TYPE_SIZE)
+    d, qs = quick_split(blocks, [2])
+    d = d.view(torch.float16).to(x.computation_dtype)
+    vals = torch.cat([qs & 15, qs >> 4], dim=-1)
+    return (d * (vals.to(x.computation_dtype) - 8)).view(x.shape)
+
+
 # ------------------------------------------------------------- Parameter ----
 
 
-# GGUF qtype enum value 12 == Q4_K (verified against the shipped file).
+# GGUF qtype enum values (2 == Q4_0, 12 == Q4_K; verified against the shipped files).
 _Q4K = 12
+_Q40 = 2
 
 
 class GgufParam(torch.nn.Parameter):
@@ -200,6 +226,9 @@ class GgufParam(torch.nn.Parameter):
         if no_init:
             return
         self.gguf_type = tensor.tensor_type
+        if self.gguf_type not in (0, 1, _Q40, _Q4K):
+            raise ValueError(
+                f"unsupported GGUF tensor type {self.gguf_type} for {tensor.name}")
         self.real_shape = torch.Size(reversed(list(tensor.shape)))
         self.computation_dtype = torch.float16
         self.baked = False
@@ -300,6 +329,8 @@ def dequantize_tensor(tensor):
         return None
     if tensor.gguf_type == _Q4K:
         return q4k_dequantize_pytorch(tensor)
+    if tensor.gguf_type == _Q40:
+        return q40_dequantize_pytorch(tensor)
     # non-quantized (fp16/fp32 bias): already a normal tensor
     return tensor
 

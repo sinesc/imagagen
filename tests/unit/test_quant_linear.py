@@ -16,7 +16,10 @@
 """
 
 import json
+from pathlib import Path
 
+import gguf
+import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
@@ -27,9 +30,11 @@ from safetensors.torch import save_file as save_safetensors
 from imagagen.gguf_ops import (
     Fp8Linear,
     GgufLinear,
+    GgufParam,
     Nf4Linear,
     Nf4Param,
     QuantLinear,
+    dequantize_tensor,
     load_flux_state_dict,
     quant_linear_scope,
     sniff_flux_checkpoint,
@@ -285,3 +290,69 @@ def test_gguf_sniff_by_magic(tmp_path):
     p = tmp_path / "model.gguf"
     p.write_bytes(b"GGUF" + b"\x00" * 16)
     assert sniff_flux_checkpoint(p) == "gguf"
+
+
+# ------------------------------------------------------------------ GGUF ----
+
+
+def _write_gguf_q4_0_checkpoint(path, W, B):
+    """A tiny GGUF file: one Q4_0 linear weight + one F32 bias. The byte
+    layout is produced by the gguf package's own Q4_0 quantizer (the same
+    layout the shipped ``.gguf`` files use)."""
+    blocks = gguf.quants.Q4_0.quantize_blocks(W.numpy())
+    w = gguf.GGUFWriter(str(path), "test")
+    w.add_tensor(
+        "lin.weight", blocks,
+        raw_dtype=gguf.constants.GGMLQuantizationType.Q4_0)
+    w.add_tensor("lin.bias", B.numpy())
+    w.open_output_file(Path(path))
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+
+
+def test_gguf_q4_0_dequantize(tmp_path):
+    path = tmp_path / "model.gguf"
+    W = _rand_bf16(64, 32, seed=4).float()
+    B = torch.randn(64, generator=torch.Generator().manual_seed(5)).float()
+    _write_gguf_q4_0_checkpoint(path, W, B)
+
+    sd = load_flux_state_dict(path, "gguf")
+    assert set(sd) == {"lin.weight", "lin.bias"}
+    param = sd["lin.weight"]
+    assert isinstance(param, GgufParam)
+    assert param.shape == (64, 32)
+    assert param.data.dtype == torch.uint8
+
+    # the dequantized weight matches the file's reference layout exactly
+    # (gguf package Q4_0 dequantizer) and is within Q4_0 tolerance of the
+    # original
+    reader = gguf.GGUFReader(str(path))
+    tensor = next(t for t in reader.tensors if str(t.name) == "lin.weight")
+    ref = gguf.quants.Q4_0.dequantize(np.asarray(tensor.data))
+    got = dequantize_tensor(param).float()
+    assert torch.equal(got, torch.tensor(ref, dtype=torch.float32))
+    assert (got - W).abs().max() <= W.abs().max()
+
+    # fp32 biases pass through untouched
+    assert torch.equal(dequantize_tensor(sd["lin.bias"]).float(), B)
+
+
+def test_gguf_q4_0_linear(tmp_path):
+    path = tmp_path / "model.gguf"
+    out_f, in_f = 64, 32
+    W = _rand_bf16(out_f, in_f, seed=6).float()
+    B = torch.randn(out_f, generator=torch.Generator().manual_seed(7)).float()
+    _write_gguf_q4_0_checkpoint(path, W, B)
+
+    sd = load_flux_state_dict(path, "gguf")
+    with quant_linear_scope("gguf", torch.device("cpu"), torch.bfloat16):
+        lin = GgufLinear(in_f, out_f)
+    lin.load_state_dict(
+        {"weight": sd["lin.weight"], "bias": sd["lin.bias"]}, strict=False)
+
+    x = torch.randn(3, in_f, generator=torch.Generator().manual_seed(8)).to(
+        torch.bfloat16)
+    deq = dequantize_tensor(sd["lin.weight"]).to(torch.bfloat16)
+    assert torch.equal(lin(x), F.linear(x, deq, B.to(torch.bfloat16)))
