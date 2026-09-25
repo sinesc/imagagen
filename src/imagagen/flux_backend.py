@@ -7,8 +7,13 @@ Architecture (FLUX.1-dev):
 - the transformer is a MMDiT (:class:`~imagagen.flux_transformer.
   FluxTransformer2DModel`) whose ``nn.Linear`` weights live quantized on the
   GPU (GGUF Q4_K, Kijai FP8 or bitsandbytes NF4 — sniffed from the file)
-  and are dequantized to bf16 per-op (:mod:`imagagen.gguf_ops`), so ~6-7 GB
-  of quantized bytes stay resident instead of ~24 GB of bf16;
+  and are dequantized to bf16 per-op (:mod:`imagagen.gguf_ops`), so ~7 GB
+  (Q4_K / NF4) or ~11 GB (FP8) of quantized bytes stay resident instead of
+  the ~24 GB bf16 would need;
+- with a large resident transformer (FP8), the transformer and the text
+  encoders cannot share a 16 GB card: the transformer is swapped to the CPU
+  while the encoders run on the GPU (and back again afterwards) -- the same
+  unet/encoder swap Forge's memory manager performs.
 - the text condition is a 768-dim CLIP-L pooled vector (``y``) plus a
   (256, 4096) T5-XXL context; CLIP-L runs fp16, T5-XXL keeps its fp8 weights
   on the GPU and casts to bf16 per-op (``t5_encoder.Fp8Linear``);
@@ -175,17 +180,31 @@ class FluxBackend(ModelBackend):
         self.transformer.eval()
 
         # --- text encoders ---
-        # `te_device` (GPU by default) is where the encoders live and run;
-        # with text_encoder_device=cpu they load on and stay on the CPU
-        # (needed when the resident transformer is too big for a 4.9 GB
-        # T5-XXL to share the 16 GB card with)
+        # `te_device` (GPU by default) is where the encoders *run* during a
+        # generation. They load on the CPU first and only move to the GPU
+        # when they fit next to the transformer (FP8 checkpoints: 11.1 GiB
+        # transformer + 4.6 GiB T5-XXL do not share a 16 GiB card); otherwise
+        # they stay on the CPU and are brought to the GPU per generation,
+        # swapping the transformer out while they run (see _generate_impl,
+        # Forge's memory manager performs the same swap). With
+        # text_encoder_device=cpu they never leave the CPU.
         self.te_device = "cpu" if config.text_encoder_device == "cpu" else device
-        self.clip = load_clip_l(str(infra / "clip_l.safetensors"), self.te_device)
+        self.clip = load_clip_l(str(infra / "clip_l.safetensors"), "cpu")
         self.t5 = load_t5_encoder(
-            str(infra / "t5xxl_fp8_e4m3fn.safetensors"), self.te_device
+            str(infra / "t5xxl_fp8_e4m3fn.safetensors"), "cpu"
         )
         self.clip_tok = CLIPTokenizer.from_pretrained(str(config.res_dir / "tokenizer_clip"))
         self.t5_tok = AutoTokenizer.from_pretrained(str(config.res_dir / "tokenizer_t5"))
+        # resident bytes of the text encoders; the fit check below and the
+        # per-generate swap decision (_generate_impl) compare this against
+        # the free VRAM
+        self._encoder_bytes = (
+            sum(p.numel() * p.element_size() for p in self.clip.parameters())
+            + sum(p.numel() * p.element_size() for p in self.t5.parameters())
+        )
+        if self.te_device != "cpu" and self._encoder_bytes + (1 << 30) <= torch.cuda.mem_get_info(device)[0]:
+            # fits next to the transformer: co-resident, no swaps
+            self._text_to(self.te_device)
 
         # all weights are resident now; release the transient VRAM the load
         # left behind (bake buffers, from_single_file scratch) so the pool
@@ -452,6 +471,23 @@ class FluxBackend(ModelBackend):
         g = torch.full((1,), guidance, device=device, dtype=torch.bfloat16)
 
         # --- text encode (bring encoders to te_device, then park on CPU) ---
+        # With the GPU text-encoder default, a large resident transformer
+        # (FP8 ~11.1 GiB) and the text encoders (T5 ~4.6 GiB + CLIP ~0.2 GiB)
+        # may not share a 16 GiB card; Forge's memory manager unloads the
+        # unet while the text encoders run. We do the same swap when the
+        # encoders are parked on the CPU for this reason (see __init__):
+        # park the transformer on the CPU for the encode, then bring it
+        # back after the encoders are parked again.
+        swapped = False
+        if self.te_device != "cpu" and next(self.t5.parameters()).device != self.device:
+            free, _ = torch.cuda.mem_get_info(self.device)
+            log.info(
+                "%s: transformer swapped to the CPU for text encoding "
+                "(%.2f GiB encoders, %.2f GiB free)",
+                self.name, self._encoder_bytes / 2**30, free / 2**30)
+            self.transformer.to("cpu")
+            torch.cuda.empty_cache()
+            swapped = True
         self._text_to(self.te_device)
         with torch.inference_mode():
             context, y = self._encode_prompt(request.prompt)
@@ -465,6 +501,9 @@ class FluxBackend(ModelBackend):
             context_neg = context_neg.to(device)
             y_neg = y_neg.to(device)
         self._text_offload()
+        if swapped:
+            self.transformer.to(self.device)
+            torch.cuda.empty_cache()
 
         # --- sigma schedule + noise ---
         steps = max(1, request.steps)
@@ -601,7 +640,23 @@ class FluxBackend(ModelBackend):
             # --- VAE decode (kept under inference_mode so the result has no grad) ---
             latents = (x / self.vae.config.scaling_factor) + self.vae.config.shift_factor
             latents = latents.to(torch.bfloat16)
-            image = self.vae.decode(latents, return_dict=False)[0].float()
+            try:
+                image = self.vae.decode(latents, return_dict=False)[0].float()
+            except torch.cuda.OutOfMemoryError:
+                # the untiled decode's working set does not fit next to the
+                # large resident transformer; Forge's memory manager unloads
+                # the unet for the VAE -- we do the same: park the
+                # transformer on the CPU, decode, then bring it back
+                log.warning(
+                    "%s: untiled VAE decode OOMed, retrying with the "
+                    "transformer on the CPU", self.name)
+                import gc
+
+                gc.collect()
+                self.transformer.to("cpu")
+                torch.cuda.empty_cache()
+                image = self.vae.decode(latents, return_dict=False)[0].float()
+                self.transformer.to(self.device)
             image = (image / 2 + 0.5).clamp(0, 1)
         arr = (image.cpu().numpy()[0].transpose(1, 2, 0) * 255).astype(np.uint8)
         if soft is not None and mask_t is not None:

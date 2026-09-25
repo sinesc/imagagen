@@ -7,9 +7,14 @@ the registry (alongside the GGUF one, which keeps working) and:
   2. generates one 512x512 / 10-step baseline image (fixed seed/prompt)
   3. applies the flux LoRA and regenerates (the runtime deltas must be
      active on every QuantLinear format)
-  4. reports peak VRAM (the per-op dequantize keeps the model quantized on
-     the GPU: ~6-7 GB resident, not ~24 GB bf16)
-  5. saves PNGs to ``dev/smoke_flux_safetensors/`` for inspection
+  4. generates one 1024x1280 / 20-step image with the schnell FP8
+     checkpoint (the large-size case from status.txt: the FP8 transformer
+     is ~11.1 GiB and does not share the 16 GB card with the T5-XXL text
+     encoder, so this exercises the load-time CPU parking and the
+     per-generation transformer swap)
+  5. reports peak VRAM (the per-op dequantize keeps the model quantized on
+     the GPU: ~7 GB for NF4, ~11 GB for FP8, not ~24 GB bf16)
+  6. saves PNGs to ``dev/smoke_flux_safetensors/`` for inspection
 
 Cross-checks:
   - ``flux1DevNF4V2`` vs ``flux1DevFP8110GBKijai``: same seed/prompt, two
@@ -22,7 +27,6 @@ Usage (from the project root):
 """
 import sys
 import time
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -55,9 +59,9 @@ def diff(a, b) -> float:
     return float(np.abs(a.astype(int) - b.astype(int)).mean())
 
 
-def gen(backend, loras=()):
-    req = GenerateRequest(prompt=PROMPT, width=512, height=512, steps=10,
-                         seed=SEED, loras=list(loras))
+def gen(backend, loras=(), width=512, height=512, steps=10):
+    req = GenerateRequest(prompt=PROMPT, width=width, height=height,
+                         steps=steps, seed=SEED, loras=list(loras))
     t0 = time.time()
     img = backend.generate(req).image
     dt = time.time() - t0
@@ -65,10 +69,11 @@ def gen(backend, loras=()):
 
 
 def main(gpu: int | None) -> None:
-    # T5/CLIP live on the CPU (encode on CPU, embeddings to the GPU): the
-    # FP8 checkpoints are ~12 GB of weights, which will not share a 16 GB
-    # card with the ~5 GB T5-XXL on the GPU.
-    cfg = replace(load_config(ROOT), text_encoder_device="cpu")
+    # The text encoders run on the GPU (the default text_encoder_device):
+    # for the NF4 checkpoints they co-reside with the transformer, for the
+    # FP8 ones the backend parks them on the CPU and swaps the transformer
+    # out while they run (Forge's unet/encoder swap).
+    cfg = load_config(ROOT)
     found = list_loras(cfg, family="flux")
     assert LORA in found, f"expected {LORA!r} in loras/flux/, got {found!r}"
 
@@ -107,6 +112,19 @@ def main(gpu: int | None) -> None:
         print(f"  LoRA mean abs diff vs baseline: {d:.2f} "
               f"({lora_dt / base_dt:.2f}x baseline time)", flush=True)
         assert d > 1, f"{name}: LoRA had no visible effect (diff={d:.2f})"
+
+        if name == "flux1SchnellFP811GBKijai":
+            # the large-size case: transformer swap + untiled decode at
+            # 1.3 MP next to the 11 GiB FP8 transformer
+            torch.cuda.synchronize(dev)
+            torch.cuda.reset_peak_memory_stats(dev)
+            print(f"  big 1024x1280 x20 (seed {SEED})", flush=True)
+            big_img, big_dt = gen(backend, width=1024, height=1280, steps=20)
+            Image.fromarray(big_img).save(OUT_DIR / f"{name}_1024x1280.png")
+            assert big_img.std() > 10, "big run looks uniform"
+            peak_big = torch.cuda.max_memory_allocated(dev) / 2**30
+            print(f"  big VRAM peak: {peak_big:.2f} GiB ({big_dt:.1f}s / 20 steps)",
+                  flush=True)
 
         torch.cuda.synchronize(dev)
         peak = torch.cuda.max_memory_allocated(dev) / 2**30
