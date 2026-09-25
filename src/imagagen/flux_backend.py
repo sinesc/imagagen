@@ -1,12 +1,14 @@
-"""FLUX.1 backend: GGUF transformer + dual text encoders + flow-matching Euler.
+"""FLUX.1 backend: quantized transformer + dual text encoders + flow-matching
+Euler.
 
 Second model family alongside SDXL (see :mod:`imagagen.sdxl_backend`).
 
-Architecture (FLUX.1-dev, the ``agFluxQ4KS`` GGUF):
+Architecture (FLUX.1-dev):
 - the transformer is a MMDiT (:class:`~imagagen.flux_transformer.
-  FluxTransformer2DModel`) whose ``nn.Linear`` weights live quantized (Q4_K)
-  on the GPU and are dequantized to bf16 per-op (:mod:`imagagen.gguf_ops`),
-  so ~6.8 GB of quantized bytes stay resident instead of ~24 GB of bf16;
+  FluxTransformer2DModel`) whose ``nn.Linear`` weights live quantized on the
+  GPU (GGUF Q4_K, Kijai FP8 or bitsandbytes NF4 — sniffed from the file)
+  and are dequantized to bf16 per-op (:mod:`imagagen.gguf_ops`), so ~6-7 GB
+  of quantized bytes stay resident instead of ~24 GB of bf16;
 - the text condition is a 768-dim CLIP-L pooled vector (``y``) plus a
   (256, 4096) T5-XXL context; CLIP-L runs fp16, T5-XXL keeps its fp8 weights
   on the GPU and casts to bf16 per-op (``t5_encoder.Fp8Linear``);
@@ -42,18 +44,25 @@ import torch
 
 from . import kdiff
 from .backends import (
+    _PARAM_INIT_LOCK,
     GenerateRequest,
     GenerateResult,
     ModelBackend,
-    _PARAM_INIT_LOCK,
     format_loras,
 )
 from .clip_encoder import clip_pooled, load_clip_l
 from .flux_lora import FluxLoraSpec, merge_module_deltas, parse_lora
 from .flux_transformer import FluxTransformer2DModel
-from .gguf_ops import GgufLinear, bake_gguf_model, gguf_linear_scope, load_gguf_state_dict
-from .soft_inpaint import SoftInpainting, adaptive_change_alpha, latent_blend
+from .gguf_ops import (
+    QuantLinear,
+    bake_gguf_model,
+    load_flux_state_dict,
+    quant_linear_scope,
+    sniff_flux_checkpoint,
+)
+from .soft_inpaint import adaptive_change_alpha, latent_blend
 from .t5_encoder import load_t5_encoder
+
 
 def _model_hash(path: str) -> str:
     """md5[:16] of the first 100 MB of the checkpoint (the PNG "Model hash")."""
@@ -141,12 +150,11 @@ class FluxBackend(ModelBackend):
         self.vae = self.vae.to(device)
         self.vae.enable_slicing()
 
-        # --- transformer (GGUF Q4_K -> per-op bf16) ---
+        # --- transformer (quantized -> per-op bf16) ---
         # build on CPU (the dummy weights are tiny); the quantized bytes load
         # on CPU and move to the GPU with .to(device).
-        with gguf_linear_scope(torch.device("cpu"), torch.bfloat16):
-            self.transformer = FluxTransformer2DModel(**_TRANSFORMER_ARCH)
-        sd = load_gguf_state_dict(self.model_path)
+        kind = sniff_flux_checkpoint(self.model_path)
+        sd = load_flux_state_dict(self.model_path, kind)
         # guidance-embedding checkpoints (FLUX.1-dev) carry the guidance_in
         # MLP weights; schnell-class checkpoints don't and can only run
         # classic CFG (distilled requested is silently demoted, like Forge)
@@ -154,21 +162,30 @@ class FluxBackend(ModelBackend):
         if not self.supports_distilled:
             log.info("%s: no guidance embedding -- distilled mode unavailable",
                      self.name)
+        # the architecture follows the checkpoint: without guidance_in the
+        # layer would be an unloaded nn.Identity that crashes on forward
+        arch = dict(_TRANSFORMER_ARCH, guidance_embed=self.supports_distilled)
+        with quant_linear_scope(kind, torch.device("cpu"), torch.bfloat16):
+            self.transformer = FluxTransformer2DModel(**arch)
         self.transformer.load_state_dict(sd, strict=False)
         del sd
         self.transformer.to(device)
-        bake_gguf_model(self.transformer)
+        if kind == "gguf":
+            bake_gguf_model(self.transformer)
         self.transformer.eval()
 
         # --- text encoders ---
-        self.clip = load_clip_l(str(infra / "clip_l.safetensors"), device)
-        self.t5 = load_t5_encoder(str(infra / "t5xxl_fp8_e4m3fn.safetensors"), device)
+        # `te_device` (GPU by default) is where the encoders live and run;
+        # with text_encoder_device=cpu they load on and stay on the CPU
+        # (needed when the resident transformer is too big for a 4.9 GB
+        # T5-XXL to share the 16 GB card with)
+        self.te_device = "cpu" if config.text_encoder_device == "cpu" else device
+        self.clip = load_clip_l(str(infra / "clip_l.safetensors"), self.te_device)
+        self.t5 = load_t5_encoder(
+            str(infra / "t5xxl_fp8_e4m3fn.safetensors"), self.te_device
+        )
         self.clip_tok = CLIPTokenizer.from_pretrained(str(config.res_dir / "tokenizer_clip"))
         self.t5_tok = AutoTokenizer.from_pretrained(str(config.res_dir / "tokenizer_t5"))
-
-        # text encoders live on `te_device` (GPU by default); they are parked
-        # on CPU between generations to free VRAM for sampling
-        self.te_device = "cpu" if config is not None and config.text_encoder_device == "cpu" else device
 
         # all weights are resident now; release the transient VRAM the load
         # left behind (bake buffers, from_single_file scratch) so the pool
@@ -334,14 +351,15 @@ class FluxBackend(ModelBackend):
         Must run under ``self._lock`` (called from ``_generate_impl``
         before the sampling loop, as in the SDXL backend).
 
-        Runtime additive deltas (Forge's *online* mode): the fused Q4_K
-        weights stay quantized, and each affected :class:`GgufLinear`
-        computes ``base + (x @ A.t()) @ B.t()`` per forward. That is
+        Runtime additive deltas (Forge's *online* mode): the fused
+        quantized weights (any format) stay quantized, and each affected
+        :class:`~imagagen.gguf_ops.QuantLinear` computes
+        ``base + (x @ A.t()) @ B.t()`` per forward. That is
         mathematically identical to Forge's merge-and-re-quantize path
-        (which is unavailable here: there is no Q4_K_S quantizer to
-        re-quantize the merged weights into), lossless, and the deltas are
-        registered module parameters, so ``transformer.to()`` / ``unload()``
-        moves them and VRAM scales with the deltas (MetalSuit ~50 MB bf16).
+        (which is unavailable here: there is no quantizer for the merged
+        weights), lossless, and the deltas are registered module
+        parameters, so ``transformer.to()`` / ``unload()`` moves them and
+        VRAM scales with the deltas (MetalSuit ~50 MB bf16).
 
         All-or-nothing: a set becomes ``_active_loras`` only once every
         module is patched; :meth:`_merge_lora_deltas` (parsing, mapping,
@@ -357,11 +375,11 @@ class FluxBackend(ModelBackend):
             self._unload_loras()
             for path, deltas in merged.items():
                 module = self._module_for(path)
-                if not isinstance(module, GgufLinear):
+                if not isinstance(module, QuantLinear):
                     raise TypeError(
-                        f"{path!r} is not a GgufLinear ({type(module).__name__})"
+                        f"{path!r} is not a QuantLinear ({type(module).__name__})"
                     )
-                for a, b, r0, r1 in deltas:
+                for a, _b, _r0, _r1 in deltas:
                     if a.shape[1] != module.in_features:
                         raise ValueError(
                             f"{path!r}: LoRA input dim {a.shape[1]} != "
@@ -439,13 +457,14 @@ class FluxBackend(ModelBackend):
             context, y = self._encode_prompt(request.prompt)
             if not distilled:
                 context_neg, y_neg = self._encode_prompt(request.negative_prompt)
-        if self.te_device != "cpu":
-            context = context.to(device)
-            y = y.to(device)
-            if not distilled:
-                context_neg = context_neg.to(device)
-                y_neg = y_neg.to(device)
-            self._text_offload()
+        # embeddings to the GPU; with the GPU default the encoders are
+        # parked on the CPU now, with te_device=cpu they stay in system RAM
+        context = context.to(device)
+        y = y.to(device)
+        if not distilled:
+            context_neg = context_neg.to(device)
+            y_neg = y_neg.to(device)
+        self._text_offload()
 
         # --- sigma schedule + noise ---
         steps = max(1, request.steps)

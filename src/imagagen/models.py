@@ -11,8 +11,8 @@ residency for the last-unloaded model).
 from __future__ import annotations
 
 import logging
-import time
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -218,12 +218,12 @@ class ModelRegistry:
         self._current_id: str | None = None
 
     # (family, models/<family>/, allowed file suffixes). The directory name
-    # IS the family. Only the GGUF transformer is loadable for flux right
-    # now; the ~12 GB fp8/nf4 .safetensors variants are deliberately left
-    # out of discovery so they never surface as un-loadable entries.
+    # IS the family. For flux the loadable formats are the GGUF Q4_K file
+    # and the ~12 GB Kijai FP8 / bnb NF4 .safetensors variants (all
+    # dequantize per-op on the GPU, see imagagen.gguf_ops).
     _FAMILIES = (
         ("sdxl", ".safetensors"),
-        ("flux", ".gguf"),
+        ("flux", ".gguf", ".safetensors"),
     )
 
     def discover(self) -> list[ModelInfo]:

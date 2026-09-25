@@ -88,20 +88,20 @@ def test_broken_symlink_is_ignored(tmp_path):
 
 
 def test_flux_family_discovery(tmp_path):
-    # family is the directory name; only .gguf is loadable for flux
-    # (the ~12 GB fp8/nf4 .safetensors variants stay out of discovery)
+    # family is the directory name; .gguf and .safetensors (Kijai FP8 /
+    # bnb NF4 checkpoints) are all loadable for flux
     _touch(tmp_path, "models/flux/MyFlux.gguf")
     _touch(tmp_path, "models/flux/MyFlux2.gguf")
-    _touch(tmp_path, "models/flux/NotLoaded.safetensors")  # ignored
+    _touch(tmp_path, "models/flux/DevNF4.safetensors")
     _touch(tmp_path, "models/sdxl/Epic.safetensors")
 
     reg = ModelRegistry(Config(root=tmp_path))
     by_id = {m.id: m for m in reg.models}
-    assert set(by_id) == {"MyFlux", "MyFlux2", "Epic"}
+    assert set(by_id) == {"MyFlux", "MyFlux2", "DevNF4", "Epic"}
     assert by_id["MyFlux"].family == "flux"
     assert by_id["MyFlux2"].family == "flux"
+    assert by_id["DevNF4"].family == "flux"
     assert by_id["Epic"].family == "sdxl"
-    assert "NotLoaded" not in by_id
 
 
 def test_missing_dirs_yield_empty_lists(tmp_path):

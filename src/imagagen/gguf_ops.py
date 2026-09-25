@@ -1,22 +1,55 @@
-"""GGUF loading + on-the-fly GPU dequantization for the Flux transformer.
+"""GGUF / FP8 / NF4 loading + on-the-fly GPU dequantization for the Flux transformer.
 
-The 12B FLUX.1-dev transformer only ships as a GGUF Q4_K_S file, so its
-weights cannot be materialized in bf16 at once (that would be ~24 GB). We keep
-the raw quantized bytes resident on the GPU and dequantize each ``nn.Linear``
-weight on every forward pass (the Forge approach). Peak VRAM is then just the
-~6.8 GB of quantized bytes plus one layer's transient bf16 weight.
+The 12B FLUX.1 transformer ships in three checkpoint formats, all handled
+here:
 
-The Q4_K kernels, ``GgufParam`` and the ``Linear`` replacement are ported
-verbatim from the Forge reference
-(``dev/implementations/stable-diffusion-webui-forge/packages_3rdparty/gguf``
-and ``backend/operations*.py``) so the dequantized values match Forge
-bit-for-bit. The only PyPI dependency used is ``gguf`` (for ``GGUFReader``);
-the dequantize kernels themselves are self-contained torch ops.
+- **GGUF Q4_K_S** (``agFluxQ4KS_v21.gguf``) — raw quantized bytes; the
+  Q4_K kernels, :class:`GgufParam` and the ``Linear`` replacement are
+  ported verbatim from the Forge reference
+  (``dev/implementations/stable-diffusion-webui-forge/packages_3rdparty/gguf``
+  and ``backend/operations*.py``) so the dequantized values match Forge
+  bit-for-bit. The only PyPI dependency used is ``gguf``
+  (for ``GGUFReader``); the dequantize kernels are self-contained torch ops.
+- **Kijai FP8** (``flux1DevFP8110GBKijai.safetensors`` /
+  ``flux1SchnellFP811GBKijai.safetensors``) — transformer only, top-level
+  diffusers names (``double_blocks.0.img_attn.qkv.weight``,
+  ``single_blocks.N.linear1.weight``, ``img_in.weight``, ...), **every**
+  tensor (weights, biases, norm scales) is ``F8_E4M3`` at the real weight
+  shape with no scale tensors; dequantize is the exact cast to the input
+  dtype (:class:`Fp8Linear` keeps the fp8 bytes resident and casts per-op).
+- **bitsandbytes NF4** (``flux1DevNF4V2.safetensors`` /
+  ``flux1SchnellNF4.safetensors``) — all-in-one pipeline file; only the
+  transformer section (``model.diffusion_model.`` prefix) is used, the
+  ``vae.`` / ``text_encoders.`` sections are the infra components and
+  stay ignored. Every quantized linear is stored in bnb's *pre-quantized
+  format*: 4-bit packed ``<k>.weight`` (uint8, 2 values per byte,
+  ``(numel/2, 1)``) plus ``<k>.weight.absmax`` (one entry per 64-element
+  block, float32 — or uint8 indices into ``nested_quant_map`` for the
+  *nested* files), ``<k>.weight.quant_map`` (the codebook, NOT used at
+  runtime: the kernel has the NF4 codebook built in) and a
+  ``<k>.weight.quant_state.bitsandbytes__nf4`` uint8 blob holding the JSON
+  ``{"quant_type", "blocksize", "dtype", "shape"}`` plus, nested files
+  only, ``nested_blocksize`` / ``nested_dtype`` / ``nested_offset`` and the
+  ``<k>.weight.nested_absmax`` / ``<k>.weight.nested_quant_map`` tensors.
+  Dequantize is bnb's native path: a :class:`Nf4Param` (packed weight +
+  aux tensors that move together) plus
+  ``bitsandbytes.functional.dequantize_4bit`` with a ``QuantState``
+  built from the param fields (:class:`Nf4Linear`). No bitsandbytes
+  runtime matmul — only its dequantize op (imported inside the function,
+  so a CPU-only test env still imports this module).
+
+All three keep the weights on the GPU in compact form and dequantize each
+``nn.Linear`` weight to the input dtype on every forward pass (the Forge
+approach), so peak VRAM is just the quantized bytes (~6 GB for the 12B dev
+models) plus one layer's transient bf16 weight, not the ~24 GB bf16 would
+need.
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
+
 import torch
 
 # Q4_K super-block = 256 elements, 144 quantized bytes.
@@ -191,6 +224,77 @@ class GgufParam(torch.nn.Parameter):
         return self.copy_with_data(torch.Tensor.pin_memory(self.data, device=device))
 
 
+class Nf4Param(torch.nn.Parameter):
+    """An ``nn.Parameter`` wrapping a bitsandbytes NF4 *pre-quantized*
+    weight (the format the ``flux1*NF4*.safetensors`` files ship).
+
+    ``.data`` is the packed 4-bit weight (uint8, 2 values per byte, shape
+    ``(numel/2, 1)``); ``.shape`` reports the real weight shape
+    (``out_features, in_features``). The aux tensors travel with it:
+    ``absmax`` (one entry per 64-element block; float32 — or uint8 indices
+    into ``nested_quant_map`` for the nested files), and for nested files
+    ``nested_absmax`` / ``nested_quant_map`` plus ``nested_blocksize`` /
+    ``nested_dtype`` / ``nested_offset``. ``out_dtype`` is the dtype
+    ``dequantize_4bit`` outputs (the JSON ``"dtype"``),
+    ``computation_dtype`` the LoRA-delta cast target.
+
+    ``.to(*args)`` moves the packed bytes AND every aux tensor together
+    (the ``copy_with_data`` mechanism, as in :class:`GgufParam`), so
+    ``QuantLinear._apply`` / module ``.to(device)`` keep working unchanged.
+    """
+
+    def __new__(cls, *args, **kwargs):
+        data = args[0] if args else None
+        return super().__new__(
+            cls, data if data is not None else torch.empty(0), requires_grad=False)
+
+    def __init__(self, packed, absmax, blocksize=64, quant_type="nf4",
+                 out_dtype=None, real_shape=None, nested_absmax=None,
+                 nested_quant_map=None, nested_blocksize=None,
+                 nested_dtype=None, nested_offset=None) -> None:
+        self.absmax = absmax
+        self.blocksize = blocksize
+        self.quant_type = quant_type
+        self.out_dtype = out_dtype
+        self.real_shape = torch.Size(real_shape)
+        self.nested_absmax = nested_absmax
+        self.nested_quant_map = nested_quant_map
+        self.nested_blocksize = nested_blocksize
+        self.nested_dtype = nested_dtype
+        self.nested_offset = nested_offset
+        self.computation_dtype = out_dtype
+        return
+
+    @property
+    def shape(self):
+        return self.real_shape
+
+    def copy_with_data(self, data, absmax=None, nested_absmax=None,
+                       nested_quant_map=None):
+        new = torch.nn.Parameter.__new__(Nf4Param, data, requires_grad=False)
+        new.absmax = absmax if absmax is not None else self.absmax
+        new.blocksize = self.blocksize
+        new.quant_type = self.quant_type
+        new.out_dtype = self.out_dtype
+        new.real_shape = self.real_shape
+        new.nested_absmax = (nested_absmax if nested_absmax is not None
+                             else self.nested_absmax)
+        new.nested_quant_map = (nested_quant_map if nested_quant_map is not None
+                                else self.nested_quant_map)
+        new.nested_blocksize = self.nested_blocksize
+        new.nested_dtype = self.nested_dtype
+        new.nested_offset = self.nested_offset
+        new.computation_dtype = self.computation_dtype
+        return new
+
+    def to(self, *args, **kwargs):
+        def moved(t):
+            return None if t is None else t.to(*args, **kwargs)
+        return self.copy_with_data(
+            self.data.to(*args, **kwargs), moved(self.absmax),
+            moved(self.nested_absmax), moved(self.nested_quant_map))
+
+
 def dequantize_tensor(tensor):
     if tensor is None:
         return None
@@ -236,15 +340,34 @@ def _tensor2parameter(x):
     return torch.nn.Parameter(x, requires_grad=False)
 
 
-class GgufLinear(torch.nn.Module):
-    """``nn.Linear`` replacement that keeps the weight quantized and
-    dequantizes it on every forward pass."""
+class QuantLinear(torch.nn.Module):
+    """``nn.Linear`` replacement that keeps the weight in a compact format
+    and dequantizes it to the input dtype on every forward pass.
+
+    Subclasses pick the weight format through the :meth:`_dequantize` hook:
+    :class:`GgufLinear` (GGUF Q4_K bytes), :class:`Fp8Linear` (plain
+    ``F8_E4M3`` — the template's cast IS the dequantize), :class:`Nf4Linear`
+    (bitsandbytes NF4 4-bit packed). ``weight`` may be a
+    :class:`GgufParam`/:class:`Nf4Param` (aux data moves with ``.to()``) or
+    a plain tensor (the fp8 case); ``bias`` is a plain tensor (cast to the
+    input dtype on first forward, then kept there).
+
+    The runtime LoRA deltas (``lora_deltas``) work for every format: the
+    base weight stays quantized and each delta adds its
+    ``(rank, in) @ (out, rank)`` product to a slice of the output rows
+    (Forge's *online* mode), installed via :meth:`set_lora_deltas` under
+    the shared ``_PARAM_INIT_LOCK``.
+    """
 
     def __init__(self, in_features, out_features, bias=True):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
+        # seeds the weight device / computation dtype (see
+        # quant_linear_scope); _load_from_state_dict reads it and then
+        # unregisters it (`del self.dummy`)
         self.dummy = torch.nn.Parameter(torch.empty(1, device=_DEVICE, dtype=_DTYPE))
+        self.computation_dtype = _DTYPE
         self.weight = None
         self.bias = None
         self.lora_deltas: list[tuple[torch.nn.Parameter, torch.nn.Parameter, int, int]] = []
@@ -270,21 +393,39 @@ class GgufLinear(torch.nn.Module):
         return
 
     def _apply(self, fn, recurse=True):
-        for k, p in self.named_parameters(recurse=False, remove_duplicate=True):
-            setattr(self, k, fn(p))
+        for k, p in list(self.named_parameters(recurse=False, remove_duplicate=True)):
+            applied = fn(p)
+            if isinstance(applied, torch.nn.Parameter):
+                # param classes (GgufParam/Nf4Param) return their own type
+                setattr(self, k, applied)
+            else:
+                # torch's __setattr__ rejects a non-Parameter for a
+                # registered name: unregister first (as `del self.dummy`
+                # above), then assign the plain tensor
+                delattr(self, k)
+                setattr(self, k, applied)
+        # plain (non-Parameter) weight/bias tensors (the fp8 case) are not
+        # registered parameters, so fn does not reach them
+        for name in ("weight", "bias"):
+            v = getattr(self, name, None)
+            if isinstance(v, torch.Tensor) and not isinstance(v, torch.nn.Parameter):
+                setattr(self, name, fn(v))
         return self
+
+    def _dequantize(self, w):
+        raise NotImplementedError
 
     def forward(self, x):
         if self.bias is not None and self.bias.dtype != x.dtype:
-            self.bias = _tensor2parameter(dequantize_tensor(self.bias).to(x.dtype))
+            b = dequantize_tensor(self.bias) if isinstance(self.bias, GgufParam) else self.bias
+            self.bias = _tensor2parameter(b.to(x.dtype))
         weight = self.weight
         if weight is not None:
-            # the dequantized weight is cast to the input dtype (Forge's
-            # weights_manual_cast, skip_weight_dtype=False); the Q4_K kernel
-            # itself promotes to fp32 (uint8 indices), so this cast is what
-            # lands the weight in the computation dtype
+            # the param classes move their aux data with .to(); the
+            # dequantized weight is cast to the input dtype (Forge's
+            # weights_manual_cast, skip_weight_dtype=False)
             weight = weight.to(device=x.device)
-            weight = dequantize_tensor(weight).to(device=x.device, dtype=x.dtype)
+            weight = self._dequantize(weight).to(device=x.device, dtype=x.dtype)
         bias = self.bias.to(device=x.device) if self.bias is not None else None
         out = torch.nn.functional.linear(x, weight, bias)
         if self.lora_deltas:
@@ -311,7 +452,9 @@ class GgufLinear(torch.nn.Module):
         self.clear_lora_deltas()
         w = self.weight
         device = w.data.device if w is not None else None
-        dtype = getattr(w, "computation_dtype", None) or (w.dtype if w is not None else None)
+        dtype = (getattr(w, "computation_dtype", None)
+                 or self.computation_dtype
+                 or (w.dtype if w is not None else None))
         self.lora_deltas = []
         for i, (a, b, r0, r1) in enumerate(deltas):
             if device is not None:
@@ -330,23 +473,192 @@ class GgufLinear(torch.nn.Module):
             self.register_parameter(name, None)
 
 
-# scope state (set by :func:`gguf_linear_scope`)
+class GgufLinear(QuantLinear):
+    """``nn.Linear`` replacement that keeps the weight quantized (GGUF
+    Q4_K) and dequantizes it on every forward pass."""
+
+    def _dequantize(self, w):
+        return dequantize_tensor(w)
+
+
+class Fp8Linear(QuantLinear):
+    """``nn.Linear`` replacement: the ``F8_E4M3`` weight (and bias) stay
+    fp8 on-device and are cast to the input dtype per forward (the cast IS
+    the dequantize — the file holds no scale tensors)."""
+
+    def _dequantize(self, w):
+        return w
+
+
+class Nf4Linear(QuantLinear):
+    """``nn.Linear`` replacement: bitsandbytes NF4 4-bit packed weight
+    (:class:`Nf4Param`), dequantized per forward with bnb's native
+    pre-quantized format (``dequantize_4bit`` + ``QuantState``; the nested
+    files' uint8 absmax indices are decoded through ``state2`` inside it).
+
+    The ``bitsandbytes`` import is inside the function (not at module top
+    level) so a CPU-only test env still imports this module.
+    """
+
+    def _dequantize(self, w):
+        from bitsandbytes import functional as bfn
+        from bitsandbytes.nn.modules import QuantState
+
+        state2 = None
+        offset = None
+        if w.nested_absmax is not None:
+            state2 = QuantState(
+                absmax=w.nested_absmax, code=w.nested_quant_map,
+                blocksize=w.nested_blocksize, dtype=w.nested_dtype)
+            offset = torch.tensor(w.nested_offset, device=w.data.device)
+        qs = QuantState(
+            absmax=w.absmax, blocksize=w.blocksize, quant_type=w.quant_type,
+            dtype=w.out_dtype, shape=torch.Size(w.real_shape),
+            offset=offset, state2=state2)
+        return bfn.dequantize_4bit(w.data, quant_state=qs)
+
+
+# scope state (set by :func:`quant_linear_scope`)
 _DEVICE = None
 _DTYPE = None
 
 
 @contextlib.contextmanager
-def gguf_linear_scope(device, dtype):
-    """Build ``nn.Linear`` layers as :class:`GgufLinear` inside the block.
+def quant_linear_scope(kind, device, dtype):
+    """Build ``nn.Linear`` layers as the quantized variant for ``kind``
+    (``"gguf"`` / ``"fp8"`` / ``"nf4"``) inside the block.
 
-    ``device``/``dtype`` seed each layer's dummy param (which fixes the weight
-    device and the dequantize computation dtype).
+    ``device``/``dtype`` seed each layer's dummy param (which fixes the
+    weight device and the dequantize computation dtype).
     """
     global _DEVICE, _DTYPE
     _DEVICE, _DTYPE = device, dtype
     original = torch.nn.Linear
-    torch.nn.Linear = GgufLinear
+    torch.nn.Linear = {"gguf": GgufLinear, "fp8": Fp8Linear, "nf4": Nf4Linear}[kind]
     try:
         yield
     finally:
         torch.nn.Linear = original
+
+
+@contextlib.contextmanager
+def gguf_linear_scope(device, dtype):
+    """:func:`quant_linear_scope` for the GGUF (Q4_K) format."""
+    with quant_linear_scope("gguf", device, dtype):
+        yield
+
+
+# --------------------------------------------------------------- loaders ----
+
+
+_GGUF_MAGIC = b"GGUF"
+_NF4_PREFIX = "model.diffusion_model."
+
+
+def sniff_flux_checkpoint(path) -> str:
+    """Detect the Flux checkpoint format: ``"gguf"`` / ``"fp8"`` / ``"nf4"``.
+
+    The ``.gguf`` magic wins; else the safetensors key set decides: a
+    ``*.quant_state.bitsandbytes__nf4`` key means bitsandbytes NF4
+    (all-in-one pipeline file, only the transformer section is used); a
+    ``.weight`` slice of dtype ``F8_E4M3`` means Kijai FP8. Anything else
+    (e.g. plain bf16 flux weights, which need ~24 GB) is unsupported and
+    raises.
+    """
+    with open(path, "rb") as f:
+        magic = f.read(4)
+    if magic == _GGUF_MAGIC:
+        return "gguf"
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt") as f:
+        keys = [str(k) for k in f.keys()]
+        if any(k.endswith(".quant_state.bitsandbytes__nf4") for k in keys):
+            return "nf4"
+        if any(k.endswith(".weight") and f.get_slice(k).get_dtype() == "F8_E4M3"
+               for k in keys):
+            return "fp8"
+    raise ValueError(
+        f"unsupported Flux checkpoint (need .gguf / Kijai FP8 / bnb NF4): {path}")
+
+
+def load_flux_state_dict(path, kind) -> dict:
+    """Read a Flux transformer checkpoint into ``{module path: tensor}``
+    (the GGUF state-dict convention: ``img_in.weight``,
+    ``double_blocks.0.img_attn.qkv.weight``, ...).
+
+    - ``"gguf"``: Q4_K bytes as :class:`GgufParam`
+      (see :func:`load_gguf_state_dict`);
+    - ``"nf4"``: bitsandbytes NF4 — only the ``model.diffusion_model.``
+      section of the all-in-one pipeline file (``vae.`` /
+      ``text_encoders.`` are the infra components and stay ignored);
+      quantized linears become :class:`Nf4Param`, biases/scales are plain
+      bf16 tensors;
+    - ``"fp8"``: Kijai FP8 — transformer only, top-level keys; weights and
+      biases stay ``F8_E4M3``.
+    """
+    if kind == "gguf":
+        return load_gguf_state_dict(path)
+    from safetensors import safe_open
+
+    sd: dict = {}
+    with safe_open(str(path), framework="pt") as f:
+        keys = [str(k) for k in f.keys()]
+        if kind == "nf4":
+            _load_nf4_tensors(f, keys, sd)
+        else:
+            _load_fp8_tensors(f, keys, sd)
+    return sd
+
+
+def _load_fp8_tensors(f, keys, sd):
+    # transformer only, top-level diffusers names; weights and biases stay
+    # F8_E4M3 (the norm scales ride along as Parameters too: the default
+    # load path casts them to the module dtype, exact for fp8 -> fp32)
+    for key in keys:
+        sd[key] = torch.nn.Parameter(f.get_tensor(key), requires_grad=False)
+
+
+def _load_nf4_tensors(f, keys, sd):
+    for key in keys:
+        if not key.startswith(_NF4_PREFIX):
+            continue  # vae. / text_encoders.: the infra components, unused
+        name = key[len(_NF4_PREFIX):]
+        if name.endswith(".weight"):
+            blob = f.get_tensor(key + ".quant_state.bitsandbytes__nf4")
+            meta = json.loads(blob.numpy().tobytes().decode())
+            out, inn = meta["shape"]
+            packed = f.get_tensor(key)
+            if packed.dtype != torch.uint8 or packed.numel() != out * inn // 2:
+                raise ValueError(
+                    f"bad NF4 packed weight {key}: "
+                    f"expect uint8 [{out * inn // 2}], "
+                    f"got {packed.dtype} {tuple(packed.shape)}")
+            # native bnb layout is [(n/2), 1]; accept the transposed one too
+            if packed.dim() == 2 and packed.shape[0] == 1:
+                packed = packed.t().contiguous().view(-1, 1)
+            else:
+                packed = packed.contiguous().view(-1, 1)
+            nested = "nested_blocksize" in meta
+            sd[name] = Nf4Param(
+                packed,
+                f.get_tensor(key + ".absmax"),
+                blocksize=meta["blocksize"],
+                quant_type=meta["quant_type"],
+                out_dtype=getattr(torch, meta["dtype"]),
+                real_shape=(out, inn),
+                nested_absmax=(f.get_tensor(key + ".nested_absmax")
+                               if nested else None),
+                nested_quant_map=(f.get_tensor(key + ".nested_quant_map")
+                                  if nested else None),
+                nested_blocksize=meta.get("nested_blocksize"),
+                nested_dtype=getattr(torch, meta.get("nested_dtype", "float32")),
+                nested_offset=meta.get("nested_offset"),
+            )
+        elif name.endswith(".bias") or name.endswith(".scale"):
+            # plain tensors cast to bf16 (norm scales: float32 in the V2
+            # file, bf16 in the nested one)
+            sd[name] = f.get_tensor(key).to(torch.bfloat16)
+        # .weight.{quant_map,quant_state...,absmax,...}: packed into the
+        # Nf4Param above; quant_map (the codebook) is dropped — the kernel
+        # has the NF4 codebook built in
