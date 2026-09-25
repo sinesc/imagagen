@@ -10,15 +10,15 @@ __pycache__/
 dev/implementations/
 
 # output folder (no gitkeep to allow symlinking some other folder)
-output/*
+output
 
 # weights
 models/*
-!models/.gitkeep
+!models/readme-folder-names.txt
 loras/*
-!loras/.gitkeep
+!loras/readme-folder-names.txt
 infra/*
-!infra/.gitkeep
+!infra/readme-file-names.txt
 
 # user state
 cache/*
