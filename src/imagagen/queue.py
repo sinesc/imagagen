@@ -272,6 +272,9 @@ class GenerationQueue:
         for g in cancel_gpus:
             self.registry.cancel(g)
         self.emit({"type": "job_interrupted", "job": job_id})
+        # an interrupt can leave the queue fully idle (all tasks were
+        # pending): park models to free VRAM in that case
+        self._maybe_unload_idle()
 
     # --- internals ---
     def _worker_loop(self, gpu: int) -> None:
@@ -291,6 +294,9 @@ class GenerationQueue:
                 with self._cond:
                     self._gpu_running.pop(gpu, None)
                     self._dispatch()
+                # a finished (or failed) task may have left the queue fully
+                # idle: park loaded models in RAM to free VRAM
+                self._maybe_unload_idle()
 
     def _dispatch(self) -> None:
         """Assign pending tasks to free GPUs (primary first).
@@ -526,6 +532,38 @@ class GenerationQueue:
                     job.id, len(job.results), job.batch_size, runtime,
                 )
                 self.emit({"type": "done", "job": job.id})
+
+    def _is_idle_locked(self) -> bool:
+        """True when no task is pending/queued/running and no job is still
+        in flight (a job counts as settled once done or interrupted).
+        Caller must hold self._cond."""
+        if self._pending or self._gpu_running or any(self._gpu_queues.values()):
+            return False
+        for job in self._jobs.values():
+            if not job.done_emitted and not job.interrupted:
+                return False
+        return True
+
+    def _maybe_unload_idle(self) -> None:
+        """Once the queue is fully idle, move every loaded model out of
+        VRAM into RAM so the app does not hold VRAM while not generating.
+
+        Model types that cannot be moved (can_park is False) are left
+        in VRAM by the registry.  Runs outside the queue lock; the
+        per-GPU registry locks keep the device move from racing a
+        generation.
+        """
+        with self._cond:
+            idle = self._is_idle_locked()
+        if idle:
+            log.info("queue idle: parking all models to RAM")
+            try:
+                self.registry.unload_all()
+            except Exception:
+                # a parking failure must not kill the worker thread (this
+                # runs in the worker's finally); the model stays resident and
+                # the next load handles it
+                log.exception("parking models to RAM failed; leaving them resident")
 
 
 def _uniform_color(image: np.ndarray) -> tuple[int, int, int] | None:

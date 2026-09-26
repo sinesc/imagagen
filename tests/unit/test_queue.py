@@ -68,6 +68,11 @@ class FakeRegistry:
         self.cancels.append(gpu)
         self._b.cancel()
 
+    def unload_all(self):
+        # mirrors ModelRegistry.unload_all (park to RAM); the fake records it
+        # so tests can assert the queue parks models when it goes idle
+        self.unloads = getattr(self, "unloads", 0) + 1
+
 
 def _queue(backend, events, wildcards_dir=None, gpus=None):
     canvas = Canvas()

@@ -139,6 +139,9 @@ class _MockRegistry:
     def run(self, model_id: str, gpu: int, request, progress=None):
         return self._backend.generate(request, progress), self._backend
 
+    def unload_all(self) -> None:
+        self._backend.unload()
+
     def cancel(self, gpu: int | None = None) -> None:
         self._backend.cancel()
 
@@ -448,7 +451,9 @@ def create_app(
             entry = app.state.config_store.resolve(body.get("id", ""))
         except ConfigError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-        registry.backend_for(entry.model_id)  # blocks: loading is synchronous
+        # selection only records the current entry; the checkpoint is
+        # loaded lazily on the first generation that uses it (and the
+        # client-side LoRA family check runs immediately, independently)
         app.state.last_config_id = entry.id
         return {"current": entry.id, "model_id": entry.model_id}
 

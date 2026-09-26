@@ -126,6 +126,9 @@ class ModelBackend(ABC):
     supports_loras: bool = True
     #: the model is a Flux (the "Distilled:" PNG metadata line applies)
     is_flux: bool = False
+    #: whether the model can be moved out of VRAM (to RAM) after use
+    #: (False: unload is a no-op and the model stays resident)
+    can_park: bool = False
 
     @abstractmethod
     def generate(
@@ -136,6 +139,17 @@ class ModelBackend(ABC):
     @abstractmethod
     def cancel(self) -> None:
         """Request cancellation of the in-flight generation (checked per step)."""
+
+    def unload(self) -> None:
+        """Move the model out of VRAM into RAM (inverse of :meth:`load`).
+
+        The default does nothing: model types that cannot be moved simply
+        stay in VRAM.
+        """
+
+    def load(self) -> None:
+        """Move a previously parked model back to its GPU (inverse of
+        :meth:`unload`). The default does nothing for non-parkable types."""
 
 
 class MockBackend(ModelBackend):

@@ -120,6 +120,7 @@ SCHEDULERS = {}
 
 
 class FluxBackend(ModelBackend):
+    can_park = True  # transformer, VAE and text encoders all move cleanly
     default_sampler = "Euler"
     default_scheduler = "Flow"
     supports_loras = True  # runtime additive deltas (see _apply_loras)
@@ -151,18 +152,12 @@ class FluxBackend(ModelBackend):
         disable_progress_bar()
 
         infra = config.infra_dir
-        # --- VAE (bf16) ---
-        vae_path = infra / "flux_ae.safetensors"
-        vae_cfg = config.root / "res" / "flux_ae.config.json"
-        self.vae = AutoencoderKL.from_single_file(
-            str(vae_path), config=str(vae_cfg), torch_dtype=torch.bfloat16
-        )
-        self.vae = self.vae.to(device)
-        self.vae.enable_slicing()
-
-        # --- transformer (quantized -> per-op bf16) ---
-        # build on CPU (the dummy weights are tiny); the quantized bytes load
-        # on CPU and move to the GPU with .to(device).
+        # --- checkpoint: detect format + read the state dict. This is slow
+        #     disk I/O that only BUILDS Parameter objects (it does not register
+        #     them in a module or create tensors via the constructors that
+        #     peft/accelerate monkey-patch), so it runs OUTSIDE
+        #     _PARAM_INIT_LOCK to avoid blocking concurrent parameter work on
+        #     another GPU for the whole read.
         kind = sniff_flux_checkpoint(self.model_path)
         sd = load_flux_state_dict(self.model_path, kind)
         # guidance-embedding checkpoints (FLUX.1-dev) carry the guidance_in
@@ -178,41 +173,62 @@ class FluxBackend(ModelBackend):
         # the architecture follows the checkpoint: without guidance_in the
         # layer would be an unloaded nn.Identity that crashes on forward
         arch = dict(_TRANSFORMER_ARCH, guidance_embed=self.supports_distilled)
-        with quant_linear_scope(kind, torch.device("cpu"), torch.bfloat16):
-            self.transformer = FluxTransformer2DModel(**arch)
-        self.transformer.load_state_dict(sd, strict=False)
-        del sd
-        self.transformer.to(device)
-        if kind == "gguf":
-            bake_gguf_model(self.transformer)
-        self.transformer.eval()
 
-        # --- text encoders ---
-        # `te_device` (GPU by default) is where the encoders *run* during a
-        # generation. They load on the CPU first and only move to the GPU
-        # when they fit next to the transformer (FP8 checkpoints: 11.1 GiB
-        # transformer + 4.6 GiB T5-XXL do not share a 16 GiB card); otherwise
-        # they stay on the CPU and are brought to the GPU per generation,
-        # swapping the transformer out while they run (see _generate_impl,
-        # Forge's memory manager performs the same swap). With
-        # text_encoder_device=cpu they never leave the CPU.
-        self.te_device = "cpu" if config.text_encoder_device == "cpu" else device
-        self.clip = load_clip_l(str(infra / "clip_l.safetensors"), "cpu")
-        self.t5 = load_t5_encoder(
-            str(infra / "t5xxl_fp8_e4m3fn.safetensors"), "cpu"
-        )
-        self.clip_tok = CLIPTokenizer.from_pretrained(str(config.res_dir / "tokenizer_clip"))
-        self.t5_tok = AutoTokenizer.from_pretrained(str(config.res_dir / "tokenizer_t5"))
-        # resident bytes of the text encoders; the fit check below and the
-        # per-generate swap decision (_generate_impl) compare this against
-        # the free VRAM
-        self._encoder_bytes = (
-            sum(p.numel() * p.element_size() for p in self.clip.parameters())
-            + sum(p.numel() * p.element_size() for p in self.t5.parameters())
-        )
-        if self.te_device != "cpu" and self._encoder_bytes + (1 << 30) <= torch.cuda.mem_get_info(device)[0]:
-            # fits next to the transformer: co-resident, no swaps
-            self._text_to(self.te_device)
+        # Every step below CREATES or MOVES module parameters (VAE,
+        # transformer, text encoders). diffusers' VAE from_single_file
+        # (low_cpu_mem_usage) applies accelerate's GLOBAL register_parameter /
+        # tensor-constructor monkey-patch, and the .to() device moves route
+        # through nn.Module.register_parameter; a concurrent model load on
+        # another GPU would otherwise interleave its patch with ours and
+        # corrupt the parameter registration (see _PARAM_INIT_LOCK).
+        with _PARAM_INIT_LOCK:
+            # --- VAE (bf16) ---
+            vae_path = infra / "flux_ae.safetensors"
+            vae_cfg = config.root / "res" / "flux_ae.config.json"
+            self.vae = AutoencoderKL.from_single_file(
+                str(vae_path), config=str(vae_cfg), torch_dtype=torch.bfloat16
+            )
+            self.vae = self.vae.to(device)
+            self.vae.enable_slicing()
+
+            # --- transformer (quantized -> per-op bf16) ---
+            # build on CPU (the dummy weights are tiny); the quantized bytes
+            # load on CPU and move to the GPU with .to(device).
+            with quant_linear_scope(kind, torch.device("cpu"), torch.bfloat16):
+                self.transformer = FluxTransformer2DModel(**arch)
+            self.transformer.load_state_dict(sd, strict=False)
+            del sd
+            self.transformer.to(device)
+            if kind == "gguf":
+                bake_gguf_model(self.transformer)
+            self.transformer.eval()
+
+            # --- text encoders ---
+            # `te_device` (GPU by default) is where the encoders *run* during a
+            # generation. They load on the CPU first and only move to the GPU
+            # when they fit next to the transformer (FP8 checkpoints: 11.1 GiB
+            # transformer + 4.6 GiB T5-XXL do not share a 16 GiB card);
+            # otherwise they stay on the CPU and are brought to the GPU per
+            # generation, swapping the transformer out while they run (see
+            # _generate_impl, Forge's memory manager performs the same swap).
+            # With text_encoder_device=cpu they never leave the CPU.
+            self.te_device = "cpu" if config.text_encoder_device == "cpu" else device
+            self.clip = load_clip_l(str(infra / "clip_l.safetensors"), "cpu")
+            self.t5 = load_t5_encoder(
+                str(infra / "t5xxl_fp8_e4m3fn.safetensors"), "cpu"
+            )
+            self.clip_tok = CLIPTokenizer.from_pretrained(str(config.res_dir / "tokenizer_clip"))
+            self.t5_tok = AutoTokenizer.from_pretrained(str(config.res_dir / "tokenizer_t5"))
+            # resident bytes of the text encoders; the fit check below and the
+            # per-generate swap decision (_generate_impl) compare this against
+            # the free VRAM
+            self._encoder_bytes = (
+                sum(p.numel() * p.element_size() for p in self.clip.parameters())
+                + sum(p.numel() * p.element_size() for p in self.t5.parameters())
+            )
+            if self.te_device != "cpu" and self._encoder_bytes + (1 << 30) <= torch.cuda.mem_get_info(device)[0]:
+                # fits next to the transformer: co-resident, no swaps
+                self._text_to(self.te_device)
 
         # all weights are resident now; release the transient VRAM the load
         # left behind (bake buffers, from_single_file scratch) so the pool
@@ -285,9 +301,14 @@ class FluxBackend(ModelBackend):
 
     def unload(self) -> None:
         with self._lock:
-            self.transformer.to("cpu")
-            self._text_offload()
-            self.vae.to("cpu")
+            # the .to() moves re-register every parameter via
+            # nn.Module.register_parameter, which a concurrent model load on
+            # another GPU may have globally monkey-patched (see
+            # _PARAM_INIT_LOCK) -- hold it so the move never interleaves
+            with _PARAM_INIT_LOCK:
+                self.transformer.to("cpu")
+                self._text_offload()
+                self.vae.to("cpu")
             import gc
 
             gc.collect()
@@ -295,6 +316,29 @@ class FluxBackend(ModelBackend):
                 torch.cuda.empty_cache()
             except Exception:
                 pass
+
+    def load(self) -> None:
+        """Bring a parked model back to its GPU (inverse of ``unload``).
+
+        Transformer and VAE return to the GPU; the text encoders re-evaluate
+        the co-residency decision from ``__init__`` so an FP8 card parks them
+        on the CPU again while a large transformer sits resident.
+        """
+        with self._lock:
+            # hold _PARAM_INIT_LOCK across the .to() moves: they re-register
+            # every parameter via nn.Module.register_parameter, which a
+            # concurrent model load on another GPU may have globally
+            # monkey-patched (see _PARAM_INIT_LOCK)
+            with _PARAM_INIT_LOCK:
+                self.transformer.to(self.device)
+                self.vae.to(self.device)
+                if (
+                    self.te_device != "cpu"
+                    and self._encoder_bytes + (1 << 30)
+                    <= torch.cuda.mem_get_info(self.device)[0]
+                ):
+                    self._text_to(self.te_device)
+            torch.cuda.empty_cache()
 
     # -------------------------------------------------------------- lora ----
 

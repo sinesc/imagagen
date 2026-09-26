@@ -184,21 +184,29 @@ class ModelInfo:
 
 
 class _GpuState:
-    """Per-GPU residency state: one backend copy, one RLock.
+    """Per-GPU residency state: one GPU-resident copy, one RAM-parked copy,
+    one RLock.
 
     The lock serializes load/unload/generate on that GPU. A backend must
     never be moved or swapped while another thread is inside
     ``generate()`` (concurrent ``.to()``/forward on the same module
     corrupts CUDA state and can segfault the process).
+
+    After a batch finishes the queue parks the resident model (weights in
+    RAM, VRAM freed); ``parked`` keeps that copy so the next use of the
+    same model is a GPU move instead of a checkpoint re-read. At most one
+    parked model is kept per GPU.
     """
 
-    __slots__ = ("gpu", "lock", "backend", "model_id")
+    __slots__ = ("gpu", "lock", "backend", "model_id", "parked", "parked_id")
 
     def __init__(self, gpu: int) -> None:
         self.gpu = gpu
         self.lock = threading.RLock()
         self.backend = None
         self.model_id: str | None = None
+        self.parked = None
+        self.parked_id: str | None = None
 
 
 class ModelRegistry:
@@ -262,10 +270,26 @@ class ModelRegistry:
         with self._meta_lock:
             return self._gpu_states.setdefault(gpu, _GpuState(gpu))
 
-    def _unload_state_locked(self, state: _GpuState) -> None:
+    def _park_state_locked(self, state: _GpuState) -> None:
+        """Move the GPU-resident model to RAM and keep it parked.
+
+        Caller must hold ``state.lock``. A previously parked model is
+        dropped first so at most one parked copy is kept per GPU. Backends
+        whose type cannot be moved (``can_park`` is False) are left
+        resident: they simply stay in VRAM.
+        """
+        if state.parked is not None:
+            log.info("model park: dropping %s parked on GPU %d",
+                     state.parked_id, state.gpu)
+            state.parked = None
+            state.parked_id = None
+        if state.backend is not None and not state.backend.can_park:
+            return  # this model type cannot leave VRAM; leave it resident
         if state.backend is not None:
-            log.info("model unload: %s on GPU %d", state.backend.name, state.gpu)
+            log.info("model park: %s on GPU %d -> RAM", state.backend.name, state.gpu)
             state.backend.unload()
+            state.parked = state.backend
+            state.parked_id = state.model_id
             state.backend = None
             state.model_id = None
         import gc
@@ -279,6 +303,19 @@ class ModelRegistry:
                     torch.cuda.empty_cache()
         except Exception:
             pass
+
+    def unload_all(self) -> None:
+        """Move every GPU-resident model into RAM to release VRAM.
+
+        Called after a batch finishes so the app does not hold VRAM while
+        idle. The parked copies stay reachable and a later request for the
+        same model restores it with a GPU move instead of a re-read.
+        """
+        with self._meta_lock:
+            states = list(self._gpu_states.values())
+        for state in states:
+            with state.lock:
+                self._park_state_locked(state)
 
     def _new_backend(self, info: ModelInfo, device):
         """Instantiate the backend for ``info.family``.
@@ -304,14 +341,40 @@ class ModelRegistry:
 
         Caller must hold ``state.lock``. ``loras`` is the LoRA set this load
         is being prepared for (the queue applies it per generation); it is
-        only logged.
+        only logged. Loading is deferred: nothing loads a model until a
+        generation (or an explicit pre-warm) asks for it.
         """
         if state.backend is not None and state.model_id == model_id:
             return state.backend
-        self._unload_state_locked(state)
         info = self.get(model_id)
         if info is None:
             raise ValueError(f"unknown model: {model_id}")
+        # Fast path: this exact model is still parked in RAM from a
+        # previous batch/switch. The currently resident model (if any)
+        # becomes the new parked copy, then the parked backend moves back
+        # to the GPU instead of re-reading the checkpoint.
+        if state.parked is not None and state.parked_id == model_id:
+            restoring = state.parked
+            state.parked = None
+            state.parked_id = None
+            self._park_state_locked(state)
+            state.backend = restoring
+            state.model_id = model_id
+            log.info("model load start: %s on GPU %d (parked restore, LoRAs: %s)",
+                     info.name, state.gpu, format_loras(loras or []))
+            started = time.monotonic()
+            self.emit({"type": "status",
+                       "message": f"loading {info.name} on GPU {state.gpu} …"})
+            state.backend.load()
+            with self._meta_lock:
+                self._current_id = model_id
+            log.info("model load done: %s on GPU %d (%.1fs)",
+                     info.name, state.gpu, time.monotonic() - started)
+            self.emit({"type": "status",
+                       "message": f"loaded {info.name} on GPU {state.gpu}"})
+            return state.backend
+        # Normal path: park whatever is resident, then read the checkpoint.
+        self._park_state_locked(state)
         import torch
 
         log.info("model load start: %s on GPU %d (LoRAs: %s)",
@@ -331,11 +394,13 @@ class ModelRegistry:
 
     def backend_for(self, model_id: str, gpu: int | None = None):
         """Return the backend for model_id on ``gpu`` (or the primary),
-        loading it (and unloading any other model on that GPU) if needed.
+        loading it (and parking any other model on that GPU) if needed.
 
         Blocks while a generation is running on that GPU. Used by
-        /api/models/select pre-warm, ``from_config`` and dev scripts; the
-        generation queue uses :meth:`run` instead.
+        ``from_config`` and dev scripts; the generation queue uses
+        :meth:`run` instead. Model selection (``/api/models/select``)
+        deliberately does NOT call this: loading is deferred until the
+        first generation for the model.
         """
         if gpu is None:
             gpu = self.primary

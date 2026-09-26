@@ -347,6 +347,8 @@ def _model_hash(path: str) -> str:
 
 
 class SdxlBackend(ModelBackend):
+    can_park = True  # the pipeline moves between GPU and CPU losslessly
+
     def __init__(self, info, device, config=None) -> None:
         import os
         import warnings
@@ -426,7 +428,11 @@ class SdxlBackend(ModelBackend):
                 self.pipe.vae = AutoencoderKL.from_single_file(
                     str(vae_path), config=str(vae_cfg), torch_dtype=torch.float16
                 )
-        self.pipe.to(self.device)
+            # move the whole pipeline to the GPU INSIDE the lock: the .to()
+            # re-registers every parameter via nn.Module.register_parameter,
+            # which a concurrent model load on another GPU may have globally
+            # monkey-patched (see _PARAM_INIT_LOCK)
+            self.pipe.to(self.device)
         # The VAE decodes in bf16 (Forge's default on sm_80+ GPUs): same
         # 8-bit mantissa as fp16 but 8x the exponent range. The improved
         # VAE is fp16-stable, so bf16 is even safer for it.
@@ -537,9 +543,29 @@ class SdxlBackend(ModelBackend):
 
     def unload(self) -> None:
         with self._lock:  # never move the pipeline while a generation is running
-            # fp16 pipeline is only parked on CPU to free VRAM; no inference
-            # runs there, so silence diffusers' dtype/device warning
-            self.pipe.to("cpu", silence_dtype_warnings=True)
+            # the .to() move re-registers every parameter via
+            # nn.Module.register_parameter, which a concurrent model load on
+            # another GPU may have globally monkey-patched -- hold
+            # _PARAM_INIT_LOCK so the move never interleaves with it. The fp16
+            # pipeline is only parked on CPU to free VRAM; no inference runs
+            # there, so silence diffusers' dtype/device warning.
+            with _PARAM_INIT_LOCK:
+                self.pipe.to("cpu", silence_dtype_warnings=True)
+
+    def load(self) -> None:
+        """Bring a parked pipeline back to its GPU (inverse of ``unload``)."""
+        with self._lock:
+            # hold _PARAM_INIT_LOCK across the .to() moves: they re-register
+            # every parameter via nn.Module.register_parameter, which a
+            # concurrent model load on another GPU may have globally
+            # monkey-patched (see _PARAM_INIT_LOCK)
+            with _PARAM_INIT_LOCK:
+                self.pipe.to(self.device, silence_dtype_warnings=True)
+                # ``unload`` moved the whole pipeline to the CPU; restore the
+                # configured text-encoder placement (GPU or CPU).
+                self.pipe.text_encoder.to(self.text_encoder_device)
+                if getattr(self.pipe, "text_encoder_2", None) is not None:
+                    self.pipe.text_encoder_2.to(self.text_encoder_device)
 
     def generate(self, request: GenerateRequest, progress=None) -> GenerateResult:
         with self._lock:
