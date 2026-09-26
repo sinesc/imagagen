@@ -112,6 +112,7 @@ import numpy as np
 
 from . import kdiff
 from .backends import (
+    DEFAULT_CFG,
     GenerateRequest,
     GenerateResult,
     ModelBackend,
@@ -776,6 +777,11 @@ class SdxlBackend(ModelBackend):
             # A1111/Forge k-diffusion ModelSamplingDiscrete.timestep: the
             # *nearest* beta-schedule sigma index in log space (see
             # sigma_to_timestep for the full rationale).
+            # the "model default" sentinel (request.steps/cfg <= 0) resolves
+            # to the built-in values (the PNG metadata records these
+            # effective values via the result, not the raw request)
+            steps = request.steps if request.steps > 0 else 25
+            cfg = request.cfg if request.cfg > 0 else DEFAULT_CFG
             # --- sampler / scheduler registries (Phase 5 grows these into plugins) ---
             sampler_name = request.sampler or self.default_sampler
             scheduler_name = request.scheduler or self.default_scheduler
@@ -812,7 +818,7 @@ class SdxlBackend(ModelBackend):
             sag_rec = (
                 SagRecorder()
                 if (sag is not None and sag.enabled
-                        and request.cfg > 1.0 and min(lh, lw) > 4)
+                        and cfg > 1.0 and min(lh, lw) > 4)
                 else None
             )
 
@@ -834,7 +840,7 @@ class SdxlBackend(ModelBackend):
                 # UNet's fp16 dtype right before the call (like Forge's
                 # calculate_input + .to(computation_dtype))
                 x_in = (xwork / (sigma ** 2 + 1.0).sqrt()).to(torch.float16)
-                if request.cfg <= 1.0:
+                if cfg <= 1.0:
                     # CFG 1 needs no unconditional pass (Forge skips it)
                     eps = unet_forward(prompt_embeds, pooled, x_in, t)
                 else:
@@ -846,7 +852,7 @@ class SdxlBackend(ModelBackend):
                     uc = unet_forward(neg_embeds, neg_pooled, x_in, t)
                     if sag_rec is not None:
                         sag_rec.record = False
-                    eps = uc + request.cfg * (c - uc)
+                    eps = uc + cfg * (c - uc)
                 if progress and self._step <= self._steps_total:
                     progress(self._step / self._steps_total,
                              f"step {self._step}/{self._steps_total}")
@@ -915,7 +921,7 @@ class SdxlBackend(ModelBackend):
                 sigma_max = float(beta_sigmas[-1])
             model_wrap = _ModelSamplingDiscrete(model_fn, sigma_min, sigma_max)
             sigmas = sigmas_fn(
-                request.steps, model_wrap.min_sigma, model_wrap.max_sigma, device=device
+                steps, model_wrap.min_sigma, model_wrap.max_sigma, device=device
             )
             # seeded initial noise: same seed -> same image (A1111-compatible).
             # fp32 unit prior: the solver state must not quantize (Forge's path
@@ -945,8 +951,8 @@ class SdxlBackend(ModelBackend):
                 # A1111: t_enc = int(min(strength, 0.999) * steps); the
                 # schedule starts at sigmas[steps - 1 - t_enc] (strength 1.0
                 # -> the full schedule)
-                t_enc = int(min(request.denoise, 0.999) * request.steps)
-                sigma_sched = sigmas[request.steps - 1 - t_enc :]
+                t_enc = int(min(request.denoise, 0.999) * steps)
+                sigma_sched = sigmas[steps - 1 - t_enc :]
                 # Forge's noise_scaling at the truncated start sigma
                 # (max_denoise=False): init latent + fresh noise at that
                 # sigma level. The noise amplitude IS the denoise strength
@@ -1023,7 +1029,8 @@ class SdxlBackend(ModelBackend):
                 + base.astype(np.float32) * (1.0 - c[..., None])
             arr = np.clip(arr, 0, 255).astype(np.uint8)
 
-        return GenerateResult(image=arr, seed=request.seed)
+        return GenerateResult(
+            image=arr, seed=request.seed, steps=steps, cfg=cfg)
 
 
 def from_config(config) -> ModelBackend | None:

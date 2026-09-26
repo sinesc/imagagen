@@ -107,6 +107,11 @@ _FLOW_SHIFT = dict(base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift
 DEFAULT_GUIDANCE = 3.5
 # classic CFG (distilled unchecked): the "model default" CFG value
 DEFAULT_CFG = 1.0
+# the "model default" step count, per checkpoint class: schnell-class
+# checkpoints (no guidance embedding, 4-step progressive distillation)
+# default to BFL's 4 steps; the dev class to 25
+DEFAULT_STEPS = 25
+DEFAULT_STEPS_SCHNELL = 4
 
 SAMPLERS = {"Euler": kdiff.sample_euler}
 # Flux has no scheduler concept: the resolution-dependent shifted sigma
@@ -165,8 +170,11 @@ class FluxBackend(ModelBackend):
         # classic CFG (distilled requested is silently demoted, like Forge)
         self.supports_distilled = "guidance_in.in_layer.weight" in sd
         if not self.supports_distilled:
-            log.info("%s: no guidance embedding -- distilled mode unavailable",
-                     self.name)
+            log.info(
+                "%s: schnell-class checkpoint (no guidance embedding): "
+                "distilled mode unavailable; the model runs classic CFG "
+                "(built-in cfg 1.0 needs no unconditional pass)",
+                self.name)
         # the architecture follows the checkpoint: without guidance_in the
         # layer would be an unloaded nn.Identity that crashes on forward
         arch = dict(_TRANSFORMER_ARCH, guidance_embed=self.supports_distilled)
@@ -468,6 +476,10 @@ class FluxBackend(ModelBackend):
             if not request.distilled:
                 log.info("%s: classic CFG %.4g (embedded guidance %.4g)",
                          self.name, cfg, guidance)
+        # classic CFG at cfg <= 1.0 (the schnell-class built-in) reduces to
+        # v = v_cond: the unconditional pass and the negative prompt encode
+        # are skipped entirely (the SDXL backend and Forge do the same)
+        uncond = (not distilled) and cfg > 1.0
         g = torch.full((1,), guidance, device=device, dtype=torch.bfloat16)
 
         # --- text encode (bring encoders to te_device, then park on CPU) ---
@@ -491,13 +503,13 @@ class FluxBackend(ModelBackend):
         self._text_to(self.te_device)
         with torch.inference_mode():
             context, y = self._encode_prompt(request.prompt)
-            if not distilled:
+            if uncond:
                 context_neg, y_neg = self._encode_prompt(request.negative_prompt)
         # embeddings to the GPU; with the GPU default the encoders are
         # parked on the CPU now, with te_device=cpu they stay in system RAM
         context = context.to(device)
         y = y.to(device)
-        if not distilled:
+        if uncond:
             context_neg = context_neg.to(device)
             y_neg = y_neg.to(device)
         self._text_offload()
@@ -506,7 +518,14 @@ class FluxBackend(ModelBackend):
             torch.cuda.empty_cache()
 
         # --- sigma schedule + noise ---
-        steps = max(1, request.steps)
+        # the "model default" sentinel (request.steps <= 0) resolves to the
+        # built-in for the checkpoint class (schnell class: 4 steps, the
+        # BFL default for the 4-step distilled model; dev class: 25)
+        steps = request.steps if request.steps > 0 else (
+            DEFAULT_STEPS_SCHNELL if not self.supports_distilled
+            else DEFAULT_STEPS
+        )
+        steps = max(1, steps)
         sigmas = kdiff.get_sigmas_flux(steps, image_seq_len, device, **_FLOW_SHIFT)
         gen = torch.Generator(device=device).manual_seed(request.resolved_seed())
         noise = torch.randn(
@@ -593,7 +612,7 @@ class FluxBackend(ModelBackend):
             x_bf = xwork.to(torch.bfloat16)
             t = sigma.to(torch.bfloat16)
             v_cond = transformer(x_bf, t, context, y, guidance=g)
-            if not distilled:
+            if uncond:
                 if self._cancel:
                     raise InterruptedError("cancelled")
                 v_uncond = transformer(
@@ -679,7 +698,15 @@ class FluxBackend(ModelBackend):
         # idle footprint is the resident weights (~7 GiB), not the pool's
         # peak
         torch.cuda.empty_cache()
-        return GenerateResult(image=arr, seed=request.seed)
+        return GenerateResult(
+            image=arr, seed=request.seed,
+            steps=steps,
+            # the effective CFG for the metadata: the embedded guidance in
+            # distilled mode, the CFG value in classic mode
+            cfg=guidance if distilled else cfg,
+            # the EFFECTIVE mode (a schnell-class checkpoint silently
+            # demotes a distilled request to classic CFG)
+            distilled=distilled)
 
 
 def from_config(config) -> ModelBackend | None:

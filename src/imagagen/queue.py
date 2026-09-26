@@ -227,11 +227,14 @@ class GenerationQueue:
         # will use and notes the warm-up when the model is cold.
         suffix = ("" if job.model_id == self._warmed_model
                   else f" (model cold: starts on GPU {self._gpus[0]})")
+        req_steps = job.request.steps
+        steps_desc = (
+            f"{req_steps * batch_size} total steps ({req_steps} steps each)"
+            if req_steps > 0 else "model default steps"
+        )
         log.info(
-            "batch queued: job %d: %d images, %d total steps "
-            "(%d steps each), model: %s, GPUs: %s%s",
-            job.id, batch_size, job.request.steps * batch_size,
-            job.request.steps, job.model_id,
+            "batch queued: job %d: %d images, %s, model: %s, GPUs: %s%s",
+            job.id, batch_size, steps_desc, job.model_id,
             ", ".join(str(g) for g in self._gpus), suffix,
         )
         if job.source_png is not None:
@@ -445,7 +448,9 @@ class GenerationQueue:
                 task.seed,
                 info.name if info is not None else job.model_id,
                 format_loras(req.loras),
-                req.width, req.height, req.steps, req.cfg,
+                req.width, req.height,
+                result.steps if result.steps is not None else req.steps,
+                result.cfg if result.cfg is not None else req.cfg,
                 req.sampler or backend.default_sampler,
                 req.scheduler or backend.default_scheduler,
                 req.denoise,
@@ -581,10 +586,10 @@ def _result_to_png(
     params = metadata.build_parameters(
         prompt=meta_prompt,
         negative_prompt=meta_negative,
-        steps=req.steps,
+        steps=result.steps if result.steps is not None else req.steps,
         sampler=req.sampler or backend.default_sampler,
         scheduler=req.scheduler or backend.default_scheduler,
-        cfg=req.cfg,
+        cfg=result.cfg if result.cfg is not None else req.cfg,
         seed=result.seed,
         width=req.width,
         height=req.height,
@@ -597,8 +602,11 @@ def _result_to_png(
         soft_inpainting=req.soft_inpainting,
         sag=req.sag,
         # only Flux records its distilled/classic-CFG mode (the flag is
-        # inert on SDXL, so don't add a misleading line there)
-        distilled=req.distilled if backend.is_flux else None,
+        # inert on SDXL, so don't add a misleading line there); it is the
+        # EFFECTIVE mode (a schnell-class checkpoint silently demotes a
+        # distilled request to classic CFG, so not necessarily req.distilled)
+        distilled=((result.distilled if result.distilled is not None
+                    else req.distilled) if backend.is_flux else None),
     )
     img, pnginfo = metadata.attach_metadata(Image.fromarray(image), params)
     buf = BytesIO()

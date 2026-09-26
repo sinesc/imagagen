@@ -50,8 +50,8 @@ class GenerateRequest(BaseModel):
     negative_prompt: str = ""
     width: int = 512
     height: int = 512
-    steps: int = 20
-    cfg: float = DEFAULT_CFG
+    steps: int = 20  # <= 0 = "model default": the backend resolves its built-in
+    cfg: float = DEFAULT_CFG  # <= 0 = "model default": the backend resolves its built-in
     seed: int = -1  # -1 => random; batch callers pass explicit seeds
     sampler: str | None = None  # None => backend default
     scheduler: str | None = None
@@ -86,6 +86,17 @@ class GenerateRequest(BaseModel):
 class GenerateResult:
     image: np.ndarray  # HxWx3 uint8
     seed: int
+    # The effective parameters the backend actually used (they differ from
+    # the request only when it carried the "model default" sentinel, steps/
+    # cfg <= 0); the PNG metadata records these, never the raw request
+    # values.
+    steps: int | None = None
+    cfg: float | None = None
+    # Flux only: the effective distilled/classic-CFG mode (None = the
+    # backend is not Flux). A schnell-class checkpoint silently demotes a
+    # distilled request to classic CFG, so this is not necessarily the
+    # request's flag.
+    distilled: bool | None = None
 
 
 ProgressCallback = Callable[[float, str], None]  # fraction 0..1, message
@@ -150,6 +161,11 @@ class MockBackend(ModelBackend):
 
         seed = request.resolved_seed()
         self._cancelled = None
+        # the "model default" sentinel (steps/cfg <= 0) resolves to the
+        # built-in values, as the real backends do (the PNG metadata
+        # records the effective values the backend used)
+        steps = request.steps if request.steps > 0 else 25
+        cfg = request.cfg if request.cfg > 0 else DEFAULT_CFG
         rng = np.random.default_rng(seed)
         h, w = request.height, request.width
         yy, xx = np.mgrid[0:h, 0:w]
@@ -169,11 +185,13 @@ class MockBackend(ModelBackend):
                 mask = 0.0
             mask = mask[..., None] * request.denoise
             img = img * mask + request.init_image.astype(np.float32) * (1.0 - mask)
-        for i in range(max(1, request.steps)):
+        for i in range(max(1, steps)):
             if self._cancelled is not None:
                 raise InterruptedError("generation cancelled")
             if self._steps_delay:
                 time.sleep(self._steps_delay)
             if progress:
-                progress((i + 1) / request.steps, f"step {i + 1}/{request.steps}")
-        return GenerateResult(image=np.clip(img, 0, 255).astype(np.uint8), seed=seed)
+                progress((i + 1) / steps, f"step {i + 1}/{steps}")
+        return GenerateResult(
+            image=np.clip(img, 0, 255).astype(np.uint8), seed=seed,
+            steps=steps, cfg=cfg)

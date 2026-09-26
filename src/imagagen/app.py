@@ -17,7 +17,7 @@ from PIL import Image
 from pydantic import BaseModel, Field, ValidationError
 
 from . import metadata, wildcards
-from .backends import DEFAULT_CFG, GenerateRequest, ModelBackend
+from .backends import GenerateRequest, ModelBackend
 from .canvas import Canvas
 from .config import Config, ensure_dirs, load_config
 from .generation import INPAINT_PADDING, GenerationError, with_inpaint
@@ -615,10 +615,13 @@ def create_app(
             negative_prompt=negative_prompt,
             width=body.width,
             height=body.height,
-            # rsteps is None only when the user used the -1 sentinel and
-            # the configuration has no override -> built-in default
-            steps=rsteps if rsteps is not None else 25,
-            cfg=cfg if cfg is not None else DEFAULT_CFG,
+            # rsteps/cfg are None only when the user used the -1 sentinel
+            # and the configuration has no override. The sentinel then rides
+            # on the request and the *backend* resolves its built-in default
+            # (Flux's built-ins differ from SDXL's, so they cannot be
+            # resolved here)
+            steps=rsteps if rsteps is not None else -1,
+            cfg=cfg if cfg is not None else -1,
             # the distilled flag is a configuration property (not a user
             # form field): it comes straight from the selected entry
             distilled=entry.distilled,
