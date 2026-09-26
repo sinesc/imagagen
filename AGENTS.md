@@ -13,10 +13,10 @@ Early development. No backwards compatibility required.
 ## References
 
 The folder `dev/implementations/stable-diffusion-webui-forge` contains the branch `reference-branch` with an identical backend to the one used to generate the reference images in `dev/references/` (the checkout only lacks a few UI changes). All provided LORAs and models are exact copies of the ones used for the reference images. All reference images were decoded using the provided `sdxl_vae.safetensors` VAE. Reference images were generated in a different environment so don't expect to achieve pixel perfect matches.
+The folder `dev/implementations/ComfyUI` contains additional reference code for model support.
 
 ## Environment
 
-This environment has access to two GPUs. One of them should have enough free VRAM to run Stable Diffusion.
 Playwright is available in the project's uv environment. Chromium is available.
 
 ## Process monitoring
