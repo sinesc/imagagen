@@ -232,6 +232,7 @@ class ModelRegistry:
     _FAMILIES = (
         ("sdxl", ".safetensors"),
         ("flux", ".gguf", ".safetensors"),
+        ("zimage", ".safetensors"),
     )
 
     def discover(self) -> list[ModelInfo]:
@@ -329,6 +330,10 @@ class ModelRegistry:
             from .flux_backend import FluxBackend
 
             return FluxBackend(info, torch.device(device), config=self.config)
+        if info.family == "zimage":
+            from .zimage_backend import ZImageBackend
+
+            return ZImageBackend(info, torch.device(device), config=self.config)
         from .sdxl_backend import SdxlBackend
 
         return SdxlBackend(info, torch.device(device), config=self.config)

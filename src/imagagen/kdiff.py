@@ -114,6 +114,29 @@ def get_sigmas_flux(n: int, image_seq_len: int, device,
     return torch.cat([t, torch.zeros(1, device=device, dtype=t.dtype)])
 
 
+def get_sigmas_zimage(n: int, device: str = "cpu", shift: float = 3.0) -> torch.Tensor:
+    """Z-Image (flow-matching) sigma schedule with the linear-SNR shift.
+
+    Port of the ComfyUI reference's default (KSampler "simple") schedule for
+    Z-Image: a 1000-slot buffer of ``sigma(t) = shift*t / (1 + (shift-1)*t)``
+    (ComfyUI ``time_snr_shift``) is sampled at ``t = (1000 - int(i * 1000/n))
+    / 1000`` for ``i = 0..n-1`` (the buffer slot ``-(1 + int(i*ss))``), so
+    the first sigma is exactly 1.0 (t=1 shifts to 1) and the grid equals the
+    official ``linspace(1, 1/n, n)`` shifted schedule whenever n divides
+    1000 (the standard step counts). A terminal 0 is appended (the sampler
+    integrates down to sigma 0).
+    """
+    def _shift(t: float) -> float:
+        return shift * t / (1.0 + (shift - 1.0) * t)
+
+    ss = 1000 / n
+    sigmas = torch.tensor(
+        [_shift((1000 - int(i * ss)) / 1000.0) for i in range(n)],
+        device=device,
+    )
+    return torch.cat([sigmas, torch.zeros(1, device=device, dtype=sigmas.dtype)])
+
+
 # ---------------------------------------------------------------- euler ----
 
 

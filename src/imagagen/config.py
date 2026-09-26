@@ -274,6 +274,7 @@ def ensure_dirs(config: Config) -> None:
         config.models_dir,
         config.models_dir / "sdxl",
         config.models_dir / "flux",
+        config.models_dir / "zimage",
         config.segmentation_models_dir,
         config.loras_dir,
         config.infra_dir,

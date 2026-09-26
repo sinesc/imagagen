@@ -820,6 +820,25 @@ async function refreshSamplers() {
   }
 }
 
+// Family-specific main-form controls: Z-Image is a single-pass model (no
+// CFG/guidance, no negative prompt), so disable those inputs instead of
+// letting the user set values the backend silently ignores. The family
+// comes from /api/models (state.entries), not a samplers fetch (which
+// would race the model load).
+function applyFamilyControls() {
+  const sel = $("model");
+  const entry = state.entries.find((x) => x.id === sel.value) || state.entries[0];
+  if (!entry) return;
+  const zimage = entry.family === "zimage";
+  const cfgIn = $("cfg");
+  const negIn = $("negative");
+  cfgIn.disabled = zimage;
+  negIn.disabled = zimage;
+  cfgIn.title = zimage
+    ? "Z-Image is single-pass: CFG has no effect (always 1.0)"
+    : "-1 = use the model configuration's CFG";
+}
+
 // Refetch the LoRA list for the selected model's family and drop any
 // main-form rows whose LoRA is no longer in that family's list (e.g. an
 // SDXL LoRA selected before switching to a Flux model). Mirrors
@@ -1948,6 +1967,7 @@ async function init() {
   applyUiState(u && u.state);
   syncMode();
   await refreshSamplers(); // family-correct sampler lists for the selected model
+  applyFamilyControls(); // family-specific main-form controls
   await refreshLoras(); // family-correct LoRA list for the selected model
   updatePromptTokens(); // the restored prompt may be non-empty
 }
@@ -2058,6 +2078,7 @@ $("btn-redo").onclick = async () => {
 $("model").onchange = (e) => {
   selectModel(e.target.value);
   refreshSamplers(); // sampler lists follow the model's family
+  applyFamilyControls(); // family-specific main-form controls
   refreshLoras(); // LoRA list follows the model's family
   scheduleSaveUiState(0);
 };

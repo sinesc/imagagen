@@ -126,6 +126,8 @@ class ModelBackend(ABC):
     supports_loras: bool = True
     #: the model is a Flux (the "Distilled:" PNG metadata line applies)
     is_flux: bool = False
+    #: the model is a Z-Image (single-pass: no CFG, effective cfg 1.0)
+    is_zimage: bool = False
     #: whether the model can be moved out of VRAM (to RAM) after use
     #: (False: unload is a no-op and the model stays resident)
     can_park: bool = False

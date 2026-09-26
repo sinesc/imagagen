@@ -104,6 +104,21 @@ def test_flux_family_discovery(tmp_path):
     assert by_id["Epic"].family == "sdxl"
 
 
+def test_zimage_family_discovery(tmp_path):
+    # family is the directory name; only .safetensors is loadable for zimage
+    _touch(tmp_path, "models/zimage/Turbo.safetensors")
+    _touch(tmp_path, "models/zimage/nested/Finetune.safetensors")
+    _touch(tmp_path, "models/zimage/notes.txt")  # ignored
+    _touch(tmp_path, "models/sdxl/Epic.safetensors")
+
+    reg = ModelRegistry(Config(root=tmp_path))
+    by_id = {m.id: m for m in reg.models}
+    assert set(by_id) == {"Turbo", "nested/Finetune", "Epic"}
+    assert by_id["Turbo"].family == "zimage"
+    assert by_id["nested/Finetune"].family == "zimage"
+    assert by_id["Epic"].family == "sdxl"
+
+
 def test_missing_dirs_yield_empty_lists(tmp_path):
     assert ModelRegistry(Config(root=tmp_path)).models == []
     assert list_loras(Config(root=tmp_path)) == []

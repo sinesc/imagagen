@@ -395,6 +395,10 @@ def create_app(
             from .flux_backend import SAMPLERS, SCHEDULERS
 
             return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
+        if family == "zimage":
+            from .zimage_backend import SAMPLERS, SCHEDULERS
+
+            return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
         from .sdxl_backend import SAMPLERS, SCHEDULERS
 
         return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
