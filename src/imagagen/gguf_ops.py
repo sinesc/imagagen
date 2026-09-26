@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
 
 import torch
 
@@ -86,26 +87,38 @@ def _native_unpack_u(x):
 
 
 _USE_LOOKUP = hasattr(torch, "uint16")
-_4BIT_TABLE_U = None
+# Per-device cache of the 4-bit lookup table. Kept per device (thread-safe) so
+# that concurrent backends on different GPUs each own their own copy instead of
+# a single shared table being copied across devices on every dequantize op
+# (which serialized the two GPUs and caused the alternating load pattern).
+_4BIT_TABLE_U: dict = {}
+_4BIT_TABLE_LOCK = threading.Lock()
 
 
-def _build_table_u():
-    global _4BIT_TABLE_U
-    if _4BIT_TABLE_U is None:
-        _4BIT_TABLE_U = _native_unpack_u(
-            torch.arange(start=0, end=256 * 256, dtype=torch.long).to(torch.uint16)
-        )[:, 0]
-    return _4BIT_TABLE_U
+def _build_table_u() -> torch.Tensor:
+    """Build the 256*256 4-bit -> two-nibble lookup table on the CPU (once)."""
+    return _native_unpack_u(
+        torch.arange(start=0, end=256 * 256, dtype=torch.long).to(torch.uint16)
+    )[:, 0]
+
+
+def _table_for(device) -> torch.Tensor:
+    """Return the lookup table resident on ``device`` (built/cached per device)."""
+    key = device if isinstance(device, torch.device) else torch.device(device)
+    table = _4BIT_TABLE_U.get(key)
+    if table is None:
+        with _4BIT_TABLE_LOCK:
+            table = _4BIT_TABLE_U.get(key)
+            if table is None:
+                table = _build_table_u().to(key)
+                _4BIT_TABLE_U[key] = table
+    return table
 
 
 def quick_unpack_4bits_u(x):
     if not _USE_LOOKUP:
         return torch.stack([x & 15, x >> 4], dim=-1).view(x.size(0), -1)
-    table = _build_table_u()
-    if table.device != x.device:
-        table = table.to(device=x.device)
-        global _4BIT_TABLE_U
-        _4BIT_TABLE_U = table
+    table = _table_for(x.device)
     s0 = x.size(0)
     x16 = x.view(torch.uint16)
     y = torch.index_select(input=table, dim=0, index=x16.to(torch.int32).flatten())
