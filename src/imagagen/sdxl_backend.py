@@ -137,12 +137,11 @@ warnings.filterwarnings(
     "ignore", message=r"Already found a `peft_config` attribute in the model.*"
 )
 
-# diffusers warns on every ModelMixin .to(dtype) that some modules "should
-# be kept in float32" even when the fp32 list is empty, and there is no way
-# to avoid the casts themselves (the internal fp16 cast at load time and
-# our deliberate bf16 VAE cast). The list is always [] here, so nothing is
-# actually kept in fp32 and nothing is lost.
-logging.getLogger("diffusers.models.modeling_utils").setLevel(logging.ERROR)
+# diffusers' vacuous "should be kept in float32" to(dtype) warning (emitted
+# even when the keep-in-fp32 list is the empty []) is suppressed process-
+# wide by config.load_config(), because the backend modules are imported
+# lazily per family -- a suppression here would be missing in a session that
+# only loads the other family.
 
 
 # bitsandbytes has no prebuilt binary for this host's CUDA minor version

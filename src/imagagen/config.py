@@ -158,6 +158,21 @@ def load_config(root: Path | str | None = None) -> Config:
     # harmless for our fp16 GPU-only usage.
     for name in ("huggingface_hub", "transformers"):
         logging.getLogger(name).setLevel(logging.ERROR)
+
+    # diffusers warns on every ModelMixin .to(dtype) that some modules "should
+    # be kept in float32" -- even when the keep-in-fp32 list is empty ([]).
+    # Both VAEs we load are plain AutoencoderKLs that keep nothing in fp32, and
+    # our fp16/bf16 VAE casts are deliberate (Forge parity; from_single_file
+    # casts internally, with no opt-out), so the message is pure spam. Filter
+    # just this message on the emitting logger (a blanket level would also hide
+    # useful modeling_utils warnings like state-dict mismatches).
+    class _KeepInFp32Filter(logging.Filter):
+        def filter(self, record):
+            return "should be kept in float32" not in record.getMessage()
+
+    _modeling_utils = logging.getLogger("diffusers.models.modeling_utils")
+    if not any(isinstance(f, _KeepInFp32Filter) for f in _modeling_utils.filters):
+        _modeling_utils.addFilter(_KeepInFp32Filter())
     return config
 
 
