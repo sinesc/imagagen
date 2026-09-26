@@ -173,6 +173,19 @@ def load_config(root: Path | str | None = None) -> Config:
     _modeling_utils = logging.getLogger("diffusers.models.modeling_utils")
     if not any(isinstance(f, _KeepInFp32Filter) for f in _modeling_utils.filters):
         _modeling_utils.addFilter(_KeepInFp32Filter())
+
+    # bitsandbytes has no prebuilt binary for this host's CUDA minor version
+    # (12.9); its nearest-prebuilt fallback (12.8) is the correct behavior, so
+    # drop the one-line notice rather than pinning BNB_CUDA_VERSION to a
+    # version that a future bnb release might not ship. (Attached on the
+    # emitting logger: filters on an ancestor do not see propagated records.)
+    class _BnbCudaFallbackFilter(logging.Filter):
+        def filter(self, record):
+            return "No prebuilt binary" not in record.getMessage()
+
+    _bnb = logging.getLogger("bitsandbytes.cextension")
+    if not any(isinstance(f, _BnbCudaFallbackFilter) for f in _bnb.filters):
+        _bnb.addFilter(_BnbCudaFallbackFilter())
     return config
 
 

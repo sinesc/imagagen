@@ -144,18 +144,9 @@ warnings.filterwarnings(
 # only loads the other family.
 
 
-# bitsandbytes has no prebuilt binary for this host's CUDA minor version
-# (12.9); its nearest-prebuilt fallback (12.8) is the correct behavior, so
-# drop the one-line notice rather than pinning BNB_CUDA_VERSION to a
-# version that a future bnb release might not ship.
-class _BnbCudaFallbackFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        return "No prebuilt binary" not in record.getMessage()
-
-
-# (on the emitting logger: filters on an ancestor do not see propagated
-# records)
-logging.getLogger("bitsandbytes.cextension").addFilter(_BnbCudaFallbackFilter())
+# bitsandbytes' "No prebuilt binary for CUDA 12.9" notice (its
+# nearest-prebuilt fallback is the correct behavior) is filtered process-
+# wide by config.load_config(), for the same lazy-import reason as above.
 
 
 # Every LoRA this project ships is UNet-only (no text-encoder part), so
