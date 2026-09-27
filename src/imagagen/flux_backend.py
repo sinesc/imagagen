@@ -117,6 +117,13 @@ DEFAULT_STEPS_SCHNELL = 4
 SAMPLERS = {"Euler": kdiff.sample_euler}
 # the encoded-context cache's entry cap (LRU; entries are a few MB each)
 _ENC_CACHE_MAX = 8
+# the untiled 16-channel decoder's working set in GiB per megapixel: the
+# peak live conv + SiLU activations at the final full-resolution stage
+# (measured 3.0 GiB at 1024x1280; it scales linearly with pixel count)
+_VAE_DECODE_GIB_PER_MP = 2.5
+# margin on top of the estimate: the CUDA context and small per-allocation
+# rounding overhead the live working set number does not include
+_VAE_DECODE_MARGIN_GIB = 0.5
 # Flux has no scheduler concept: the resolution-dependent shifted sigma
 # schedule is computed internally (kdiff.get_sigmas_flux).
 SCHEDULERS = {}
@@ -755,22 +762,46 @@ class FluxBackend(ModelBackend):
             # --- VAE decode (kept under inference_mode so the result has no grad) ---
             latents = (x / self.vae.config.scaling_factor) + self.vae.config.shift_factor
             latents = latents.to(torch.bfloat16)
+            # the untiled decode's working set may not fit next to the large
+            # resident transformer (FP8 ~11.1 GiB) on a 16 GiB card; the
+            # allocator then OOMs on every large intermediate and retries
+            # after freeing cached pool blocks (a wall of CUDACachingAllocator
+            # warnings, physical free down to a few MiB). Give the decode the
+            # whole pool back first; if it still does not fit, Forge's memory
+            # manager unloads the unet for the VAE -- do the same
+            parked = False
+            if not self.vae.use_tiling:
+                needed = _VAE_DECODE_GIB_PER_MP * w * h / 1e6 * (1 << 30) \
+                    + _VAE_DECODE_MARGIN_GIB * (1 << 30)
+                free, _ = torch.cuda.mem_get_info(device)
+                if free < needed:
+                    torch.cuda.empty_cache()
+                    free, _ = torch.cuda.mem_get_info(device)
+                    if free < needed:
+                        log.info(
+                            "%s: parking the transformer for the untiled VAE "
+                            "decode (%.2f GiB free, ~%.1f GiB working set)",
+                            self.name, free / 2**30,
+                            _VAE_DECODE_GIB_PER_MP * w * h / 1e6)
+                        self.transformer.to("cpu")
+                        torch.cuda.empty_cache()
+                        parked = True
             try:
                 image = self.vae.decode(latents, return_dict=False)[0].float()
             except torch.cuda.OutOfMemoryError:
-                # the untiled decode's working set does not fit next to the
-                # large resident transformer; Forge's memory manager unloads
-                # the unet for the VAE -- we do the same: park the
-                # transformer on the CPU, decode, then bring it back
-                log.warning(
-                    "%s: untiled VAE decode OOMed, retrying with the "
-                    "transformer on the CPU", self.name)
-                import gc
+                # the estimate above missed this size; same rescue
+                if not parked:
+                    log.warning(
+                        "%s: untiled VAE decode OOMed, retrying with the "
+                        "transformer on the CPU", self.name)
+                    import gc
 
-                gc.collect()
-                self.transformer.to("cpu")
-                torch.cuda.empty_cache()
+                    gc.collect()
+                    self.transformer.to("cpu")
+                    torch.cuda.empty_cache()
+                    parked = True
                 image = self.vae.decode(latents, return_dict=False)[0].float()
+            if parked:
                 self.transformer.to(self.device)
             image = (image / 2 + 0.5).clamp(0, 1)
         arr = (image.cpu().numpy()[0].transpose(1, 2, 0) * 255).astype(np.uint8)
