@@ -16,9 +16,9 @@ Architecture:
   of the chat-templated prompt; the encoder keeps its scaled-fp8 projections
   (~4.4 GB resident) and casts to bf16 per-op
   (:mod:`imagagen.qwen3_encoder`);
-- the VAE is the FLUX AE: ``infra/zit_ae.safetensors`` is byte-identical to
-  ``infra/flux_ae.safetensors``, so it loads with the committed
-  ``res/flux_ae.config.json`` (16 channels, 8x downsample, scaling 0.3611 /
+- the VAE is the FLUX AE: ``infra/ae.safetensors`` is byte-identical for
+  Z-Image and Flux, and loads with the committed
+  ``res/ae.config.json`` (16 channels, 8x downsample, scaling 0.3611 /
   shift 0.1159, same 2-MP tiling threshold as Flux);
 - sampling is plain flow-matching Euler (``kdiff.sample_euler``) over the
   shift-3 linear-SNR schedule (``kdiff.get_sigmas_zimage``).
@@ -186,12 +186,12 @@ class ZImageBackend(ModelBackend):
         # .to() device moves route through the globally monkey-patched
         # nn.Module.register_parameter (see _PARAM_INIT_LOCK).
         with _PARAM_INIT_LOCK:
-            # --- VAE (bf16): byte-identical to the Flux AE ---
-            vae_path = infra / "zit_ae.safetensors"
-            # zit_ae.safetensors is byte-identical to flux_ae.safetensors
-            # (verified: same md5), so the committed Flux AE config is the
-            # correct architecture description
-            vae_cfg = config.root / "res" / "flux_ae.config.json"
+            # --- VAE (bf16): shared with Flux (byte-identical AE) ---
+            vae_path = infra / "ae.safetensors"
+            # ae.safetensors is the FLUX AE (verified byte-identical to the
+            # Z-Image checkpoint's VAE, same md5), so the committed AE
+            # config is the correct architecture description
+            vae_cfg = config.root / "res" / "ae.config.json"
             self.vae = AutoencoderKL.from_single_file(
                 str(vae_path), config=str(vae_cfg), torch_dtype=torch.bfloat16
             )

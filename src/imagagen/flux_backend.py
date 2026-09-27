@@ -191,8 +191,8 @@ class FluxBackend(ModelBackend):
         # corrupt the parameter registration (see _PARAM_INIT_LOCK).
         with _PARAM_INIT_LOCK:
             # --- VAE (bf16) ---
-            vae_path = infra / "flux_ae.safetensors"
-            vae_cfg = config.root / "res" / "flux_ae.config.json"
+            vae_path = infra / "ae.safetensors"
+            vae_cfg = config.root / "res" / "ae.config.json"
             self.vae = AutoencoderKL.from_single_file(
                 str(vae_path), config=str(vae_cfg), torch_dtype=torch.bfloat16
             )
