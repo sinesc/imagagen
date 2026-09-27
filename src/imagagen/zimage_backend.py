@@ -269,6 +269,14 @@ class ZImageBackend(ModelBackend):
         cached = self._enc_cache.get(prompt)
         if cached is not None:
             self._enc_cache.move_to_end(prompt)
+            # A hit skips the encode, so the post-encode offload below never
+            # runs: if the co-resident fit check (cold load / parked restore)
+            # left the encoder on the GPU, drop it now, or its ~4.1 GiB sits
+            # next to the transformer through sampling and starves the VAE
+            # decode (the untiled 1024x1280 decode alone wants ~3 GiB)
+            if (self.te_device != "cpu"
+                    and next(self.te.parameters()).device == self.device):
+                self._text_offload()
             return cached.to(self.device)
         # bring the encoder to te_device, then park it. With the GPU
         # text-encoder default, the resident transformer (~6.2 GiB) and the

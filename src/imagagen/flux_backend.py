@@ -285,6 +285,13 @@ class FluxBackend(ModelBackend):
         entry = self._enc_cache.get(key)
         if entry is not None:
             self._enc_cache.move_to_end(key)
+            # A hit skips the encode, so the post-encode offload below never
+            # runs: if the co-resident fit check left the T5/CLIP encoders on
+            # the GPU, drop them now, or they sit next to the transformer
+            # through sampling and starve the VAE decode (see zimage's note)
+            if (self.te_device != "cpu"
+                    and next(self.t5.parameters()).device == self.device):
+                self._text_offload()
             tensors = [t.to(self.device) for t in entry]
             if negative is not None:
                 return tensors[0], tensors[1], (tensors[2], tensors[3])

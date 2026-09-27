@@ -92,6 +92,34 @@ class TestZImageContextCache:
         assert "p0" in b._enc_cache
         assert "new" in b._enc_cache
 
+    def test_hit_offloads_a_co_resident_encoder(self):
+        # The co-resident fit check can leave the ~4.1 GiB encoder on the GPU
+        # (cold load / parked restore). A cache hit then skips the encode
+        # AND the post-encode offload -- the hit path must drop the encoder
+        # itself, or it sits next to the transformer through sampling and
+        # the untiled 1024x1280 VAE decode OOMs. (Here self.device is the
+        # stand-in for the GPU: the stub encoder's params live on it.)
+        b, calls = _stub(ZImageBackend)
+        b.device = torch.device("cpu")  # params live on self.device = co-resident
+        b.te_device = "cuda:1"
+        offloads: list[bool] = []
+        b._text_offload = lambda: offloads.append(True)
+        b._get_context("a prompt")  # miss: encode + offload
+        assert offloads == [True]
+        offloads.clear()
+        b._get_context("a prompt")  # hit: no re-encode, but offload still
+        assert offloads == [True]
+
+    def test_hit_keeps_cpu_encoder_on_cpu(self):
+        # te_device=cpu: the encoder never leaves system RAM; the miss path
+        # still offloads once, the hit must add nothing
+        b, calls = _stub(ZImageBackend)
+        offloads: list[bool] = []
+        b._text_offload = lambda: offloads.append(True)
+        b._get_context("a prompt")
+        b._get_context("a prompt")
+        assert offloads == [True]
+
 
 class TestFluxEncodingCache:
     def test_same_prompt_no_negative_encodes_once(self):
@@ -123,3 +151,26 @@ class TestFluxEncodingCache:
         assert len(b._enc_cache) == _ENC_CACHE_MAX
         assert ("p0", None) not in b._enc_cache
         assert (f"p{total - 1}", None) in b._enc_cache
+
+    def test_hit_offloads_co_resident_encoders(self):
+        # Same guard as the zimage test: a hit must drop the T5/CLIP
+        # encoders if the co-resident fit check left them on the GPU
+        b, calls = _stub(FluxBackend)
+        b.device = torch.device("cpu")  # params live on self.device = co-resident
+        b.te_device = "cuda:1"
+        offloads: list[bool] = []
+        b._text_offload = lambda: offloads.append(True)
+        b._get_encoding("a prompt", None)  # miss: encode + offload
+        assert offloads == [True]
+        offloads.clear()
+        b._get_encoding("a prompt", None)  # hit: offload still required
+        assert offloads == [True]
+
+    def test_hit_keeps_cpu_encoders_on_cpu(self):
+        # the miss path still offloads once, the hit must add nothing
+        b, calls = _stub(FluxBackend)
+        offloads: list[bool] = []
+        b._text_offload = lambda: offloads.append(True)
+        b._get_encoding("a prompt", None)
+        b._get_encoding("a prompt", None)
+        assert offloads == [True]
