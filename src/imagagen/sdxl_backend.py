@@ -107,6 +107,7 @@ import hashlib
 import logging
 import threading
 import warnings
+from collections import OrderedDict
 
 import numpy as np
 
@@ -185,6 +186,9 @@ SAMPLERS = {
     "DPM++ 2M SDE": kdiff.sample_dpmpp_2m_sde,
     "LCM": kdiff.sample_lcm,
 }
+# the encoded-prompt cache's entry cap (LRU; entries are a few MB each)
+_ENC_CACHE_MAX = 8
+
 SCHEDULERS = {
     "Karras": kdiff.get_sigmas_karras,
     "Exponential": kdiff.get_sigmas_exponential,
@@ -384,6 +388,11 @@ class SdxlBackend(ModelBackend):
         self._steps_total = 1
         self.config = config  # project Config (loras dir, VRAM options)
         self._active_loras: tuple[tuple[str, float], ...] | None = None
+        # (prompt, negative) -> the encoded embeddings on the CPU (few MB
+        # each, LRU); see the encoding block in _generate_impl -- an
+        # encoding is deterministic, so identical prompts (a same-prompt
+        # batch) are encoded once
+        self._enc_cache: OrderedDict[tuple[str, str], tuple] = OrderedDict()
 
         # Model init creates torch parameters (unet + transformers text
         # encoders + VAE). peft/transformers monkey-patch GLOBAL torch state
@@ -756,25 +765,42 @@ class SdxlBackend(ModelBackend):
             # default, CPU when imagagen.ini says so); with the default
             # they are parked on CPU between generations to free ~1.4 GiB
             te_dev = self.text_encoder_device
-            pipe.text_encoder.to(te_dev)
-            if getattr(pipe, "text_encoder_2", None) is not None:
-                pipe.text_encoder_2.to(te_dev)
             # Forge-style chunked encoding (see _encode_prompt_chunked): a
             # prompt longer than 75 tokens is split into 75-token windows and
             # each window is encoded, then concatenated -- nothing is dropped.
             # diffusers' encode_prompt would hard-truncate to 77 instead.
-            prompt_embeds, pooled = self._encode_prompt_chunked(request.prompt, te_dev)
-            # A1111 semantics: an empty negative prompt means encoding ""
-            neg_embeds, neg_pooled = self._encode_prompt_chunked(
-                request.negative_prompt or "", te_dev
-            )
-            if te_dev == "cpu":
-                # embeddings to the GPU; the encoders stay in system RAM
+            # The encoding is deterministic, so it is cached on the CPU
+            # (a few MB, LRU): a batch of identical prompts -- or any later
+            # repeat of the same prompt -- is encoded once, and a hit
+            # skips the encoder moves entirely.
+            key = (request.prompt, request.negative_prompt or "")
+            entry = self._enc_cache.get(key)
+            if entry is not None:
+                self._enc_cache.move_to_end(key)
+                prompt_embeds, pooled, neg_embeds, neg_pooled = (
+                    t.to(device) for t in entry)
+            else:
+                pipe.text_encoder.to(te_dev)
+                if getattr(pipe, "text_encoder_2", None) is not None:
+                    pipe.text_encoder_2.to(te_dev)
+                prompt_embeds, pooled = self._encode_prompt_chunked(
+                    request.prompt, te_dev)
+                # A1111 semantics: an empty negative prompt means encoding ""
+                neg_embeds, neg_pooled = self._encode_prompt_chunked(
+                    request.negative_prompt or "", te_dev
+                )
+                # CPU copies for the cache; the embeddings themselves go to
+                # the GPU (with te_dev=cpu the encoders stay in system RAM)
+                entry = (prompt_embeds.cpu(), pooled.cpu(),
+                         neg_embeds.cpu(), neg_pooled.cpu())
+                self._enc_cache[key] = entry
+                while len(self._enc_cache) > _ENC_CACHE_MAX:
+                    self._enc_cache.popitem(last=False)
                 prompt_embeds = prompt_embeds.to(device)
                 neg_embeds = neg_embeds.to(device)
                 pooled = pooled.to(device)
                 neg_pooled = neg_pooled.to(device)
-            else:
+            if te_dev != "cpu":
                 # Free ~1.3 GiB for UNet + VAE activations: the text
                 # encoders are only needed for prompt encoding.
                 pipe.text_encoder.cpu()

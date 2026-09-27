@@ -42,6 +42,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -114,6 +115,8 @@ DEFAULT_STEPS = 25
 DEFAULT_STEPS_SCHNELL = 4
 
 SAMPLERS = {"Euler": kdiff.sample_euler}
+# the encoded-context cache's entry cap (LRU; entries are a few MB each)
+_ENC_CACHE_MAX = 8
 # Flux has no scheduler concept: the resolution-dependent shifted sigma
 # schedule is computed internally (kdiff.get_sigmas_flux).
 SCHEDULERS = {}
@@ -144,6 +147,11 @@ class FluxBackend(ModelBackend):
         # path str -> (mtime, parsed specs); LoRA files are immutable per
         # (path, mtime), so a re-apply of the same set skips the re-read
         self._lora_cache: dict[str, tuple[float, list[FluxLoraSpec]]] = {}
+        # (prompt, negative-or-None) -> the encoded embeddings on the CPU
+        # (few MB each, LRU); see _get_encoding -- an encoding is
+        # deterministic, so identical prompts (a same-prompt batch) are
+        # encoded once
+        self._enc_cache: OrderedDict[tuple[str, str | None], tuple] = OrderedDict()
 
         from diffusers import AutoencoderKL
         from diffusers.utils.logging import disable_progress_bar
@@ -261,6 +269,67 @@ class FluxBackend(ModelBackend):
         t5_ids = torch.tensor([toks], device=device, dtype=torch.long)
         context = self.t5(t5_ids).to(torch.bfloat16)
         return context, y
+
+    def _get_encoding(self, prompt: str, negative: str | None):
+        """(context, y) -- plus (context_neg, y_neg) when ``negative`` is
+        not None -- on the model's device.
+
+        Encodings are cached on the CPU (LRU, a few MB each) keyed by
+        (prompt, negative-or-None): the encoding is deterministic, so a
+        batch of identical prompts -- or any later repeat of the same
+        prompt -- reuses the first result instead of running the ~4.6 GiB
+        T5 encoder again. A cache hit also skips the transformer swap that
+        an uncached encode would trigger.
+        """
+        key = (prompt, negative)
+        entry = self._enc_cache.get(key)
+        if entry is not None:
+            self._enc_cache.move_to_end(key)
+            tensors = [t.to(self.device) for t in entry]
+            if negative is not None:
+                return tensors[0], tensors[1], (tensors[2], tensors[3])
+            return tensors[0], tensors[1], None
+        # bring the encoders to te_device, then park them. With the GPU
+        # text-encoder default, a large resident transformer (FP8 ~11.1
+        # GiB) and the text encoders (T5 ~4.6 GiB + CLIP ~0.2 GiB) may not
+        # share a 16 GB card; Forge's memory manager unloads the unet
+        # while the text encoders run. We do the same swap when the
+        # encoders are parked on the CPU for this reason (see __init__):
+        # park the transformer on the CPU for the encode, and bring it
+        # back after the encoders are parked again.
+        swapped = False
+        if self.te_device != "cpu" and next(self.t5.parameters()).device != self.device:
+            free, _ = torch.cuda.mem_get_info(self.device)
+            log.info(
+                "%s: transformer swapped to the CPU for text encoding "
+                "(%.2f GiB encoders, %.2f GiB free)",
+                self.name, self._encoder_bytes / 2**30, free / 2**30)
+            self.transformer.to("cpu")
+            torch.cuda.empty_cache()
+            swapped = True
+        self._text_to(self.te_device)
+        with torch.inference_mode():
+            context, y = self._encode_prompt(prompt)
+            if negative is not None:
+                context_neg, y_neg = self._encode_prompt(negative)
+            # CPU copies for the cache; the embeddings themselves go to the
+            # GPU (with te_device=cpu the encoders stay in system RAM)
+            entry = (context.cpu(), y.cpu())
+            if negative is not None:
+                entry = entry + (context_neg.cpu(), y_neg.cpu())
+            context = context.to(self.device)
+            y = y.to(self.device)
+            if negative is not None:
+                context_neg = context_neg.to(self.device)
+                y_neg = y_neg.to(self.device)
+        self._enc_cache[key] = entry
+        while len(self._enc_cache) > _ENC_CACHE_MAX:
+            self._enc_cache.popitem(last=False)
+        self._text_offload()
+        if swapped:
+            self.transformer.to(self.device)
+            torch.cuda.empty_cache()
+        return context, y, (context_neg, y_neg) if negative is not None else None
 
     def _text_to(self, device) -> None:
         self.clip.to(device)
@@ -526,40 +595,16 @@ class FluxBackend(ModelBackend):
         uncond = (not distilled) and cfg > 1.0
         g = torch.full((1,), guidance, device=device, dtype=torch.bfloat16)
 
-        # --- text encode (bring encoders to te_device, then park on CPU) ---
-        # With the GPU text-encoder default, a large resident transformer
-        # (FP8 ~11.1 GiB) and the text encoders (T5 ~4.6 GiB + CLIP ~0.2 GiB)
-        # may not share a 16 GiB card; Forge's memory manager unloads the
-        # unet while the text encoders run. We do the same swap when the
-        # encoders are parked on the CPU for this reason (see __init__):
-        # park the transformer on the CPU for the encode, then bring it
-        # back after the encoders are parked again.
-        swapped = False
-        if self.te_device != "cpu" and next(self.t5.parameters()).device != self.device:
-            free, _ = torch.cuda.mem_get_info(self.device)
-            log.info(
-                "%s: transformer swapped to the CPU for text encoding "
-                "(%.2f GiB encoders, %.2f GiB free)",
-                self.name, self._encoder_bytes / 2**30, free / 2**30)
-            self.transformer.to("cpu")
-            torch.cuda.empty_cache()
-            swapped = True
-        self._text_to(self.te_device)
-        with torch.inference_mode():
-            context, y = self._encode_prompt(request.prompt)
-            if uncond:
-                context_neg, y_neg = self._encode_prompt(request.negative_prompt)
-        # embeddings to the GPU; with the GPU default the encoders are
-        # parked on the CPU now, with te_device=cpu they stay in system RAM
-        context = context.to(device)
-        y = y.to(device)
+        # --- text encode --- the encoding is deterministic per prompt, so
+        # identical prompts reuse the cached result (no encoder run, no
+        # transformer swap -- see _get_encoding). The negative prompt is
+        # encoded only when the unconditional pass runs (classic CFG with
+        # cfg > 1).
+        encoding = self._get_encoding(
+            request.prompt, request.negative_prompt if uncond else None)
+        context, y, neg = encoding
         if uncond:
-            context_neg = context_neg.to(device)
-            y_neg = y_neg.to(device)
-        self._text_offload()
-        if swapped:
-            self.transformer.to(self.device)
-            torch.cuda.empty_cache()
+            context_neg, y_neg = neg
 
         # --- sigma schedule + noise ---
         # the "model default" sentinel (request.steps <= 0) resolves to the
