@@ -442,6 +442,15 @@ class QuantLinear(torch.nn.Module):
             if isinstance(applied, torch.nn.Parameter):
                 # param classes (GgufParam/Nf4Param) return their own type
                 setattr(self, k, applied)
+            elif isinstance(applied, torch.Tensor):
+                # device/dtype converters (`.to()` et al.) return a plain
+                # Tensor for a Parameter: re-wrap it so the name stays a
+                # REGISTERED parameter. Demoting it to a plain __dict__
+                # attribute (the old behavior) left the name in __dict__,
+                # so the next register_parameter(name, ...) raised
+                # "attribute 'name' already exists" on LoRA re-apply.
+                setattr(self, k, torch.nn.Parameter(
+                    applied, requires_grad=p.requires_grad))
             else:
                 # torch's __setattr__ rejects a non-Parameter for a
                 # registered name: unregister first (as `del self.dummy`
@@ -511,10 +520,18 @@ class QuantLinear(torch.nn.Module):
             self.lora_deltas.append((pa, pb, r0, r1))
 
     def clear_lora_deltas(self) -> None:
-        """Remove every installed LoRA delta (the module goes back to base)."""
+        """Remove every installed LoRA delta (the module goes back to base).
+
+        Also sweeps stray ``lora_A_*`` / ``lora_B_*`` plain-tensor attributes
+        (defensive: older versions demoted them to __dict__ on device
+        moves) so no stale delta storage lingers.
+        """
         self.lora_deltas = []
         for name in [n for n in self._parameters if n.startswith("lora_")]:
             self.register_parameter(name, None)
+        for name in [n for n in list(self.__dict__)
+                     if n.startswith(("lora_A_", "lora_B_"))]:
+            delattr(self, name)
 
 
 class GgufLinear(QuantLinear):
@@ -568,21 +585,26 @@ _DTYPE = None
 
 
 @contextlib.contextmanager
-def quant_linear_scope(kind, device, dtype):
+def quant_linear_scope(kind, device, dtype, linear_cls=None):
     """Build ``nn.Linear`` layers as the quantized variant for ``kind``
     (``"gguf"`` / ``"fp8"`` / ``"nf4"``) inside the block.
 
     ``device``/``dtype`` seed each layer's dummy param (which fixes the
-    weight device and the dequantize computation dtype).
+    weight device and the dequantize computation dtype). ``linear_cls``
+    overrides the variant class (e.g. a scaled-fp8 ``Fp8Linear`` subclass).
     """
     global _DEVICE, _DTYPE
+    prev_device, prev_dtype = _DEVICE, _DTYPE
     _DEVICE, _DTYPE = device, dtype
     original = torch.nn.Linear
-    torch.nn.Linear = {"gguf": GgufLinear, "fp8": Fp8Linear, "nf4": Nf4Linear}[kind]
+    torch.nn.Linear = linear_cls or {"gguf": GgufLinear, "fp8": Fp8Linear, "nf4": Nf4Linear}[kind]
     try:
         yield
     finally:
         torch.nn.Linear = original
+        # restore the previous scope: a leaked _DTYPE would seed every later
+        # scope-less QuantLinear with the wrong dummy/computation dtype
+        _DEVICE, _DTYPE = prev_device, prev_dtype
 
 
 @contextlib.contextmanager

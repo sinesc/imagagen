@@ -35,6 +35,38 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from .gguf_ops import Fp8Linear
+
+
+class ScaledFp8Linear(Fp8Linear):
+    """``Fp8Linear`` for Kijai *scaled*-fp8 checkpoints: the ``weight`` is
+    ``F8_E4M3`` and the checkpoint additionally stores a ``scale_weight``
+    (per-tensor ``(1,)`` or per-row ``(out,)``): the dequantized weight is
+    ``W_fp8 * scale_weight``, folded into the per-op dequantize here.
+    ``scale_input``, when a file carries one, is the reference's ACTIVATION
+    quantization step -- it cancels against the fp8 input quantization and
+    must NOT scale the matmul output (see :mod:`imagagen.qwen3_encoder`,
+    where the wrong reading made the whole conditioning meaningless); it is
+    loaded but deliberately unused. Checkpoints without the scale keys behave
+    exactly like :class:`Fp8Linear` (identity scale)."""
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                             missing_keys, unexpected_keys, error_msgs):
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+                                      missing_keys, unexpected_keys, error_msgs)
+        if prefix + "scale_weight" in state_dict:
+            self.scale_weight = state_dict[prefix + "scale_weight"]
+        if prefix + "scale_input" in state_dict:
+            self.scale_input = state_dict[prefix + "scale_input"]
+
+    def _dequantize(self, w):
+        if getattr(self, "scale_weight", None) is not None:
+            # cast out of fp8 BEFORE the scale multiply (mul is not
+            # implemented for fp8); the outer .to() in forward is then a no-op
+            sw = self.scale_weight.to(self.computation_dtype)
+            w = w.to(self.computation_dtype) * (sw[:, None] if sw.dim() else sw)
+        return w
+
 # ---------------------------------------------------------------- rope ----
 
 
@@ -251,6 +283,9 @@ class FinalLayer(nn.Module):
 
     def __init__(self, dim, patch_size, out_channels):
         super().__init__()
+        # NOTE: no affine params -> invisible in the checkpoint state dict;
+        # matches the reference FinalLayer.norm_final exactly.
+        self.norm_final = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(dim, patch_size * patch_size * out_channels,
                                 bias=True)
         self.adaLN_modulation = nn.Sequential(
@@ -260,6 +295,7 @@ class FinalLayer(nn.Module):
 
     def forward(self, x, t_emb):
         scale = self.adaLN_modulation(t_emb)
+        x = self.norm_final(x)
         x = x * (1 + scale.unsqueeze(1))
         return self.linear(x)
 
@@ -372,11 +408,12 @@ class ZImageTransformer(nn.Module):
         cap = self.cap_embedder(context)
         cap, _ = self._pad_to_multiple(cap, self.cap_pad_token,
                                        self.pad_tokens_multiple)
+        # rope outputs (bs, 1, n, pe/2, 2, 2): the 1 broadcasts over heads
         ncap = cap.shape[1]
         cap_pos = torch.zeros(bs, ncap, 3, device=x.device, dtype=torch.float32)
         cap_pos[:, :, 0] = torch.arange(ncap, device=x.device,
                                         dtype=torch.float32) + 1.0
-        cap_freqs = self.rope_embedder(cap_pos).movedim(1, 2)
+        cap_freqs = self.rope_embedder(cap_pos)
 
         # --- image stream: patchify, embed, pad, position ids ---
         hp, wp = h_p // pH, w_p // pW
@@ -387,9 +424,11 @@ class ZImageTransformer(nn.Module):
         x_img, _ = self._pad_to_multiple(x_img, self.x_pad_token,
                                          self.pad_tokens_multiple)
         nimg_p = x_img.shape[1]
+        # the reference pads x_pos_ids with zeros (F.pad default), so the
+        # padded tokens sit at position (0, 0, 0), not (ncap+1, 0, 0)
         x_pos = torch.zeros(bs, nimg_p, 3, device=x.device,
                             dtype=torch.float32)
-        x_pos[:, :, 0] = ncap + 1
+        x_pos[:, :nimg, 0] = ncap + 1
         x_pos[:, :nimg, 1] = (
             torch.arange(hp, device=x.device, dtype=torch.float32).view(-1, 1)
             .repeat(1, wp).flatten()
@@ -398,7 +437,7 @@ class ZImageTransformer(nn.Module):
             torch.arange(wp, device=x.device, dtype=torch.float32).view(1, -1)
             .repeat(hp, 1).flatten()
         )
-        x_freqs = self.rope_embedder(x_pos).movedim(1, 2)
+        x_freqs = self.rope_embedder(x_pos)
 
         # --- refiners (separate streams, as the reference does) ---
         cap_feats = cap
@@ -410,7 +449,8 @@ class ZImageTransformer(nn.Module):
 
         # --- joint blocks over [cap, x] ---
         feats = torch.cat([cap_feats, x_feats], dim=1)
-        freqs = torch.cat([cap_freqs, x_freqs], dim=1)
+        # sequence axis is dim 2 in the (bs, 1, n, pe/2, 2, 2) layout
+        freqs = torch.cat([cap_freqs, x_freqs], dim=2)
         del cap_feats, x_feats, cap_freqs, x_freqs
         for layer in self.layers:
             feats = layer(feats, freqs, t_emb)
@@ -418,7 +458,7 @@ class ZImageTransformer(nn.Module):
         out = self.final_layer(feats, t_emb)
         del feats, freqs, t_emb
         # unpatchify the image tail (drop the text tokens and any padding)
-        out = out[:, ncap:, :]
+        out = out[:, ncap:ncap + nimg, :]
         out = (
             out.view(bs, hp, wp, pH, pW, self.out_channels)
             .permute(0, 5, 1, 3, 2, 4)

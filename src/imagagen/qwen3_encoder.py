@@ -13,8 +13,8 @@ The encoder runs a CAUSAL decoder stack (GQA 32/8 heads, head_dim 128,
 per-head q/k RMSNorm, RoPE theta 1e6, SiLU-gated MLP, no biases) and
 returns the PENULTIMATE decoder layer's hidden state -- the layer the
 reference Z-Image text-encoder target uses
-(``Qwen3_4BModel(layer="hidden", layer_idx=-2,
-layer_norm_hidden_state=False)``): HF ``hidden_states[-2]``, no final norm.
+(``Qwen3_4BModel(layer="hidden", layer_idx=-2, layer_norm_hidden_state=False)``
+== HF ``hidden_states[-2]``, no final norm).
 """
 
 from __future__ import annotations
@@ -30,10 +30,22 @@ COMPUTE_DTYPE = torch.bfloat16
 
 
 class ScaledFp8Linear(nn.Linear):
-    """``nn.Linear`` with a scaled-fp8 weight: the dequantized matmul is
-    ``F.linear(x * scale_input, W_fp8 * scale_weight)``, cast to the input
-    dtype per forward (the reference applies both per-tensor scales around
-    the fp8 GEMM)."""
+    """``nn.Linear`` with a scaled-fp8 weight: the dequantized weight is
+    ``W_fp8 * scale_weight`` (per-tensor, fp32 in the checkpoint).
+
+    The checkpoint's ``scale_input`` is the *activation* quantization step
+    (input_absmax / 448): the reference quantizes the activation to fp8 as
+    ``q = x / scale_input`` and multiplies the GEMM result by
+    ``scale_input * scale_weight``, so the activation scale CANCELS and never
+    touches the dequantized weight. We keep the activation in bf16 (strictly
+    more accurate than the reference's fp8 round-trip), so ``scale_input``
+    must not be applied at all -- multiplying the input by it shrinks every
+    layer output by an arbitrary per-layer factor (0.003 ... 0.86 in this
+    file) and turns the conditioning into meaningless noise (verified with
+    dev/check_qwen_lm.py: only the weight-scale-only reading makes the tied
+    embedding head predict "Paris" after "The capital of France is"). The
+    scale is still loaded, so a future true-fp8-activation path can use it.
+    """
 
     def __init__(self, in_features, out_features):
         super().__init__(in_features, out_features, bias=False)
@@ -42,7 +54,6 @@ class ScaledFp8Linear(nn.Linear):
 
     def forward(self, x):
         w = self.weight.to(x.dtype) * self.scale_weight.to(x.dtype)
-        x = x * self.scale_input.to(x.dtype)
         return F.linear(x, w)
 
 
@@ -97,7 +108,11 @@ class Qwen3Attention(nn.Module):
         if n_rep > 1:
             xk = xk.repeat_interleave(n_rep, dim=1)
             xv = xv.repeat_interleave(n_rep, dim=1)
-        out = F.scaled_dot_product_attention(xq, xk, xv)
+        # CAUSAL: this is a decoder-only LLM and the reference (comfy
+        # llama.py) always applies the causal mask for seq_len > 1; the
+        # DiT was trained on the causal conditioning, so bidirectional
+        # attention here silently destroys prompt adherence.
+        out = F.scaled_dot_product_attention(xq, xk, xv, is_causal=True)
         out = out.transpose(1, 2).reshape(b, s, self.n_heads * hd)
         return self.o_proj(out)
 
@@ -171,8 +186,13 @@ class Qwen3Model(nn.Module):
     def forward(self, input_ids):
         x = F.embedding(input_ids, self.embed_tokens.weight.to(COMPUTE_DTYPE))
         cos, sin = self._rope(x.shape[1], x.device, COMPUTE_DTYPE)
-        # penultimate decoder layer's output (no final norm); the final
-        # layer is never needed, so it is skipped
+        # the reference (comfy ZImageTE: layer="hidden", layer_idx=-2) asks
+        # the text model for `intermediate_output = num_layers - 2`, which
+        # comfy captures AFTER that layer ran -> the output of layer index 34
+        # of 36, i.e. the penultimate layer's output with NO final norm
+        # (HF equivalent: hidden_states[-2] of the 37-entry list). Verified
+        # layer-by-layer against transformers' Qwen3Model
+        # (dev/check_zimage_encoder.py).
         for i, layer in enumerate(self.layers):
             x = layer(x, cos, sin)
             if i == len(self.layers) - 2:

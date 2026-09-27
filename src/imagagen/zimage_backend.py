@@ -63,7 +63,7 @@ from .gguf_ops import QuantLinear, quant_linear_scope
 from .qwen3_encoder import load_zit_encoder, zimage_prompt_template
 from .soft_inpaint import adaptive_change_alpha, latent_blend
 from .zimage_lora import parse_zimage_lora
-from .zimage_transformer import ZImageTransformer
+from .zimage_transformer import ScaledFp8Linear, ZImageTransformer
 
 
 def _model_hash(path: str) -> str:
@@ -94,10 +94,20 @@ SCHEDULERS = {}
 _SD_PREFIX = "model.diffusion_model."
 
 
-def _load_zimage_state_dict(path: str) -> dict:
+def _load_zimage_state_dict(path: str) -> tuple[dict, bool]:
     """Read the transformer section of a Z-Image checkpoint into
     ``{module path: tensor}`` (keys relative to the transformer root, fp8
     tensors kept fp8 as Parameters -- the Flux FP8 loading pattern).
+
+    Two on-disk formats are supported:
+    - A1111/Forge-style all-in-one files: the transformer keys carry the
+      ``model.diffusion_model.`` prefix (``vae.`` / ``text_encoders.``
+      siblings are skipped) and hold *plain* fp8 weights;
+    - Kijai-style transformer-only files: no key prefix, a ``scaled_fp8``
+      marker key, and per-GEMM ``scale_weight`` / ``scale_input`` tensors
+      (the scales ride along in the same state dict).
+
+    Returns ``(state_dict, scaled_fp8)``.
 
     Slow disk I/O; run OUTSIDE ``_PARAM_INIT_LOCK`` (it only reads tensors,
     it does not register them in a module).
@@ -105,13 +115,26 @@ def _load_zimage_state_dict(path: str) -> dict:
     from safetensors import safe_open
 
     sd: dict = {}
+    scaled = False
     with safe_open(path, framework="pt") as f:
-        for key in f.keys():
-            if not key.startswith(_SD_PREFIX):
-                continue  # vae. / text_encoders.: the infra components
-            name = key[len(_SD_PREFIX):]
+        keys = list(f.keys())
+        prefixed = any(k.startswith(_SD_PREFIX) for k in keys)
+        for key in keys:
+            if prefixed:
+                if not key.startswith(_SD_PREFIX):
+                    continue  # vae. / text_encoders.: the infra components
+                name = key[len(_SD_PREFIX):]
+            else:
+                if key == "scaled_fp8":
+                    scaled = True
+                    continue  # format marker, no data
+                name = key
             sd[name] = torch.nn.Parameter(f.get_tensor(key), requires_grad=False)
-    return sd
+        if not prefixed and not scaled:
+            # bare transformer keys without the marker: still scaled-fp8 if
+            # scale keys are present (the marker is only a convenience)
+            scaled = any(k.endswith(("scale_weight", "scale_input")) for k in keys)
+    return sd, scaled
 
 
 class ZImageBackend(ModelBackend):
@@ -149,7 +172,7 @@ class ZImageBackend(ModelBackend):
         #     I/O (it BUILDS tensors on the CPU but does not register them in
         #     a module), so it runs OUTSIDE _PARAM_INIT_LOCK to avoid blocking
         #     concurrent parameter work on another GPU for the whole read.
-        sd = _load_zimage_state_dict(self.model_path)
+        sd, scaled_fp8 = _load_zimage_state_dict(self.model_path)
 
         # Every step below CREATES or MOVES module parameters (VAE,
         # transformer, text encoder). diffusers' from_single_file and the
@@ -171,7 +194,10 @@ class ZImageBackend(ModelBackend):
             # --- transformer (fp8 -> per-op bf16) ---
             # build on CPU (the dummy weights are small); the fp8 bytes load
             # on CPU and move to the GPU with .to(device)
-            with quant_linear_scope("fp8", torch.device("cpu"), torch.bfloat16):
+            with quant_linear_scope(
+                "fp8", torch.device("cpu"), torch.bfloat16,
+                linear_cls=ScaledFp8Linear if scaled_fp8 else None,
+            ):
                 self.transformer = ZImageTransformer()
             result = self.transformer.load_state_dict(sd, strict=False)
             missing = list(result.missing_keys)
