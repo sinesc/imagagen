@@ -19,9 +19,6 @@ reference Z-Image text-encoder target uses
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
-
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -225,15 +222,11 @@ def load_zit_encoder(path, device):
     return model
 
 
+from .zimage_prompt import ZIMAGE_PROMPT_TEMPLATE
+
+
 def zimage_prompt_template() -> str:
-    """The Z-Image chat prompt template, read verbatim from the ComfyUI
-    reference source (``comfy/text_encoders/z_image.py``) -- the single
-    source of truth, never re-typed by hand."""
-    src = (Path(__file__).resolve().parents[2]
-           / "dev" / "implementations" / "ComfyUI"
-           / "comfy" / "text_encoders" / "z_image.py")
-    for line in src.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line.startswith("self.llama_template = "):
-            return ast.literal_eval(line.split("=", 1)[1])
-    raise RuntimeError(f"llama_template not found in {src}")
+    """The Z-Image chat prompt template (local copy in
+    :mod:`imagagen.zimage_prompt` of the ComfyUI reference's
+    ``llama_template``)."""
+    return ZIMAGE_PROMPT_TEMPLATE

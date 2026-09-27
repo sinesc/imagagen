@@ -1,5 +1,5 @@
 """Pure parts of the Z-Image Qwen3 encoder (imagagen.qwen3_encoder): the
-prompt template (read from the ComfyUI reference source) and the scaled-fp8
+prompt template (local copy in imagagen.zimage_prompt) and the scaled-fp8
 linear / rotary math, without loading the 4.4 GB checkpoint.
 """
 
@@ -16,7 +16,7 @@ from imagagen.qwen3_encoder import (
 
 
 class TestPromptTemplate:
-    def test_loads_from_the_reference_source(self):
+    def test_template_has_prompt_placeholder(self):
         tpl = zimage_prompt_template()
         assert isinstance(tpl, str)
         assert "{}" in tpl  # the positional prompt placeholder
