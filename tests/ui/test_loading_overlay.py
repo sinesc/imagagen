@@ -1,11 +1,14 @@
 """The global "loading…" overlay covers the UI until it is settled.
 
-"Settled" means: the websocket is connected AND all initial requests whose
-responses rewrite the form have arrived (init: models/presets/ui-state/...,
-brushes, canvas). The overlay ships *visible* in the markup (so it is up
-from the first paint, before any JS runs) and app.js hides it once the boot
-Promise.all settles. While it is up it must also block input, so changes
-typed before the state load arrives cannot be clobbered by it.
+"Settled" means: all initial requests whose responses rewrite the form
+have arrived (init: models/presets/ui-state/..., brushes, canvas). The
+websocket is deliberately NOT part of the gate (its upgrade can lag the
+HTTP requests well behind, e.g. when the browser throttles queued
+reconnect attempts after the server was offline). The overlay ships
+*visible* in the markup (so it is up from the first paint, before any JS
+runs) and app.js hides it once the boot Promise.all settles. While it is
+up it must also block input, so changes typed before the state load
+arrives cannot be clobbered by it.
 """
 
 import asyncio

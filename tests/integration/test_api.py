@@ -84,6 +84,12 @@ def test_generate_single_and_save(client, tmp_path):
         })
         job_id = r.json()["job_id"]
         assert isinstance(job_id, int)
+        # the client uses server_id to invalidate its finished-job
+        # bookkeeping after a server restart (job ids restart at 1) and
+        # done to keep the button from flipping for an already-settled job
+        assert isinstance(r.json()["server_id"], str)
+        assert r.json()["server_id"]
+        assert isinstance(r.json()["done"], bool)
 
         # thumbnail appears, then job done
         done = _wait_for(client, ws, "done")

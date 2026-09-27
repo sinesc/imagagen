@@ -761,7 +761,14 @@ async function generate() {
   try {
     const r = await api("/api/generate", body);
     state.job = r.job_id;
-    if (finishedJobs.has(r.job_id)) {
+    // A different server_id means the server restarted since our last
+    // generate: job ids restart at 1, so the terminal events recorded
+    // above belong to a dead server and must not veto this job.
+    if (lastServerId !== r.server_id) {
+      finishedJobs.clear();
+      lastServerId = r.server_id;
+    }
+    if (r.done || finishedJobs.has(r.job_id)) {
       // The job already settled (fast error, interrupt, ...) before this
       // POST response arrived: the WS handler processed done/interrupt
       // first, so re-arming the button would stick it on "Interrupt".
@@ -1977,16 +1984,17 @@ async function init() {
 // A job can settle before the /api/generate POST response reaches us
 // (fast failures), so generate() checks this before flipping the button.
 const finishedJobs = new Set();
+// the server_id reported by the last /api/generate response (null until
+// the first generate); every server restart changes it
+let lastServerId = null;
 // true while the status line shows an error: "done" must not wipe it
 let statusIsError = false;
 let ws = null;
-// resolves once the first websocket connection is up; the boot section
-// keeps the loading overlay visible until this AND all initial fetches settle
-let resolveWsConnected = () => {};
-const wsConnected = new Promise((r) => (resolveWsConnected = r));
+// escalating delay between reconnect attempts; reset on a successful open
+let wsRetryDelay = 1000;
 function connectWS() {
   ws = new WebSocket(`ws://${location.host}/api/ws`);
-  ws.onopen = resolveWsConnected;
+  ws.onopen = () => { wsRetryDelay = 1000; };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     switch (msg.type) {
@@ -2041,7 +2049,14 @@ function connectWS() {
         break;
     }
   };
-  ws.onclose = () => setTimeout(connectWS, 1000);
+  ws.onclose = () => {
+    // Back off (1s -> 2s -> ... -> 10s cap) while the server is down: a
+    // steady 1/s retry loop piles up half-dead connection attempts that
+    // the browser queues behind its per-origin connection limit, which
+    // can delay the next successful connect by tens of seconds.
+    setTimeout(connectWS, wsRetryDelay);
+    wsRetryDelay = Math.min(wsRetryDelay * 2, 10000);
+  };
 }
 
 // ---------------- events ----------------
@@ -2148,9 +2163,13 @@ wireToolbar();
 wireConfig();
 wirePromptDrop();
 wireCanvasDrop();
-// the loading overlay covers the UI until it is settled: the websocket AND
-// every request whose response rewrites the form (init), plus the brush
-// list and the canvas. While it is up, pointer input hits the overlay and
+// the loading overlay covers the UI until it is settled: every request
+// whose response rewrites the form (init), plus the brush list and the
+// canvas. The websocket is deliberately NOT part of this gate: its
+// upgrade can lag the HTTP requests well behind (the browser throttles
+// queued reconnect attempts after the server was offline), and it is not
+// needed for the state load — job events simply arrive whenever the
+// connection comes up. While it is up, pointer input hits the overlay and
 // the keydown guard below blocks the keyboard, so nothing the user does
 // can be clobbered by the state load. Fail open: hide it if any of these
 // rejects instead of leaving a permanent overlay.
@@ -2161,7 +2180,7 @@ const pCanvas = viewRefresh();
 setupCanvasInput();
 window.addEventListener("resize", viewResize);
 connectWS();
-Promise.all([pInit, pBrushes, pCanvas, wsConnected])
+Promise.all([pInit, pBrushes, pCanvas])
   .then(() => { $("loading-overlay").hidden = true; })
   .catch((e) => { console.error("boot:", e); $("loading-overlay").hidden = true; });
 

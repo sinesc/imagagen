@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import threading
+import uuid
 from io import BytesIO
 from pathlib import Path
 
@@ -315,6 +316,9 @@ def create_app(
     app.state.style_store = StyleStore(config.styles_csv_path)
     app.state.segmentation = segmentation
     app.state.last_config_id: str | None = None
+    # unique per server start: the client uses it to invalidate its
+    # finished-job bookkeeping after a restart (job ids restart at 1)
+    app.state.server_id = uuid.uuid4().hex
 
     # --- cache policy ---
     # Local single-user tool: the browser must never serve stale UI state.
@@ -652,7 +656,14 @@ def create_app(
                            meta_prompt=body.prompt,
                            meta_negative=body.negative_prompt,
                            meta_styles=meta_styles)
-        return {"job_id": job.id}
+        return {
+            "job_id": job.id,
+            "server_id": app.state.server_id,
+            # fast failures can settle the job before this response is
+            # delivered; the client must not flip the button to "Interrupt"
+            # for a job that is already over
+            "done": job.done_emitted or job.interrupted,
+        }
 
     @app.post("/api/interrupt")
     def interrupt(body: dict) -> dict:
