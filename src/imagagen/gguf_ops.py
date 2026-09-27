@@ -415,6 +415,10 @@ class QuantLinear(torch.nn.Module):
         self.weight = None
         self.bias = None
         self.lora_deltas: list[tuple[torch.nn.Parameter, torch.nn.Parameter, int, int]] = []
+        # optional additive bias delta (the Z-Image LoRA `.diff_b` keys):
+        # registered as a parameter ONLY while installed (set_lora_bias);
+        # read via getattr(self, "lora_bias", None) -- a plain None here
+        # would make register_parameter raise "attribute already exists"
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                              missing_keys, unexpected_keys, error_msgs):
@@ -481,6 +485,11 @@ class QuantLinear(torch.nn.Module):
             weight = self._dequantize(weight).to(device=x.device, dtype=x.dtype)
         bias = self.bias.to(device=x.device) if self.bias is not None else None
         out = torch.nn.functional.linear(x, weight, bias)
+        lora_bias = getattr(self, "lora_bias", None)
+        if lora_bias is not None:
+            # additive bias delta: a registered parameter, so .to(device)/
+            # unload moves it with the module (see set_lora_bias)
+            out = out + lora_bias.to(dtype=x.dtype)
         if self.lora_deltas:
             # runtime LoRA deltas (Forge's online mode): the base weight
             # stays quantized, each delta adds its (rank, in) @ (out, rank)
@@ -519,6 +528,29 @@ class QuantLinear(torch.nn.Module):
             self.register_parameter(f"lora_B_{i}", pb)
             self.lora_deltas.append((pa, pb, r0, r1))
 
+    def set_lora_bias(self, delta) -> None:
+        """Install an additive bias delta (replaces any previous one).
+
+        ``delta`` is moved to the weight's device/dtype and registered as
+        a parameter (named ``lora_bias``) so ``.to(device)`` moves it with
+        the module. Call under the shared ``_PARAM_INIT_LOCK``.
+        """
+        self.clear_lora_bias()
+        w = self.weight
+        device = w.data.device if w is not None else None
+        dtype = (getattr(w, "computation_dtype", None)
+                 or self.computation_dtype
+                 or (w.dtype if w is not None else None))
+        if device is not None:
+            delta = delta.to(device=device, dtype=dtype)
+        pb = torch.nn.Parameter(delta.detach(), requires_grad=False)
+        self.register_parameter("lora_bias", pb)
+
+    def clear_lora_bias(self) -> None:
+        """Remove any installed bias delta."""
+        if "lora_bias" in self._parameters:
+            self.register_parameter("lora_bias", None)
+
     def clear_lora_deltas(self) -> None:
         """Remove every installed LoRA delta (the module goes back to base).
 
@@ -532,6 +564,7 @@ class QuantLinear(torch.nn.Module):
         for name in [n for n in list(self.__dict__)
                      if n.startswith(("lora_A_", "lora_B_"))]:
             delattr(self, name)
+        self.clear_lora_bias()
 
 
 class GgufLinear(QuantLinear):

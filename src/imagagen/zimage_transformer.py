@@ -140,7 +140,15 @@ def timestep_embedding(t, dim, max_period=10000):
 
 
 class RMSNorm(nn.Module):
-    """Affine RMSNorm with an explicit ``eps`` (``F.rms_norm`` kernel)."""
+    """Affine RMSNorm with an explicit ``eps`` (``F.rms_norm`` kernel).
+
+    An optional additive LoRA weight delta (the Z-Image LoRA ``.diff``
+    keys) may be registered as a ``lora_weight`` parameter via
+    :meth:`set_lora_weight` and is added to the base weight on every
+    forward (read via ``getattr(self, "lora_weight", None)`` -- a plain
+    ``None`` attribute here would make ``register_parameter`` raise
+    "attribute already exists").
+    """
 
     def __init__(self, dim, eps):
         super().__init__()
@@ -149,9 +157,31 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
-        if self.weight.dtype != x.dtype:
-            self.weight = nn.Parameter(self.weight.to(dtype=x.dtype))
-        return F.rms_norm(x, self.normalized_shape, self.weight, self.eps)
+        w = self.weight
+        if w.dtype != x.dtype:
+            w = nn.Parameter(w.to(dtype=x.dtype))
+        lora_weight = getattr(self, "lora_weight", None)
+        if lora_weight is not None:
+            w = w + lora_weight.to(dtype=x.dtype)
+        return F.rms_norm(x, self.normalized_shape, w, self.eps)
+
+    def set_lora_weight(self, delta) -> None:
+        """Install an additive LoRA weight delta (replaces any previous one).
+
+        ``delta`` is cast to bf16 on the weight's device and registered as
+        a parameter (named ``lora_weight``) so ``.to(device)`` moves it
+        with the module. Call under the shared ``_PARAM_INIT_LOCK``.
+        """
+        self.clear_lora_weight()
+        p = torch.nn.Parameter(
+            delta.to(device=self.weight.device, dtype=torch.bfloat16).detach(),
+            requires_grad=False)
+        self.register_parameter("lora_weight", p)
+
+    def clear_lora_weight(self) -> None:
+        """Remove any installed LoRA weight delta."""
+        if "lora_weight" in self._parameters:
+            self.register_parameter("lora_weight", None)
 
 
 # --------------------------------------------------------------- model ----

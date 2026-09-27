@@ -63,8 +63,8 @@ from .flux_lora import FluxLoraSpec, merge_module_deltas
 from .gguf_ops import QuantLinear, quant_linear_scope
 from .qwen3_encoder import load_zit_encoder, zimage_prompt_template
 from .soft_inpaint import adaptive_change_alpha, latent_blend
-from .zimage_lora import parse_zimage_lora
-from .zimage_transformer import ScaledFp8Linear, ZImageTransformer
+from .zimage_lora import ParamDelta, parse_zimage_lora
+from .zimage_transformer import RMSNorm, ScaledFp8Linear, ZImageTransformer
 
 
 def _model_hash(path: str) -> str:
@@ -396,19 +396,20 @@ class ZImageBackend(ModelBackend):
         p = self.config.loras_dir / "zimage" / (name + ".safetensors")
         return str(p) if p.is_file() else None
 
-    def _parse_lora(self, path: str) -> list[FluxLoraSpec]:
+    def _parse_lora(self, path: str) -> tuple[list[FluxLoraSpec], list[ParamDelta]]:
         """Read + key-map a Z-Image LoRA (cached by ``(path, mtime)``).
 
-        Raises ``ValueError`` (unknown/unmappable keys, see zimage_lora) on
-        files this transformer cannot consume.
+        Returns ``(lora_pairs, param_deltas)``. Raises ``ValueError``
+        (unknown/unmappable keys, see zimage_lora) on files this
+        transformer cannot consume.
         """
         cached = self._lora_cache.get(path)
         mtime = Path(path).stat().st_mtime
         if cached is not None and cached[0] == mtime:
-            return cached[1]
-        specs = parse_zimage_lora(path)
-        self._lora_cache[path] = (mtime, specs)
-        return specs
+            return cached[1], cached[2]
+        specs, deltas = parse_zimage_lora(path)
+        self._lora_cache[path] = (mtime, specs, deltas)
+        return specs, deltas
 
     def _module_for(self, path: str):
         """Transformer submodule for a delta spec's module path."""
@@ -422,14 +423,17 @@ class ZImageBackend(ModelBackend):
     def _merge_lora_deltas(self, loras: tuple[tuple[str, float], ...]):
         """Resolve + map + merge a LoRA set into per-module delta specs.
 
-        Pure: returns ``{module path: [(A, B, r0, r1), ...]}`` (CPU
-        tensors; the weight * scale factor is pre-folded into A, and deltas
-        covering adjacent row slices of one module are merged so each
-        module costs ONE extra GEMM pair). Raises ``ValueError`` on a
-        missing file, an unmappable key, or a shape mismatch -- nothing is
-        mutated here, so a failing set leaves no partial state.
+        Pure: returns ``({module path: [(A, B, r0, r1), ...]},
+        {(module path, attr): delta tensor})`` (CPU tensors; the weight *
+        scale factor is pre-folded into A, and deltas covering adjacent row
+        slices of one module are merged so each module costs ONE extra
+        GEMM pair; the direct deltas are summed per target). Raises
+        ``ValueError`` on a missing file, an unmappable key, or a shape
+        mismatch -- nothing is mutated here, so a failing set leaves no
+        partial state.
         """
         per_module: dict[str, dict[tuple[int, int], list[tuple[torch.Tensor, torch.Tensor]]]] = {}
+        param: dict[tuple[str, str], torch.Tensor] = {}
         for name, weight in loras:
             if weight == 0.0:  # zero-weight LoRA: no delta at all
                 continue
@@ -437,7 +441,8 @@ class ZImageBackend(ModelBackend):
             if path is None:
                 raise ValueError(
                     f"Z-Image LoRA not found: {name!r} (looked in loras/zimage/)")
-            for spec in self._parse_lora(path):
+            specs, deltas = self._parse_lora(path)
+            for spec in specs:
                 rank = spec.A.shape[0]
                 if spec.B.shape[1] != rank:
                     raise ValueError(
@@ -452,7 +457,11 @@ class ZImageBackend(ModelBackend):
                 a = spec.A * (weight * spec.scale)
                 per_module.setdefault(spec.module, {}) \
                     .setdefault((spec.r0, spec.r1), []).append((a, spec.B))
-        return merge_module_deltas(per_module)
+            for d in deltas:
+                key = (d.module, d.attr)
+                param[key] = param.get(key, torch.zeros_like(d.delta)) + \
+                    d.delta * weight
+        return merge_module_deltas(per_module), param
 
     def _apply_loras(self, loras: list[tuple[str, float]]) -> None:
         """Attach the requested LoRAs to the transformer (cached per set).
@@ -464,20 +473,23 @@ class ZImageBackend(ModelBackend):
         each affected :class:`~imagagen.gguf_ops.QuantLinear` computes
         ``base + (x @ A.t()) @ B.t()`` per forward (lossless, reversible;
         the deltas are registered parameters so ``.to()``/``unload()`` moves
-        them and VRAM scales with them).
+        them and VRAM scales with them). The direct ``.diff``/``.diff_b``
+        deltas ride the same way: ``QuantLinear.set_lora_bias`` for biases
+        and ``RMSNorm.set_lora_weight`` for the norm scales.
 
         All-or-nothing: a set becomes ``_active_loras`` only once every
         module is patched; :meth:`_merge_lora_deltas` (parsing, mapping,
-        validation) runs before ANY module is touched, and parameter
-        registration runs under the shared ``_PARAM_INIT_LOCK``.
+        validation) runs before ANY module is touched, and every target is
+        resolved + shape-checked BEFORE the first mutation, with parameter
+        registration under the shared ``_PARAM_INIT_LOCK``.
         """
         key = tuple((n, float(w)) for n, w in loras)
         if key == self._active_loras:
             return  # identical set: no-op
-        merged = self._merge_lora_deltas(key)  # may raise: state untouched
+        merged, param_deltas = self._merge_lora_deltas(key)  # may raise
         with _PARAM_INIT_LOCK:
-            # drop whatever is currently applied, then install the new set
-            self._unload_loras()
+            # resolve + validate every target BEFORE mutating anything
+            plan: list[tuple[object, str, object]] = []
             for path, deltas in merged.items():
                 module = self._module_for(path)
                 if not isinstance(module, QuantLinear):
@@ -490,7 +502,45 @@ class ZImageBackend(ModelBackend):
                             f"{path!r}: LoRA input dim {a.shape[1]} != "
                             f"module in_features {module.in_features}"
                         )
-                module.set_lora_deltas(deltas)
+                plan.append((module, "deltas", deltas))
+            for (path, attr), t in param_deltas.items():
+                module = self._module_for(path)
+                if attr == "bias":
+                    b = getattr(module, "bias", None)
+                    if not isinstance(module, QuantLinear) or b is None:
+                        raise ValueError(
+                            f"{path!r} has no bias for a LoRA bias delta"
+                        )
+                    if tuple(b.shape) != tuple(t.shape):
+                        raise ValueError(
+                            f"{path!r}: bias delta {tuple(t.shape)} != "
+                            f"bias {tuple(b.shape)}"
+                        )
+                elif attr == "weight":
+                    w = getattr(module, "weight", None)
+                    if not isinstance(module, RMSNorm) or w is None:
+                        raise ValueError(
+                            f"{path!r} is not an RMSNorm (weight-delta target)"
+                        )
+                    if tuple(w.shape) != tuple(t.shape):
+                        raise ValueError(
+                            f"{path!r}: weight delta {tuple(t.shape)} != "
+                            f"weight {tuple(w.shape)}"
+                        )
+                else:
+                    raise ValueError(
+                        f"{path!r}: unknown LoRA delta attribute {attr!r}"
+                    )
+                plan.append((module, attr, t))
+            # drop whatever is currently applied, then install the new set
+            self._unload_loras()
+            for module, kind, payload in plan:
+                if kind == "deltas":
+                    module.set_lora_deltas(payload)
+                elif kind == "bias":
+                    module.set_lora_bias(payload)
+                else:
+                    module.set_lora_weight(payload)
         self._active_loras = key
         log.info("Z-Image LoRA load: %s", format_loras(list(key)))
 
@@ -503,7 +553,9 @@ class ZImageBackend(ModelBackend):
         """
         for module in self.transformer.modules():
             if getattr(module, "lora_deltas", None):
-                module.clear_lora_deltas()
+                module.clear_lora_deltas()  # also clears a bias delta
+            if getattr(module, "lora_weight", None) is not None:
+                module.clear_lora_weight()
 
     # ----------------------------------------------------------- generate ----
 
