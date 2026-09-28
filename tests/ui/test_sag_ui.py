@@ -76,7 +76,9 @@ def test_sag_disabled_for_non_sdxl_models(page, server):
     assert not page.locator("#sag-cfg").is_disabled()
 
     # the mock registry only knows SDXL models, so flip the selected
-    # configuration's family and re-apply the family controls directly
+    # configuration's family and re-apply the family controls directly;
+    # the label text dims (#aaa) while the checkbox is disabled
+    lab = page.locator(".sag-row .soft-check")
     for family, disabled in [("flux", True), ("zimage", True), ("sdxl", False)]:
         page.evaluate(
             "([f]) => { state.entries[0].family = f; applyFamilyControls(); }",
@@ -84,6 +86,8 @@ def test_sag_disabled_for_non_sdxl_models(page, server):
         )
         assert page.locator("#sag").is_disabled() is disabled
         assert page.locator("#sag-cfg").is_disabled() is disabled
+        assert lab.evaluate("e => getComputedStyle(e).color") == (
+            "rgb(170, 170, 170)" if disabled else "rgb(204, 204, 204)")
 
 
 def test_sag_options_dialog(page, server):

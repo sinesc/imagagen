@@ -115,6 +115,9 @@ select option[value=""] { font-style: italic; }
 }
 #controls .soft-row input[type="checkbox"],
 #controls .sag-row input[type="checkbox"] { width: auto; height: auto; padding: 0; }
+/* disabled checkbox rows: dim the label text (the checkbox itself is
+   already dimmed by the #controls input:disabled rule) */
+#controls .soft-check:has(input:disabled) { color: #aaa; }
 
 /* model configuration buttons next to the model selector */
 .model-row { align-items: flex-end; }

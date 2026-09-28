@@ -49,15 +49,20 @@ def test_soft_row_layout_and_mode_gating(page, server):
     assert abs(lab["y"] - box["y"]) < 5
     assert lab["x"] > box["x"] + box["width"]
 
-    # off by default; disabled in "generate" mode, enabled in inpaint modes
+    # off by default; disabled in "generate" mode, enabled in inpaint modes;
+    # the label text dims (#aaa) while the checkbox is disabled
+    lab = page.locator(".soft-row .soft-check")
     assert not page.locator("#soft-inpaint").is_checked()
     assert page.locator("#soft-inpaint").is_disabled()
+    assert lab.evaluate("e => getComputedStyle(e).color") == "rgb(170, 170, 170)"
     page.select_option("#mode", "inpaint_masked")
     assert not page.locator("#soft-inpaint").is_disabled()
+    assert lab.evaluate("e => getComputedStyle(e).color") == "rgb(204, 204, 204)"
     page.select_option("#mode", "inpaint_not_masked")
     assert not page.locator("#soft-inpaint").is_disabled()
     page.select_option("#mode", "generate")
     assert page.locator("#soft-inpaint").is_disabled()
+    assert lab.evaluate("e => getComputedStyle(e).color") == "rgb(170, 170, 170)"
 
 
 def test_soft_options_dialog(page, server):
