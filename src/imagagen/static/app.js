@@ -164,7 +164,10 @@ function makeCombobox(root, options, cfg = {}) {
     let lastGroup = null;
     let any = false;
     for (const o of curOpts()) {
-      if (f && !String(o.text).toLowerCase().includes(f)) continue;
+      // match the item text OR its group header (for path-grouped options the
+      // directory became the header, so typing part of the path still finds it)
+      if (f && !String(o.text).toLowerCase().includes(f) &&
+          !(o.group && String(o.group).toLowerCase().includes(f))) continue;
       if (o.group && o.group !== lastGroup) {
         list.append(el("li", { class: "combo-group" }, o.group));
         lastGroup = o.group;
@@ -286,6 +289,32 @@ function makeCombobox(root, options, cfg = {}) {
   return root;
 }
 
+// The combobox equivalent of an <optgroup> for path-like names: options whose
+// text is a relative path get grouped by its directory ("g/s/name" -> group
+// "g/s", item "name"), so the closed field shows the bare name and the list
+// shows the directory as a section header. Texts without a directory stay in
+// the (first) ungrouped section. Order: ungrouped first, groups by
+// localeCompare, items by localeCompare within a group (same convention as
+// the style/preset dropdowns).
+function pathGroupOptions(options) {
+  const ungrouped = [];
+  const groups = new Map(); // directory -> options
+  for (const o of options) {
+    const i = o.text.lastIndexOf("/");
+    if (i <= 0) { ungrouped.push(o); continue; }
+    const dir = o.text.slice(0, i);
+    if (!groups.has(dir)) groups.set(dir, []);
+    groups.get(dir).push({ ...o, text: o.text.slice(i + 1) });
+  }
+  const byText = (a, b) => a.text.localeCompare(b.text);
+  const out = [...ungrouped].sort(byText);
+  for (const [dir, opts] of [...groups.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0])
+  ))
+    [...opts].sort(byText).forEach((o) => out.push({ ...o, group: dir }));
+  return out;
+}
+
 // ---------------- generic dialog ----------------
 let dialogOk = null;
 let dialogClose = null;
@@ -368,9 +397,9 @@ function loraRow(name, weight, onChange, enabled = true, withToggle = true) {
   const root = el("span", { class: "lora-name" });
   const names = state.loras.slice();
   if (name && !names.includes(name)) names.push(name);
-  makeCombobox(root, names.map((n) => ({ value: n, text: n })), {
-    initial: name || "",
-  });
+  makeCombobox(root, pathGroupOptions(
+    names.map((n) => ({ value: n, text: n }))
+  ), { initial: name || "" });
   const wt = el("input", {
     class: "lora-weight", type: "number", min: "-10", max: "10", step: "0.05",
   });
@@ -925,6 +954,16 @@ function applyFamilyControls() {
 // main-form rows whose LoRA is no longer in that family's list (e.g. an
 // SDXL LoRA selected before switching to a Flux model). Mirrors
 // refreshSamplers().
+function modelOptions(models) {
+  // one option per configuration; default entries' names are model paths and
+  // get path-grouped (file configurations have free-form names and stay
+  // ungrouped unless the user put a slash in the name)
+  return pathGroupOptions(models.map((x) => ({
+    value: x.id,
+    text: x.is_default ? `${x.name} (default)` : x.name,
+  })));
+}
+
 async function refreshLoras() {
   const sel = $("model");
   const entry = state.entries.find((x) => x.id === sel.value) || state.entries[0];
@@ -953,10 +992,7 @@ async function refreshModels(keepSelection = true) {
   const sel = $("model");
   const cur = keepSelection ? sel.value : null;
   state.entries = m.models;
-  sel.setOptions(m.models.map((x) => ({
-    value: x.id,
-    text: x.is_default ? `${x.name} (default)` : x.name,
-  })));
+  sel.setOptions(modelOptions(m.models));
   if (cur && m.models.some((x) => x.id === cur)) sel.value = cur;
   else if (m.current) sel.value = m.current;
 }
@@ -2072,10 +2108,7 @@ async function init() {
   // build them first so the .value / setOptions below work, then feed options
   const sel = makeCombobox($("model"), [], {});
   makeCombobox($("preset"), [], { placeholder: "—" });
-  sel.setOptions(m.models.map((x) => ({
-    value: x.id,
-    text: x.is_default ? `${x.name} (default)` : x.name,
-  })));
+  sel.setOptions(modelOptions(m.models));
   if (m.current && m.models.some((x) => x.id === m.current)) sel.value = m.current;
   for (const id of ["sampler", "scheduler"]) {
     const s2 = $(id);
