@@ -379,7 +379,7 @@ function loraRow(name, weight, onChange, enabled = true, withToggle = true) {
     type: "button", class: "mini icon lora-toggle", title: "toggle on/off (off = not applied)",
   }, "◐") : null;
   const rm = el("button", { type: "button", class: "mini icon lora-rm", title: "remove" }, "−");
-  const row = el("div", { class: "lora-row" }, root, tog, wt, rm);
+  const row = el("div", { class: "lora-row" }, root, wt, tog, rm);
   const setInput = root.querySelector(".combo-input");
   const setEnabled = (on) => {
     row.classList.toggle("off", !on);

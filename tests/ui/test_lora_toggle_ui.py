@@ -52,14 +52,14 @@ def test_toggle_button_state_and_position(page, server):
     _add_lora(page, "beta", 0.5)
     wait_until(lambda: page.locator("#loras .lora-row").count() == 2)
 
-    # the toggle sits between the dropdown and the weight/− buttons:
-    # [combo, toggle, weight, remove]
+    # the toggle sits between the weight input and the − button:
+    # [combo, weight, toggle, remove]
     assert page.eval_on_selector(
         "#loras .lora-row:last-child",
         "r => [...r.children].map(c => c.classList.contains('lora-name') ? 'combo'\n"
         "  : c.classList.contains('lora-toggle') ? 'toggle'\n"
         "  : c.classList.contains('lora-weight') ? 'weight' : 'rm')") == \
-        ["combo", "toggle", "weight", "rm"]
+        ["combo", "weight", "toggle", "rm"]
 
     # off: the row is dimmed and the dropdown uses the disabled UI state
     _toggle(page)
