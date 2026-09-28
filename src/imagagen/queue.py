@@ -70,6 +70,9 @@ class Job:
     meta_prompt: str | None = None
     meta_negative: str | None = None
     meta_styles: list[dict] | None = None
+    # LoRAs the UI showed toggled off: not applied to the request, recorded
+    # in the image metadata so an import restores them in the disabled state
+    meta_disabled_loras: list[tuple[str, float]] | None = None
     # Batch-wide step progress (see _STEP_RE): `steps_per_task` is the total
     # number of denoising steps one image needs (learned from the backend's
     # first progress event; identical for every task of the job because they
@@ -182,6 +185,7 @@ class GenerationQueue:
         meta_prompt: str | None = None,
         meta_negative: str | None = None,
         meta_styles: list[dict] | None = None,
+        meta_disabled_loras: list[tuple[str, float]] | None = None,
     ) -> Job:
         import random
 
@@ -189,7 +193,8 @@ class GenerationQueue:
         job = Job(id=self._next_job_id, model_id=model_id, request=request,
                   batch_size=batch_size, base_seed=base_seed, plan=plan,
                   meta_prompt=meta_prompt, meta_negative=meta_negative,
-                  meta_styles=meta_styles)
+                  meta_styles=meta_styles,
+                  meta_disabled_loras=meta_disabled_loras)
         job.source_image_id = self.canvas.current_id()
         if job.source_image_id is not None:
             if plan is not None:
@@ -636,6 +641,9 @@ def _result_to_png(
         model_name=backend.name,
         model_hash=backend.model_hash,
         loras=req.loras if backend.supports_loras else [],
+        # recorded even though they were not applied to req.loras
+        disabled_loras=(job.meta_disabled_loras if job is not None
+                        and backend.supports_loras else None),
         styles=job.meta_styles if job is not None else None,
         soft_inpainting=req.soft_inpainting,
         sag=req.sag,

@@ -361,7 +361,10 @@ function dialogError(text) {
 }
 
 // ---------------- LoRA list rows (form + dialogs) ----------------
-function loraRow(name, weight, onChange) {
+// withToggle = the main form's on/off button (disabled LoRAs are kept in
+// the list but not applied, and round-trip through the PNG metadata and
+// ui-state); config/preset dialogs pass false (their LoRAs are always on)
+function loraRow(name, weight, onChange, enabled = true, withToggle = true) {
   const root = el("span", { class: "lora-name" });
   const names = state.loras.slice();
   if (name && !names.includes(name)) names.push(name);
@@ -372,8 +375,27 @@ function loraRow(name, weight, onChange) {
     class: "lora-weight", type: "number", min: "-10", max: "10", step: "0.05",
   });
   wt.value = weight;
+  const tog = withToggle ? el("button", {
+    type: "button", class: "mini icon lora-toggle", title: "toggle on/off (off = not applied)",
+  }, "◐") : null;
   const rm = el("button", { type: "button", class: "mini icon lora-rm", title: "remove" }, "−");
-  rm.onclick = () => { rm.closest(".lora-row").remove(); onChange && onChange(); };
+  const row = el("div", { class: "lora-row" }, root, tog, wt, rm);
+  const setInput = root.querySelector(".combo-input");
+  const setEnabled = (on) => {
+    row.classList.toggle("off", !on);
+    // disabled UI state for the dropdown: dimmed (CSS) and not openable
+    setInput.disabled = !on;
+    if (tog)
+      tog.title = on
+        ? "disable this LoRA (kept in the list, not applied)"
+        : "enable this LoRA";
+  };
+  if (tog)
+    tog.onclick = () => {
+      setEnabled(row.classList.contains("off"));
+      onChange && onChange();
+    };
+  rm.onclick = () => { row.remove(); onChange && onChange(); };
   root.onchange = () => {
     // selecting a LoRA defaults the weight to its preferred weight
     // (the settings .json stored next to the .safetensors)
@@ -383,7 +405,8 @@ function loraRow(name, weight, onChange) {
     onChange && onChange();
   };
   wt.oninput = () => onChange && onChange();
-  return el("div", { class: "lora-row" }, root, wt, rm);
+  setEnabled(enabled);
+  return row;
 }
 function loraAddButton(listEl, onChange) {
   const add = el("button", { type: "button", class: "mini", title: "add a LoRA" }, "+ LoRA");
@@ -395,10 +418,12 @@ function loraAddButton(listEl, onChange) {
   };
   return add;
 }
+// [name, weight, enabled] per row (rows without a toggle are always on)
 function readLoraList(listEl) {
   return [...listEl.querySelectorAll(".lora-row")].map((r) => [
     r.querySelector(".lora-name").value,
     parseFloat(r.querySelector(".lora-weight").value) || 0,
+    !r.classList.contains("off"),
   ]);
 }
 // the main form's LoRA list. Edits clear an active preset that covers LoRAs
@@ -407,11 +432,14 @@ function mainLoraChange() {
   onUserFieldChange("loras");
   scheduleSaveUiState();
 }
+// items: [name, weight] or [name, weight, enabled]
 function renderMainLoras(items) {
   const c = $("loras");
   c.innerHTML = "";
-  (items || []).forEach(([n, w]) => c.append(loraRow(n, w, mainLoraChange)));
+  (items || []).forEach(([n, w, en]) =>
+    c.append(loraRow(n, w, mainLoraChange, en !== false)));
 }
+// [name, weight, enabled] per row
 const getLoras = () => readLoraList($("loras")).filter((x) => x[0]);
 
 // ---------------- style list rows (styles.csv) ----------------
@@ -746,7 +774,10 @@ async function generate() {
     batch_size: parseInt($("batch").value, 10),
     sampler: $("sampler").value || null, // null = "use model default"
     scheduler: $("scheduler").value || null,
-    loras: getLoras(),
+    // disabled LoRAs are not applied but travel so the image metadata can
+    // record them (restored disabled on import)
+    loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
+    disabled_loras: getLoras().filter((x) => !x[2]).map(([n, w]) => [n, w]),
     styles: getStyles(),
     model_id: $("model").value || null,
     mode: $("mode").value,
@@ -917,7 +948,8 @@ function modeFieldset(title, section) {
   });
   cfg.value = section.cfg === null ? "" : section.cfg;
   const loraList = el("div", { class: "lora-list" });
-  (section.loras || []).forEach((l) => loraList.append(loraRow(l.name, l.weight)));
+  (section.loras || []).forEach((l) =>
+    loraList.append(loraRow(l.name, l.weight, undefined, true, false)));
   fs.append(
     el("div", { class: "row" },
       el("label", {}, "sampler", s),
@@ -1128,7 +1160,8 @@ async function loadPresets() {
 function presetValueInput(kind, value, emptyLabel = "—") {
   if (kind === "loras") {
     const list = el("div", { class: "lora-list preset-loras" });
-    if (value) value.forEach((x) => list.append(loraRow(x[0], x[1])));
+    if (value) value.forEach((x) =>
+      list.append(loraRow(x[0], x[1], undefined, true, false)));
     // same structure as the sidebar/config dialog: rows first, the "+ LoRA"
     // button after the list (added rows append to the list, above the button)
     return el("div", { class: "loras" }, list, loraAddButton(list));
@@ -1212,7 +1245,8 @@ function openPresetDialog(existing, onClose = null) {
       const input = row.querySelector("[data-preset-key]");
       const key = input.dataset.presetKey;
       body.controls[key] = row.querySelector(".preset-cb").checked;
-      if (input.dataset.presetKind === "loras") body[key] = readLoraList(input);
+      if (input.dataset.presetKind === "loras")
+        body[key] = readLoraList(input).map(([n, w]) => [n, w]);
       else if (input.dataset.presetKind === "bool") body[key] = input.checked;
       else if (input.dataset.presetKind === "select") {
         // sampler/scheduler: "" is a real value ("Model default", the
@@ -1714,8 +1748,11 @@ async function applyPngMeta(meta, width, height) {
     ? state.entries.find((e) => e.name === meta.model || e.id === meta.model) || null
     : null;
   const targetEntry = matchedEntry || currentEntry();
-  if (meta.loras?.length) {
-    let loras = parseMetaLoras(meta.loras);
+  if (meta.loras?.length || meta.disabled_loras?.length) {
+    let loras = parseMetaLoras(meta.loras || []);
+    // the Disabled LoRAs metadata line: restored as disabled rows
+    let off = parseMetaLoras(meta.disabled_loras || [])
+      .map(([n, w]) => [n, w, false]);
     if (targetEntry) {
       // match on name AND weight (a user may have added a config LoRA at
       // another weight in the UI; only the config-provided copy is removed)
@@ -1724,8 +1761,9 @@ async function applyPngMeta(meta, width, height) {
           .map((l) => `${l.name}@${l.weight}`)
       );
       loras = loras.filter(([name, weight]) => !configLoras.has(`${name}@${weight}`));
+      off = off.filter(([name, weight]) => !configLoras.has(`${name}@${weight}`));
     }
-    renderMainLoras(loras);
+    renderMainLoras([...loras, ...off]);
   }
   // styles travel as name + actual contents; the server registers missing
   // ones as in-memory "Session" temporaries (not written to styles.csv)
@@ -1878,7 +1916,8 @@ function readUiState() {
     sag_scale: state.sag.scale,
     sag_blur_sigma: state.sag.blur,
     sag_threshold: state.sag.threshold,
-    loras: getLoras(),
+    loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
+    disabled_loras: getLoras().filter((x) => !x[2]).map(([n, w]) => [n, w]),
     styles: getStyles(),
     // preset is not persisted either: the dropdown always starts at "—"
     seg_model: $("seg-model").value || null,
@@ -1907,7 +1946,10 @@ function applyUiState(st) {
   for (const [elm, key] of fields) {
     if (st[key] !== undefined && st[key] !== null) $(elm).value = st[key];
   }
-  renderMainLoras(st.loras || []);
+  renderMainLoras([
+    ...(st.loras || []).map((x) => [x[0], x[1], true]),
+    ...(st.disabled_loras || []).map((x) => [x[0], x[1], false]),
+  ]);
   renderMainStyles(st.styles || []);
   // display-only restore: the model itself is NOT preloaded (it loads
   // lazily on the next generation, matching the registry design)

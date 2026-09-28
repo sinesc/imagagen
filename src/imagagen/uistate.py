@@ -62,6 +62,8 @@ class UiState(BaseModel):
     # user-selected LoRAs, [[name, weight], ...] (model-config LoRAs are
     # prepended server-side at generation time)
     loras: list[tuple[str, float]] = Field(default_factory=list)
+    # LoRAs shown toggled off in the UI (not applied, kept in the list)
+    disabled_loras: list[tuple[str, float]] = Field(default_factory=list)
     # user-selected styles (names from styles.csv), in list order
     styles: list[str] = Field(default_factory=list)
     # person mask generation (Phase 5): the selected segmentation model

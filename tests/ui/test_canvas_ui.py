@@ -1150,17 +1150,17 @@ def test_drop_png_loras_skip_the_model_config_loras(page, server):
     # the image was made with the config LoRA (dmd2@0.7, prepended) plus a
     # user-selected LoRA (detail@1.0): only the user's survives the import
     _drop_png(page, "#prompt", _lora_png("Mock Model", [("dmd2", 0.7), ("detail", 1.0)]))
-    assert wait_until(lambda: page.evaluate("getLoras()") == [["detail", 1.0]])
+    assert wait_until(lambda: page.evaluate("getLoras()") == [["detail", 1.0, True]])
 
     # a user-selected copy of a config LoRA at a DIFFERENT weight stays:
     # the match is on name AND weight
     _drop_png(page, "#prompt", _lora_png("Mock Model", [("dmd2", 0.7), ("dmd2", 0.9)]))
-    assert wait_until(lambda: page.evaluate("getLoras()") == [["dmd2", 0.9]])
+    assert wait_until(lambda: page.evaluate("getLoras()") == [["dmd2", 0.9, True]])
 
     # image from a model with no configuration here: the filter falls back
     # to the currently selected configuration
     _drop_png(page, "#prompt", _lora_png("Other Model", [("dmd2", 0.7), ("detail", 0.5)]))
-    assert wait_until(lambda: page.evaluate("getLoras()") == [["detail", 0.5]])
+    assert wait_until(lambda: page.evaluate("getLoras()") == [["detail", 0.5, True]])
 
     # an image with no Lora lines clears the previous selection (a prompt
     # that resolves to no LoRAs must not silently keep the user's old picks)

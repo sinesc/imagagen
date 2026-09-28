@@ -241,3 +241,30 @@ def test_forge_lora_hash_is_sha256_of_basename():
     # the path is ignored, the extension is part of the name
     assert metadata.forge_lora_hash(
         "/some/where/Deep.safetensors") == metadata.forge_lora_hash("Deep.safetensors")
+
+
+def test_disabled_loras_roundtrip():
+    params = metadata.build_parameters(
+        prompt="p", negative_prompt="", steps=12, sampler="Euler a",
+        scheduler="Polyexponential", cfg=1.5, seed=1, width=64,
+        height=64, model_name="m", model_hash="h",
+        loras=[("Foo", 0.8)],
+        disabled_loras=[("Bar", -0.3), ("Qux/Deep", 1.0)],
+    )
+    # applied LoRAs stay on the meta line; disabled ones travel on a
+    # dedicated trailing line in the same name@weight shape
+    assert "Lora: Foo@0.8" in params
+    assert "Disabled LoRAs: Bar@-0.3, Qux/Deep@1" in params
+    parsed = metadata.parse_parameters(params)
+    assert parsed["loras"] == ["Foo@0.8"]
+    assert parsed["disabled_loras"] == ["Bar@-0.3", "Qux/Deep@1"]
+
+
+def test_disabled_loras_absent_by_default():
+    params = metadata.build_parameters(
+        prompt="p", negative_prompt="", steps=12, sampler="Euler a",
+        scheduler="Polyexponential", cfg=1.5, seed=1, width=64,
+        height=64, model_name="m", model_hash="h", loras=[("Foo", 0.8)],
+    )
+    assert "Disabled LoRAs" not in params
+    assert "disabled_loras" not in metadata.parse_parameters(params)

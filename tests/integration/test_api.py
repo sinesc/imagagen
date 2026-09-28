@@ -243,3 +243,29 @@ def test_loras_family_filter(client, tmp_path):
     assert client.get("/api/loras?family=sdxl").json()["loras"] == ["FooXL"]
     assert client.get("/api/loras?family=flux").json()["loras"] == ["Bar1.0"]
     assert client.get("/api/loras?family=nope").json()["loras"] == []
+
+
+def test_generate_records_disabled_loras(client):
+    """Disabled LoRAs are recorded in the image metadata (for import) but
+    are NOT applied — the backend only receives the enabled ones."""
+    from imagagen import metadata
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": "lora test", "width": 64, "height": 64,
+            "steps": 2, "seed": 1,
+            "loras": [("alpha", 0.8)],
+            "disabled_loras": [("beta", -0.3), ("gamma", 1.0)],
+        })
+        job_id = r.json()["job_id"]
+        _wait_for(client, ws, "done")
+        m = metadata.read_metadata(
+            client.get(f"/api/thumb/{job_id}/0.png").content)
+        assert m["loras"] == ["alpha@0.8"]
+        assert m["disabled_loras"] == ["beta@-0.3", "gamma@1"]
+    # ui-state round-trip
+    r = client.post("/api/ui-state", json={
+        "loras": [["alpha", 0.8]], "disabled_loras": [["beta", -0.3]],
+    })
+    assert r.status_code == 200
+    st = client.get("/api/ui-state").json()["state"]
+    assert st["disabled_loras"] == [["beta", -0.3]]

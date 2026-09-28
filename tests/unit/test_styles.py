@@ -263,6 +263,7 @@ def test_metadata_styles_roundtrip():
         {"name": "Realism Negatives", "prompt": "",
          "negative_prompt": "digital art, painting, cartoon"},
     ]
+    expected = [dict(s, enabled=True) for s in styles]
     text = metadata.build_parameters(
         prompt="raw user prompt",
         negative_prompt="ugly",
@@ -281,7 +282,7 @@ def test_metadata_styles_roundtrip():
     assert out["prompt"] == "raw user prompt"
     assert out["negative_prompt"] == "ugly"
     assert out["steps"] == 25
-    assert out["styles"] == styles
+    assert out["styles"] == expected
 
 
 def test_metadata_no_styles_unchanged():
@@ -325,4 +326,4 @@ def test_styles_survive_png_write(tmp_path):
     out = metadata.read_metadata((tmp_path / "x.png").read_bytes())
     assert out["prompt"] == "raw"
     assert out["styles"] == [{"name": "S", "prompt": "s {prompt}",
-                              "negative_prompt": ""}]
+                              "negative_prompt": "", "enabled": True}]

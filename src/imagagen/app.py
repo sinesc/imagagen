@@ -172,6 +172,10 @@ class GenerateBody(BaseModel):
     sampler: str | None = None
     scheduler: str | None = None
     loras: list[tuple[str, float]] = Field(default_factory=list)
+    # LoRAs the UI shows toggled OFF: not applied, but recorded in the
+    # image metadata (name@weight, in UI row order) so an import restores
+    # them in the disabled state
+    disabled_loras: list[tuple[str, float]] = Field(default_factory=list)
     # ordered list of style names (styles.csv), applied to the prompt /
     # negative prompt before generation
     styles: list[str] = Field(default_factory=list)
@@ -655,7 +659,9 @@ def create_app(
         job = queue.submit(model_id, req, body.batch_size, plan=plan,
                            meta_prompt=body.prompt,
                            meta_negative=body.negative_prompt,
-                           meta_styles=meta_styles)
+                           meta_styles=meta_styles,
+                           # recorded in the metadata but NOT applied
+                           meta_disabled_loras=body.disabled_loras)
         return {
             "job_id": job.id,
             "server_id": app.state.server_id,

@@ -99,6 +99,7 @@ def build_parameters(
     model_hash: str,
     denoise: float | None = None,
     loras: list[tuple[str, float]] | None = None,
+    disabled_loras: list[tuple[str, float]] | None = None,
     styles: list[dict] | None = None,
     soft_inpainting: SoftInpainting | None = None,
     sag: SelfAttentionGuidance | None = None,
@@ -121,6 +122,13 @@ def build_parameters(
     ``distilled``: Flux only (None = not a Flux model, line omitted). Written
     in BOTH states (like the SAG flags) so the mode the image was generated
     with is recorded next to the CFG value it was interpreted as.
+
+    ``disabled_loras``: LoRAs the user toggled off in the UI. They are NOT in
+    ``loras`` (not applied) but travel on a dedicated ``Disabled LoRAs:``
+    line (``name@weight`` pairs, like the ``Lora:`` meta entries) AFTER the
+    meta line, so an import restores them as disabled rows. Foreign parsers
+    (A1111/Forge) ignore the trailing line, and since the entries are not on
+    the ``Lora:`` lines they will not apply the disabled LoRAs.
     """
     lines = [prompt]
     if negative_prompt:
@@ -188,11 +196,16 @@ def build_parameters(
                 "name": s.get("name", ""),
                 "prompt": s.get("prompt", ""),
                 "negative_prompt": s.get("negative_prompt", ""),
+                "enabled": bool(s.get("enabled", True)),
             }
             for s in styles
         ]
         # no newlines in the JSON (prompts keep theirs as \n escapes)
         lines.append("Styles: " + json.dumps(entries, ensure_ascii=False))
+    if disabled_loras:
+        # kept off the meta line on purpose: the value contains ", "
+        lines.append("Disabled LoRAs: "
+                     + ", ".join(f"{n}@{w:g}" for n, w in disabled_loras))
     return "\n".join(lines)
 
 
@@ -317,6 +330,15 @@ def parse_parameters(text: str) -> dict[str, Any]:
                     out["styles"] = styles
             except json.JSONDecodeError:
                 pass
+            break
+    # imagagen extension: a trailing `Disabled LoRAs: name@w, ...` line,
+    # same `name@weight` shape as the `Lora:` meta entries (kept as strings,
+    # like out["loras"])
+    for line in lines:
+        if line.startswith("Disabled LoRAs:"):
+            out["disabled_loras"] = [
+                p.strip() for p in line.split(":", 1)[1].split(",") if p.strip()
+            ]
             break
     return out
 

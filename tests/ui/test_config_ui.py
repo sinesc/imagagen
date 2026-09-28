@@ -141,7 +141,7 @@ def test_lora_rows(page, server):
     page.click("#lora-add")
     combo_pick(page, page.locator("#loras .lora-row .lora-name"), "dmd2")
     page.locator("#loras .lora-row").locator(".lora-weight").fill("0.8")
-    assert page.evaluate("getLoras()") == [["dmd2", 0.8]]
+    assert page.evaluate("getLoras()") == [["dmd2", 0.8, True]]
 
     # the choice persists in ui-state (debounced saves: wait for the final
     # one, since an earlier save may still carry an empty lora list)

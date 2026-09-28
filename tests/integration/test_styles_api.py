@@ -149,8 +149,9 @@ def test_generate_applies_styles_and_metadata(client):
     styles = json.loads(meta["parameters"].splitlines()[-1].removeprefix("Styles:"))
     assert styles == [
         {"name": "Cinematic", "prompt": "cinematic film still {prompt} . moody",
-         "negative_prompt": ""},
-        {"name": "Negs", "prompt": "", "negative_prompt": "digital art, cartoon"},
+         "negative_prompt": "", "enabled": True},
+        {"name": "Negs", "prompt": "", "negative_prompt": "digital art, cartoon",
+         "enabled": True},
     ]
     # /api/png-meta round-trips it (what the UI import consumes)
     r = client.post("/api/png-meta", content=client.get("/api/thumb/1/0.png").content)
