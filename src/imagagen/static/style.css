@@ -62,7 +62,9 @@ body.resizing-sidebar, body.resizing-sidebar * {
 /* disabled fields stay recognisable but visibly dimmed */
 #controls input:disabled,
 #controls select:disabled,
-#controls button:disabled {
+#controls button:disabled,
+#controls textarea:disabled,
+#prompts textarea:disabled {
   opacity: 0.5;
   cursor: default;
 }
