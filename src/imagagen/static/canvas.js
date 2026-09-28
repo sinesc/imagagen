@@ -478,6 +478,11 @@ function drawPreview(ctx) {
   ctx.globalAlpha = 1;
 }
 
+// wheel delta with the shift-fallback described above
+function wheelDelta(e) {
+  return e.deltaY !== 0 ? e.deltaY : e.deltaX;
+}
+
 // ---------------- crop tool ----------------
 
 // The crop selection's actual region: the drag's bounding rect clamped to
@@ -735,12 +740,16 @@ function setupCanvasInput() {
     endStroke();
   });
 
-  // wheel zoom, anchored at the cursor
+  // wheel zoom, anchored at the cursor; CTRL+wheel = brush size,
+  // SHIFT+wheel = opacity (the browser turns a shifted vertical wheel into
+  // horizontal delta, so fall back to deltaX when deltaY is 0)
   c.addEventListener(
     "wheel",
     (e) => {
       if (!view.has) return;
       e.preventDefault();
+      if (e.ctrlKey) { wheelBrushSize(Math.pow(1.0015, -wheelDelta(e))); return; }
+      if (e.shiftKey) { wheelBrushOpacity(Math.pow(1.0015, -wheelDelta(e))); return; }
       const r = c.getBoundingClientRect();
       viewZoomAt(
         Math.pow(1.0015, -e.deltaY),

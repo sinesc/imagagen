@@ -1167,3 +1167,76 @@ def test_drop_png_loras_skip_the_model_config_loras(page, server):
     _drop_png(page, "#prompt", _lora_png("Mock Model", []))
     page.wait_for_timeout(200)
     assert page.evaluate("getLoras()") == []
+
+
+# ---------------- wheel modifiers (CTRL = size, SHIFT = opacity) ----------------
+
+
+def _wheel(page, delta_y=0.0, delta_x=0.0, ctrl=False, shift=False):
+    """Dispatch a synthetic wheel event on the canvas element."""
+    page.evaluate(
+        """([dy, dx, ctrl, shift]) => {
+            document.getElementById('canvas').dispatchEvent(new WheelEvent('wheel', {
+                bubbles: true, cancelable: true,
+                deltaY: dy, deltaX: dx, ctrlKey: ctrl, shiftKey: shift,
+            }));
+        }""",
+        [delta_y, delta_x, ctrl, shift],
+    )
+
+
+def test_ctrl_wheel_changes_brush_size(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    x, y = _centre(page)
+    page.mouse.move(x, y)
+
+    page.keyboard.press("d")  # brush tool: the sliders edit its state
+    before = page.evaluate("Tools.get().size")
+    scale_before = page.evaluate("view.scale")
+    _wheel(page, delta_y=-120, ctrl=True)
+    size_up = page.evaluate("Tools.get().size")
+    _wheel(page, delta_y=120, ctrl=True)
+    size_down = page.evaluate("Tools.get().size")
+    assert size_up > before and size_down <= before
+    # the slider + readout followed the change
+    assert page.evaluate("document.getElementById('brush-size-val').textContent") \
+        == str(size_down)
+    # a plain wheel still zooms (and the ctrl/shift ones did not)
+    assert page.evaluate("view.scale") == pytest.approx(scale_before)
+    _wheel(page, delta_y=-120)
+    assert page.evaluate("view.scale") > scale_before
+    # size is clamped to the slider range (10..300)
+    for _ in range(200):
+        _wheel(page, delta_y=-120, ctrl=True)
+    assert page.evaluate("Tools.get().size") == 300
+    for _ in range(200):
+        _wheel(page, delta_y=120, ctrl=True)
+    assert page.evaluate("Tools.get().size") == 10
+
+
+def test_shift_wheel_changes_opacity(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    x, y = _centre(page)
+    page.mouse.move(x, y)
+
+    set_input(page, "#brush-opacity", "0.5")
+    _wheel(page, delta_y=-120, shift=True)
+    op_up = page.evaluate("Tools.get().opacity")
+    assert op_up == pytest.approx(0.6, abs=0.011)
+    _wheel(page, delta_y=120, shift=True)
+    assert page.evaluate("Tools.get().opacity") == pytest.approx(0.5, abs=0.011)
+    # browsers deliver a shifted vertical wheel as HORIZONTAL delta: the
+    # handler must fall back to deltaX
+    _wheel(page, delta_x=-120, shift=True)
+    assert page.evaluate("Tools.get().opacity") == pytest.approx(0.6, abs=0.011)
+    # clamped to the slider range (0.05..1)
+    for _ in range(200):
+        _wheel(page, delta_y=-120, shift=True)
+    assert page.evaluate("Tools.get().opacity") == 1
+    for _ in range(300):
+        _wheel(page, delta_y=120, shift=True)
+    assert page.evaluate("Tools.get().opacity") == 0.05

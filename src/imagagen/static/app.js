@@ -1329,6 +1329,28 @@ function syncToolbar() {
   $("brush-opacity-val").textContent = st.opacity.toFixed(2);
 }
 
+// CTRL+wheel (size) / SHIFT+wheel (opacity) adjustments, called from the
+// canvas wheel handler (canvas.js): multiplicative, same 1.0015^delta
+// curve as wheel zoom, clamped to the slider ranges
+function wheelBrushSize(factor) {
+  const st = Tools.get();
+  const s = Math.min(BRUSH_SIZE_MAX, Math.max(BRUSH_SIZE_MIN,
+                 Math.round(st.size * factor)));
+  if (s === st.size) return;
+  st.size = s;
+  Tools.save();
+  syncToolbar();
+}
+function wheelBrushOpacity(factor) {
+  const st = Tools.get();
+  // round to the slider's 0.01 step
+  const o = Math.round(Math.min(1, Math.max(0.05, st.opacity * factor)) * 100) / 100;
+  if (o === st.opacity) return;
+  st.opacity = o;
+  Tools.save();
+  syncToolbar();
+}
+
 function switchTool(t) {
   // switching to a DIFFERENT tool abandons an in-progress crop selection
   // (re-arming the crop tool itself, e.g. tapping P mid-drag, does not)
