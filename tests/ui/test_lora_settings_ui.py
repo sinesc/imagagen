@@ -10,28 +10,32 @@ import json
 from conftest import combo_pick
 
 
-def _seed_lora(root, name="DMD", weight=0.7):
+def _seed_lora(root, name="DMD", weight=0.7, with_json=True):
     d = root / "loras" / "sdxl"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{name}.safetensors").write_bytes(b"")
-    (d / f"{name}.json").write_text(json.dumps({
-        "description": "forge desc", "sd version": "SDXL",
-        "activation text": "act", "preferred weight": weight,
-        "negative text": "neg", "notes": "note",
-    }))
+    if with_json:
+        (d / f"{name}.json").write_text(json.dumps({
+            "description": "forge desc", "sd version": "SDXL",
+            "activation text": "act", "preferred weight": weight,
+            "negative text": "neg", "notes": "note",
+        }))
     return d / f"{name}.json"
 
 
 def test_lora_settings_ui(page, server):
     base, root = server
     jpath = _seed_lora(root)
+    _seed_lora(root, "NOCFG", with_json=False)  # no settings .json
     page.goto(base)
     page.wait_for_function(
         "state.loras.includes('DMD') && !!state.loraSettings['DMD']"
     )
 
-    # selecting a LoRA defaults the weight to its preferred weight
+    # a new row starts at the default weight (0.8) before a LoRA is picked
     page.click("#lora-add")
+    assert page.locator(".lora-weight").input_value() == "0.8"
+    # selecting a LoRA defaults the weight to its preferred weight
     combo_pick(page, page.locator(".lora-row .lora-name"), "DMD")
     assert page.locator(".lora-weight").input_value() == "0.7"
 
@@ -41,11 +45,29 @@ def test_lora_settings_ui(page, server):
     page.wait_for_function(
         "document.getElementById('dialog-title').textContent === 'LoRA configuration'"
     )
-    row = page.locator("#dialog-body .preset-manage-row")
+    row = page.locator(
+        "#dialog-body .preset-manage-row:has-text('DMD')"
+    )
     assert row.count() == 1
     assert "DMD" in row.locator(".preset-manage-name").text_content()
     assert row.locator("button").count() == 1
     assert row.locator("button").get_attribute("title") == "edit"
+
+    # a LoRA without a settings .json defaults its preferred weight to 0.8
+    page.locator(
+        "#dialog-body .preset-manage-row:has-text('NOCFG') button"
+    ).click()
+    page.wait_for_function(
+        "document.getElementById('dialog-title').textContent === 'Edit LoRA'"
+    )
+    body = "#dialog-body .style-dialog"
+    assert page.locator(
+        f"{body} label:has-text('preferred weight') input"
+    ).input_value() == "0.8"
+    page.locator("#dialog-cancel").click()  # close the edit dialog
+    page.wait_for_function(
+        "document.getElementById('dialog-title').textContent === 'LoRA configuration'"
+    )
 
     # the edit dialog: prefilled fields, readonly name, no delete anywhere
     row.locator("button").click()

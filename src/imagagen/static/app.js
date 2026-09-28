@@ -388,7 +388,7 @@ function loraRow(name, weight, onChange) {
 function loraAddButton(listEl, onChange) {
   const add = el("button", { type: "button", class: "mini", title: "add a LoRA" }, "+ LoRA");
   add.onclick = () => {
-    const row = loraRow("", 1, onChange);
+    const row = loraRow("", 0.8, onChange);
     listEl.append(row);
     row.querySelector(".lora-name").open();
     onChange && onChange();
@@ -555,7 +555,7 @@ function openLoraDialog(name, onClose = null) {
   const descIn = el("textarea", { class: "style-prompt", rows: "4" });
   descIn.value = s.description || "";
   const wtIn = el("input", { type: "number", min: "-10", max: "10", step: "0.05" });
-  wtIn.value = s["preferred weight"] ?? 0;
+  wtIn.value = s["preferred weight"] ?? 0.8;
   const actIn = el("textarea", { class: "style-prompt", rows: "3" });
   actIn.value = s["activation text"] || "";
   const negIn = el("textarea", { class: "style-prompt", rows: "3" });
@@ -1607,7 +1607,7 @@ function wireConfig() {
   };
   $("cfg-delete").onclick = deleteConfig;
   $("lora-add").onclick = () => {
-    const row = loraRow("", 1, mainLoraChange);
+    const row = loraRow("", 0.8, mainLoraChange);
     $("loras").append(row);
     row.querySelector(".lora-name").open();
   };
