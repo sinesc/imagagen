@@ -2123,12 +2123,24 @@ document.addEventListener("keydown", (e) => {
   });
 });
 
-// B / M / C / S switch tools (when not typing in a field); CTRL (clone
-// tool, a source set) makes the source follow the cursor until it is released
+// D / S / C / M / P switch tools, N / K / R act on the mask, F fits the
+// image, CTRL+Z / CTRL+Y undo / redo (all when not typing in a field);
+// CTRL (clone tool, a source set) makes the source follow the cursor until
+// it is released
 document.addEventListener("keydown", (e) => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
   if (typing) return;
-  if (e.key === "b" || e.key === "B") switchTool("brush");
+  if (e.ctrlKey && (e.key === "z" || e.key === "Z")) {
+    e.preventDefault();
+    $("btn-undo").onclick();
+    return;
+  }
+  if (e.ctrlKey && (e.key === "y" || e.key === "Y")) {
+    e.preventDefault();
+    $("btn-redo").onclick();
+    return;
+  }
+  if (e.key === "d" || e.key === "D") switchTool("brush");
   else if (e.key === "m" || e.key === "M") switchTool("mask");
   else if (e.key === "c" || e.key === "C") switchTool("clone");
   else if (e.key === "s" || e.key === "S") switchTool("smudge");
