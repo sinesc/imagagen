@@ -1331,7 +1331,7 @@ function syncToolbar() {
 
 function switchTool(t) {
   // switching to a DIFFERENT tool abandons an in-progress crop selection
-  // (re-arming the crop tool itself, e.g. tapping X mid-drag, does not)
+  // (re-arming the crop tool itself, e.g. tapping P mid-drag, does not)
   if (view.crop && Tools.current !== t) abortCrop();
   Tools.switch(t);
   syncToolbar();
@@ -2144,7 +2144,11 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "m" || e.key === "M") switchTool("mask");
   else if (e.key === "c" || e.key === "C") switchTool("clone");
   else if (e.key === "s" || e.key === "S") switchTool("smudge");
-  else if (e.key === "x" || e.key === "X") switchTool("crop");
+  else if (e.key === "p" || e.key === "P") switchTool("crop");
+  else if (e.key === "n" || e.key === "N") $("mask-dilate").onclick();
+  else if (e.key === "k" || e.key === "K") $("mask-erode").onclick();
+  else if (e.key === "r" || e.key === "R") $("mask-clear").onclick();
+  else if (e.key === "f" || e.key === "F") viewFit();
   // Esc while dragging the crop rectangle aborts the selection
   else if (e.key === "Escape" && view.crop) abortCrop();
   else if (e.key === "Control") cloneGestureStart();

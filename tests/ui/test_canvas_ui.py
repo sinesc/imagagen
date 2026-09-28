@@ -803,7 +803,7 @@ def test_smudge_state_persists_across_reload(page, server):
     assert page.evaluate("Tools.get().size") == 32
     assert page.evaluate("Tools.get().opacity") == pytest.approx(0.4, abs=0.01)
     # per-tool memory: switching back to brush restores its own settings
-    page.keyboard.press("b")
+    page.keyboard.press("d")
     assert page.evaluate("Tools.get().size") == pytest.approx(10, abs=0.5)
 
 
@@ -822,7 +822,7 @@ def test_tool_state_persists_across_reload(page, server):
     assert page.evaluate("Tools.get().size") == 32
     assert page.evaluate("Tools.get().opacity") == pytest.approx(0.4, abs=0.01)
     # per-tool memory: switching back to brush restores its own settings
-    page.keyboard.press("b")
+    page.keyboard.press("d")
     assert page.evaluate("Tools.get().size") == pytest.approx(10, abs=0.5)
 
 
