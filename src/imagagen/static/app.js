@@ -828,8 +828,9 @@ async function refreshSamplers() {
 }
 
 // Family-specific main-form controls: Z-Image is a single-pass model (no
-// CFG/guidance, no negative prompt), so disable those inputs instead of
-// letting the user set values the backend silently ignores. The family
+// CFG/guidance, no negative prompt), and self attention guidance (SAG)
+// is implemented for the SDXL UNet only, so disable those controls instead
+// of letting the user set values the backend silently ignores. The family
 // comes from /api/models (state.entries), not a samplers fetch (which
 // would race the model load).
 function applyFamilyControls() {
@@ -837,6 +838,7 @@ function applyFamilyControls() {
   const entry = state.entries.find((x) => x.id === sel.value) || state.entries[0];
   if (!entry) return;
   const zimage = entry.family === "zimage";
+  const sdxl = entry.family === "sdxl";
   const cfgIn = $("cfg");
   const negIn = $("negative");
   cfgIn.disabled = zimage;
@@ -844,6 +846,13 @@ function applyFamilyControls() {
   cfgIn.title = zimage
     ? "Z-Image is single-pass: CFG has no effect (always 1.0)"
     : "-1 = use the model configuration's CFG";
+  const sagIn = $("sag");
+  const sagLbl = sagIn.closest("label");
+  sagIn.disabled = !sdxl;
+  $("sag-cfg").disabled = !sdxl;
+  sagLbl.title = sdxl
+    ? "self attention guidance (Forge builtin extension): sharpens high-detail regions (faces, eyes, fine structures) by feeding the model's own self-attention back through an extra unconditional denoise (all modes, needs CFG > 1)"
+    : "self attention guidance is only supported by SDXL models";
 }
 
 // Refetch the LoRA list for the selected model's family and drop any

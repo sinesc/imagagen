@@ -64,6 +64,28 @@ def test_sag_row_layout_and_always_enabled(page, server):
     assert not page.locator("#sag").is_disabled()
 
 
+def test_sag_disabled_for_non_sdxl_models(page, server):
+    """SAG is implemented for the SDXL UNet only; the Flux/Z-Image backends
+    ignore the sag field, so the checkbox (and its options gear) must be
+    disabled for non-SDXL models."""
+    base, _ = server
+    _open(page, base)
+
+    # the mock model is an SDXL stand-in: the controls are enabled
+    assert not page.locator("#sag").is_disabled()
+    assert not page.locator("#sag-cfg").is_disabled()
+
+    # the mock registry only knows SDXL models, so flip the selected
+    # configuration's family and re-apply the family controls directly
+    for family, disabled in [("flux", True), ("zimage", True), ("sdxl", False)]:
+        page.evaluate(
+            "([f]) => { state.entries[0].family = f; applyFamilyControls(); }",
+            [family],
+        )
+        assert page.locator("#sag").is_disabled() is disabled
+        assert page.locator("#sag-cfg").is_disabled() is disabled
+
+
 def test_sag_options_dialog(page, server):
     base, _ = server
     _open(page, base)
