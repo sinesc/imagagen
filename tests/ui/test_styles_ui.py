@@ -77,7 +77,7 @@ def test_style_add_remove_and_groups(page, server):
     assert row.nth(0).locator(".style-name").evaluate("e => e.value") == "Cinematic"
 
     # − removes its own row only (the remaining row is the second one)
-    row.first.locator("button").click()
+    row.first.locator("button.style-rm").click()
     assert row.count() == 1
     assert row.first.locator(".style-name").evaluate("e => e.value") == "Dunes"
     # the surviving selection is read back as names for generate
@@ -89,7 +89,7 @@ def test_style_add_remove_and_groups(page, server):
         """() => {
             const right = (e) => e.getBoundingClientRect().right;
             return {
-                minus: right(document.querySelector('#styles .style-row button')),
+                minus: right(document.querySelector('#styles .style-row button.style-rm')),
                 gear: right(document.getElementById('style-manage')),
             };
         }"""
@@ -256,3 +256,119 @@ def test_temporary_style_from_imported_metadata(page, server):
     assert "Lost Style" not in (root / "user" / "styles.csv").read_text("utf-8")
     # the existing file style was NOT overwritten by the import
     assert not [s for s in r if s["name"] == "Cinematic"][0]["temporary"]
+
+
+# ---------------- style on/off toggle ----------------
+
+
+def _style_row_state(page, index=-1):
+    """[enabled, comboDisabled] of a sidebar style row."""
+    return page.evaluate(
+        """(i) => {
+            const rows = document.querySelectorAll('#styles .style-row');
+            const r = i < 0 ? rows[rows.length + i] : rows[i];
+            return [
+                !r.classList.contains('off'),
+                r.querySelector('.combo-input').disabled,
+            ];
+        }""", index)
+
+
+def test_style_toggle_state_and_position(page, server):
+    base, root = server
+    _open(page, base, root)
+    page.click("#style-add")
+    combo_pick(page, page.locator("#styles .style-row").last, "Cinematic")
+    page.click("#style-add")
+    combo_pick(page, page.locator("#styles .style-row").last, "Negs")
+    wait_until(lambda: page.locator("#styles .style-row").count() == 2)
+
+    # the toggle sits between the dropdown and the − button
+    assert page.eval_on_selector(
+        "#styles .style-row:last-child",
+        "r => [...r.children].map(c => c.classList.contains('style-name') ? 'combo'\n"
+        "  : c.classList.contains('style-toggle') ? 'toggle' : 'rm')") == \
+        ["combo", "toggle", "rm"]
+
+    # off: the row is dimmed and the dropdown uses the disabled UI state
+    page.locator("#styles .style-row").last.locator("button.style-toggle").click()
+    assert _style_row_state(page) == [False, True]
+    assert _style_row_state(page, 0) == [True, False]
+    # only the enabled style is read back for generation
+    assert page.evaluate("getStyles()") == ["Cinematic"]
+    assert page.evaluate("getAllStyles()") == \
+        [["Cinematic", True], ["Negs", False]]
+
+    # on again
+    page.locator("#styles .style-row").last.locator("button.style-toggle").click()
+    assert _style_row_state(page) == [True, False]
+    assert page.evaluate("getStyles()") == ["Cinematic", "Negs"]
+
+
+def test_generate_sends_disabled_styles(page, server):
+    base, root = server
+    _open(page, base, root)
+    page.click("#style-add")
+    combo_pick(page, page.locator("#styles .style-row").last, "Cinematic")
+    page.click("#style-add")
+    combo_pick(page, page.locator("#styles .style-row").last, "Negs")
+    page.locator("#styles .style-row").last.locator("button.style-toggle").click()
+
+    seen = {}
+
+    def on_request(req):
+        if req.url.endswith("/api/generate"):
+            import json
+
+            seen["body"] = json.loads(req.post_data)
+
+    page.on("request", on_request)
+    page.click("#btn-generate")
+    wait_until(lambda: "body" in seen, timeout=30)
+    # only the enabled style is applied; the disabled one is recorded
+    assert seen["body"]["styles"] == ["Cinematic"]
+    assert seen["body"]["disabled_styles"] == ["Negs"]
+
+
+def test_ui_state_keeps_styles_disabled(page, server):
+    base, root = server
+    _open(page, base, root)
+    page.click("#style-add")
+    combo_pick(page, page.locator("#styles .style-row").last, "Cinematic")
+    page.click("#style-add")
+    combo_pick(page, page.locator("#styles .style-row").last, "Negs")
+    page.locator("#styles .style-row").last.locator("button.style-toggle").click()
+    # ui-state is saved debounced; give it a beat before reloading
+    page.wait_for_timeout(500)
+    page.reload()
+    wait_until(lambda: page.locator("#styles .style-row").count() == 2)
+    assert _style_row_state(page, 0) == [True, False]
+    assert _style_row_state(page, 1) == [False, True]
+
+
+def test_import_restores_disabled_styles(page, server):
+    base, root = server
+    _open(page, base, root)
+    # simulate the drag&drop import path (PNG -> /api/png-meta -> applyPngMeta)
+    ok = page.evaluate(
+        """async () => {
+            await applyPngMeta({styles: [
+              {name: "Cinematic", prompt: "cinematic film still {prompt} . moody",
+               negative_prompt: "", enabled: true},
+              {name: "Negs", prompt: "", negative_prompt: "digital art, cartoon",
+               enabled: false},
+              {name: "NoFlag", prompt: "x", negative_prompt: ""},
+            ]}, 64, 64);
+            return true;
+        }"""
+    )
+    assert ok
+    wait_until(lambda: page.locator("#styles .style-row").count() == 3)
+    # enabled flag restored per row; absent flag defaults to enabled
+    assert _style_row_state(page, 0) == [True, False]
+    assert _style_row_state(page, 1) == [False, True]
+    assert _style_row_state(page, 2) == [True, False]
+    assert page.evaluate("getStyles()") == ["Cinematic", "NoFlag"]
+    # only the enabled styles reach the prompt-token counter's request
+    assert page.evaluate("getAllStyles()") == \
+        [["Cinematic", True], ["Negs", False], ["NoFlag", True]]

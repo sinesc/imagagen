@@ -179,6 +179,9 @@ class GenerateBody(BaseModel):
     # ordered list of style names (styles.csv), applied to the prompt /
     # negative prompt before generation
     styles: list[str] = Field(default_factory=list)
+    # style names shown toggled OFF: not applied, recorded in the metadata
+    # Styles JSON with enabled=false (restored disabled on import)
+    disabled_styles: list[str] = Field(default_factory=list)
     model_id: str | None = None
     mode: str = "generate"  # "generate" | "inpaint_masked" | "inpaint_not_masked"
     denoise: float = Field(1.0, ge=0.0, le=1.0)  # denoising strength, inpaint only
@@ -623,10 +626,22 @@ def create_app(
                 "name": name,
                 "prompt": (s := app.state.style_store.get(name)).prompt,
                 "negative_prompt": s.negative_prompt,
+                "enabled": True,
             }
             for name in body.styles
             if app.state.style_store.get(name) is not None
         ]
+        # styles the UI shows toggled off: not applied to the prompt, but
+        # recorded (enabled=false) so an import restores them as disabled
+        for name in body.disabled_styles:
+            s = app.state.style_store.get(name)
+            if s is not None:
+                meta_styles.append({
+                    "name": name,
+                    "prompt": s.prompt,
+                    "negative_prompt": s.negative_prompt,
+                    "enabled": False,
+                })
         req = GenerateRequest(
             prompt=prompt,
             negative_prompt=negative_prompt,

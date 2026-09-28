@@ -470,29 +470,61 @@ function styleOptions(selected) {
   return out;
 }
 
-function styleRow(name, onChange) {
+// like loraRow: the main form gets an on/off toggle button (withToggle);
+// disabled styles are kept in the list but not applied, and round-trip
+// through the PNG metadata (Styles JSON enabled flag) and ui-state
+function styleRow(name, onChange, enabled = true, withToggle = true) {
   const root = el("span", { class: "style-name" });
   makeCombobox(root, styleOptions(name), { initial: name || "" });
-  const rm = el("button", { type: "button", class: "mini icon style-rm", title: "remove" }, "−");
-  rm.onclick = () => { rm.closest(".style-row").remove(); onChange && onChange(); };
+  const tog = withToggle ? el("button", {
+    type: "button", class: "mini icon style-toggle", title: "toggle on/off (off = not applied)",
+  }, "◐") : null;
+  const rm = el("button", { type: "button", class: "mini icon style-rm", title: "remove" }, "\u2212");
+  const row = el("div", { class: "style-row" }, root, tog, rm);
+  const setInput = root.querySelector(".combo-input");
+  const setEnabled = (on) => {
+    row.classList.toggle("off", !on);
+    // disabled UI state for the dropdown: dimmed (CSS) and not openable
+    setInput.disabled = !on;
+    if (tog)
+      tog.title = on
+        ? "disable this style (kept in the list, not applied)"
+        : "enable this style";
+  };
+  if (tog)
+    tog.onclick = () => {
+      setEnabled(row.classList.contains("off"));
+      onChange && onChange();
+    };
+  rm.onclick = () => { row.remove(); onChange && onChange(); };
   root.onchange = () => onChange && onChange();
-  return el("div", { class: "style-row" }, root, rm);
+  setEnabled(enabled);
+  return row;
 }
 
-function renderMainStyles(names) {
+// items: a style name, or [name, enabled]
+function renderMainStyles(items) {
   const c = $("styles");
   c.innerHTML = "";
-  (names || []).forEach((n) => c.append(styleRow(n, onStylesChanged)));
+  (items || []).forEach((x) => c.append(styleRow(
+    Array.isArray(x) ? x[0] : x, onStylesChanged,
+    !Array.isArray(x) || x[1] !== false)));
 }
-const getStyles = () => [...$("styles").querySelectorAll(".style-row")]
-  .map((r) => r.querySelector(".style-name").value)
-  .filter(Boolean);
+// enabled style names only (what the server applies)
+const getStyles = () => getAllStyles()
+  .filter(([n, e]) => e).map(([n]) => n);
+// [name, enabled] per row
+const getAllStyles = () => [...$("styles").querySelectorAll(".style-row")]
+  .map((r) => [r.querySelector(".style-name").value,
+               !r.classList.contains("off")])
+  .filter(([n]) => n);
 
 async function loadStyles() {
   const r = await (await fetch("/api/styles")).json();
   state.styles = r.styles || [];
   // re-render existing rows against the fresh list, keeping the selection
-  renderMainStyles(getStyles());
+  // (on/off state included)
+  renderMainStyles(getAllStyles());
   schedulePromptTokens(); // a selected style's contents may have changed
 }
 
@@ -778,7 +810,10 @@ async function generate() {
     // record them (restored disabled on import)
     loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
     disabled_loras: getLoras().filter((x) => !x[2]).map(([n, w]) => [n, w]),
+    // disabled styles are not applied but travel so the image metadata can
+    // record them (restored disabled on import)
     styles: getStyles(),
+    disabled_styles: getAllStyles().filter((x) => !x[1]).map((x) => x[0]),
     model_id: $("model").value || null,
     mode: $("mode").value,
     denoise: parseFloat($("denoise").value),
@@ -1768,7 +1803,8 @@ async function applyPngMeta(meta, width, height) {
   // styles travel as name + actual contents; the server registers missing
   // ones as in-memory "Session" temporaries (not written to styles.csv)
   if (meta.styles?.length) {
-    renderMainStyles(meta.styles.map((s) => s.name));
+    // the enabled flag (default: enabled) restores each row's on/off state
+    renderMainStyles(meta.styles.map((s) => [s.name, s.enabled !== false]));
     try {
       const r = await api("/api/styles/temp", {
         styles: meta.styles.map((s) => ({
@@ -1778,7 +1814,7 @@ async function applyPngMeta(meta, width, height) {
         })),
       });
       state.styles = r.styles;
-      renderMainStyles(getStyles()); // options now include the temporaries
+      renderMainStyles(getAllStyles()); // options now include the temporaries
     } catch (e) {
       console.error("styles/temp:", e);
     }
@@ -1919,6 +1955,7 @@ function readUiState() {
     loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
     disabled_loras: getLoras().filter((x) => !x[2]).map(([n, w]) => [n, w]),
     styles: getStyles(),
+    disabled_styles: getAllStyles().filter((x) => !x[1]).map((x) => x[0]),
     // preset is not persisted either: the dropdown always starts at "—"
     seg_model: $("seg-model").value || null,
     seg_classes: state.segClasses,
@@ -1950,7 +1987,10 @@ function applyUiState(st) {
     ...(st.loras || []).map((x) => [x[0], x[1], true]),
     ...(st.disabled_loras || []).map((x) => [x[0], x[1], false]),
   ]);
-  renderMainStyles(st.styles || []);
+  renderMainStyles([
+    ...(st.styles || []).map((n) => [n, true]),
+    ...(st.disabled_styles || []).map((n) => [n, false]),
+  ]);
   // display-only restore: the model itself is NOT preloaded (it loads
   // lazily on the next generation, matching the registry design)
   if (st.model) $("model").value = st.model;

@@ -284,3 +284,40 @@ def test_png_meta_resolves_lora_names_to_subfolders(client):
     # (dup/ sorts before sub/), display-named one by hash
     assert m["loras"] == ["sub/Deep@0.8", "dup/Deep2@0.5", "Xylora@1"]
     assert m["prompt"] == "a cat"
+
+
+def test_generate_records_disabled_styles(client):
+    """Disabled styles are recorded in the Styles metadata (enabled=false)
+    but are NOT applied to the prompt."""
+    _seed_csv(client)
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": "a frog",
+            "negative_prompt": "ugly",
+            "width": 64, "height": 64, "steps": 2, "seed": 7,
+            "styles": ["Cinematic"],
+            "disabled_styles": ["Negs"],
+        })
+        assert r.status_code == 200
+        _wait_thumb(client, ws)
+    # only the enabled style touched the prompt
+    prompt, negative = client.backend.requests[-1]
+    assert prompt == "cinematic film still a frog . moody"
+    assert negative == "ugly"
+    png = Image.open(io.BytesIO(client.get("/api/thumb/1/0.png").content))
+    styles = json.loads(
+        png.info["parameters"].splitlines()[-1].removeprefix("Styles:"))
+    assert styles == [
+        {"name": "Cinematic", "prompt": "cinematic film still {prompt} . moody",
+         "negative_prompt": "", "enabled": True},
+        {"name": "Negs", "prompt": "", "negative_prompt": "digital art, cartoon",
+         "enabled": False},
+    ]
+    # ui-state round-trip
+    r = client.post("/api/ui-state", json={
+        "styles": ["Cinematic"], "disabled_styles": ["Negs"],
+    })
+    assert r.status_code == 200
+    st = client.get("/api/ui-state").json()["state"]
+    assert st["styles"] == ["Cinematic"]
+    assert st["disabled_styles"] == ["Negs"]

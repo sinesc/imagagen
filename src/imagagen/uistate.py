@@ -66,6 +66,8 @@ class UiState(BaseModel):
     disabled_loras: list[tuple[str, float]] = Field(default_factory=list)
     # user-selected styles (names from styles.csv), in list order
     styles: list[str] = Field(default_factory=list)
+    # style names shown toggled off in the UI (not applied, kept in the list)
+    disabled_styles: list[str] = Field(default_factory=list)
     # person mask generation (Phase 5): the selected segmentation model
     # (file name in models/segmentation/) and the last-used class
     # selection (empty = "all classes except background")

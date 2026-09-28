@@ -55,8 +55,8 @@ def test_crop_toolbar_button_and_shortcut(page, server):
     _open(page, base)
     _show(page, base)
 
-    # keyboard shortcut X selects the crop tool
-    page.keyboard.press("x")
+    # keyboard shortcut P selects the crop tool
+    page.keyboard.press("p")
     assert page.evaluate("document.getElementById('tool-crop').classList.contains('active')")
     assert page.evaluate("!document.getElementById('tool-brush').classList.contains('active')")
 
@@ -65,7 +65,7 @@ def test_crop_toolbar_button_and_shortcut(page, server):
         assert page.evaluate(f"document.querySelector('{sel}').disabled"), f"{sel} not disabled"
 
     # switching back re-enables them
-    page.keyboard.press("b")
+    page.keyboard.press("d")
     assert page.evaluate("document.getElementById('tool-brush').classList.contains('active')")
     for sel in ("#brush-size", "#brush-screen", "#brush-opacity"):
         assert not page.evaluate(f"document.querySelector('{sel}').disabled"), (

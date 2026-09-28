@@ -327,3 +327,23 @@ def test_styles_survive_png_write(tmp_path):
     assert out["prompt"] == "raw"
     assert out["styles"] == [{"name": "S", "prompt": "s {prompt}",
                               "negative_prompt": "", "enabled": True}]
+
+
+def test_metadata_styles_enabled_flag():
+    # enabled defaults to True when absent; disabled styles round-trip
+    styles = [
+        {"name": "A", "prompt": "a {prompt}", "negative_prompt": ""},
+        {"name": "B", "prompt": "", "negative_prompt": "bad", "enabled": False},
+    ]
+    text = metadata.build_parameters(
+        prompt="raw", negative_prompt="ugly", steps=3, sampler="s",
+        scheduler="sc", cfg=1.0, seed=0, width=64, height=64,
+        model_name="m", model_hash="h", styles=styles,
+    )
+    out = metadata.parse_parameters(text)
+    assert out["styles"] == [
+        {"name": "A", "prompt": "a {prompt}", "negative_prompt": "",
+         "enabled": True},
+        {"name": "B", "prompt": "", "negative_prompt": "bad",
+         "enabled": False},
+    ]
