@@ -394,9 +394,8 @@ function cloneSourcePoint() {
   return view.cloneSource;
 }
 
-// crosshairs for the clone tool: at the source, and (during a clone stroke)
-// at the live sample point (cursor + frozen offset), with a faint line
-// between the two so the user sees where pixels are copied from
+// crosshairs for the clone tool: at the source, and (during a clone
+// stroke) at the live sample point (cursor + frozen offset)
 function drawCloneCrosshairs(ctx) {
   if (!view.has || Tools.current !== "clone") return;
   const line = (x1, y1, x2, y2, w, style) => {
@@ -422,7 +421,6 @@ function drawCloneCrosshairs(ctx) {
   }
   if (view.stroke && view.stroke.tool === "clone" && src && view.cursor) {
     const [x, y] = cloneCursorSample();
-    line(src[0], src[1], x, y, 1 / view.scale, "rgba(255,255,255,0.35)");
     cross(x, y);
   }
   ctx.restore();
