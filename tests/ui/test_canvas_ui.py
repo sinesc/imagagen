@@ -185,6 +185,34 @@ def test_mask_preview_matches_commit(page, server):
         lambda: all(abs(a - b) <= 1 for a, b in zip(_screen_px(page, 50, 40), got)))
 
 
+def test_mask_stroke_does_not_double_existing_mask(page, server):
+    # while a mask stroke is in flight the preview draws a full
+    # base + new mask layer, so the base mask must NOT be drawn
+    # underneath it (regression: the existing mask appeared at double
+    # opacity during the stroke and reverted when the commit landed)
+    base, _ = server
+    _open(page, base)
+    _show(page, base, 100, 80)
+    page.keyboard.press("m")
+
+    # first stroke: commit, and wait for the overlay to land (grey 128 at
+    # 0.9 alpha over BG)
+    dot(page, 30, 40)
+    assert wait_until(lambda: mask_arr(base) is not None and mask_arr(base)[40, 30] == 255)
+    expected_r = 0.9 * 128 + 0.1 * BG[0]
+    assert wait_until(lambda: abs(_screen_px(page, 30, 40)[0] - expected_r) <= 1)
+
+    # second stroke, in flight: the committed mask (outside the new stroke)
+    # must keep its single-overlay value, not brighten
+    page.mouse.move(*screen_pos(page, 60, 40))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 80, 40), steps=3)
+    r = _screen_px(page, 30, 40)[0]
+    assert abs(r - expected_r) <= 1, \
+        f"existing mask doubled during stroke: r={r}, want ~{expected_r}"
+    page.mouse.up()
+
+
 # ---------------- zoom / pan ----------------
 
 

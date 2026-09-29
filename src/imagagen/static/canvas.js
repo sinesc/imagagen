@@ -106,12 +106,14 @@ function viewRedraw() {
   ctx.translate(view.ox, view.oy);
   ctx.scale(view.scale, view.scale);
   if (view.img) ctx.drawImage(view.img, 0, 0);
-  // an active erase stroke (or a held one awaiting its commit) draws its
-  // own punched copy of the mask; the base mask would show through
-  // underneath it (double opacity)
+  // a mask stroke (add or erase) and smudge each draw their own full copy
+  // of the mask inside drawPreview (add: base + new, erase: capped, smudge:
+  // base on top of the working image); drawing the base mask underneath
+  // would show through and double the opacity of the existing mask
   const active = view.stroke || view.holdStroke;
-  const erasing = active && active.erase;
-  if (view.mask && !erasing) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
+  const maskLayered = active &&
+    (active.tool === "mask" || active.tool === "smudge");
+  if (view.mask && !maskLayered) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
   if (active) drawPreview(ctx);
   if (view.crop) drawCropOverlay(ctx);
   drawCursor(ctx);
