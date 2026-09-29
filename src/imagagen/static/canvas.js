@@ -138,8 +138,12 @@ function maskValuesFromPng(img) {
   return c;
 }
 
-// display overlay: the value canvas with a 0.9 see-through factor, derived
-// GPU-only (destination-in alpha scale -- no per-pixel loop)
+// display overlay: constant grey with alpha = mask alpha x 0.9, derived
+// GPU-only (destination-in alpha scale -- no per-pixel loop). The grey fill
+// is the COLOUR source: maskValues only contributes its alpha. (Tinting
+// from maskValues' own pixels would render black where alpha was 0 -- those
+// pixels are stored premultiplied with RGB 0 even after a morph raises the
+// alpha, since the write-back only touches the alpha channel.)
 function buildMaskOverlay() {
   if (!view.maskValues) {
     view.mask = null;
@@ -149,10 +153,11 @@ function buildMaskOverlay() {
   o.width = view.maskValues.width;
   o.height = view.maskValues.height;
   const ctx = o.getContext("2d");
-  ctx.drawImage(view.maskValues, 0, 0);
-  ctx.globalCompositeOperation = "destination-in"; // alpha *= 0.9
-  ctx.globalAlpha = 0.9;
+  ctx.fillStyle = "rgb(128,128,128)";
   ctx.fillRect(0, 0, o.width, o.height);
+  ctx.globalCompositeOperation = "destination-in"; // alpha = mask x 0.9
+  ctx.globalAlpha = 0.9;
+  ctx.drawImage(view.maskValues, 0, 0);
   view.mask = o;
 }
 

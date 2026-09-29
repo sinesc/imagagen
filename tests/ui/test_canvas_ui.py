@@ -175,6 +175,14 @@ def test_mask_tool_shift_erase_and_morph(page, server):
     set_input(page, "#mask-px", "4")
     page.click("#mask-dilate")
     assert wait_until(lambda: int((mask_arr(base) > 0).sum()) > ring + 100)
+    # the dilated ring renders as the GREY overlay, not black: (50, 24) was
+    # OUTSIDE the original disc (alpha 0) and only became masked by the
+    # dilate -- exactly the pixels stored premultiplied with RGB 0 in
+    # maskValues, which the overlay must not tint from
+    ov = page.evaluate(
+        "[...view.mask.getContext('2d')"
+        ".getImageData(50, 24, 1, 1).data]")
+    assert ov[0] == 128 and ov[1] == 128 and ov[2] == 128 and ov[3] == 230, ov
 
     # clear mask button empties it
     page.click("#mask-clear")
