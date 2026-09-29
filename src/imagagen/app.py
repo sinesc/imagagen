@@ -32,7 +32,7 @@ from .model_configs import (
 )
 from .models import ModelRegistry, list_loras, resolve_lora_names
 from .paths import next_output_path
-from .presets import Preset, PresetError, PresetStore
+from .presets import Preset, PresetError, PresetSaveRequest, PresetStore
 from .queue import GenerationQueue
 from .sag import SelfAttentionGuidance
 from .segmentation import SegmentationError, SegmentationService
@@ -528,9 +528,12 @@ def create_app(
         return {"preset": p.to_dict()}
 
     @app.post("/api/presets")
-    def preset_save(p: Preset) -> dict:
+    def preset_save(req: PresetSaveRequest) -> dict:
+        # old_name identifies the preset being edited: a name change renames
+        # it (old file deleted) instead of creating a new preset
         try:
-            id_ = app.state.preset_store.save(p)
+            p = Preset.model_validate(req.model_dump(exclude={"old_name"}))
+            id_ = app.state.preset_store.save(p, old_name=req.old_name)
         except (PresetError, ValidationError) as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         return {"ok": True, "id": id_}

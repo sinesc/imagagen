@@ -1312,6 +1312,9 @@ function openPresetDialog(existing, onClose = null) {
     const name = nameIn.value.trim();
     if (!name) { dialogError("name is required"); return false; }
     const body = { name, group: groupIn.value.trim() || null, controls: {} };
+    // editing an existing preset: the server renames it (deletes the old
+    // file) when the name changed; creating a new preset omits old_name
+    if (existing) body.old_name = existing.name;
     for (const row of rows.children) {
       const input = row.querySelector("[data-preset-key]");
       const key = input.dataset.presetKey;

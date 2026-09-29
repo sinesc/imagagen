@@ -98,6 +98,14 @@ class Preset(BaseModel):
         return out
 
 
+class PresetSaveRequest(Preset):
+    """POST /api/presets body. ``old_name`` names the preset being edited;
+    when the name is changed, the old file is deleted (a rename instead of
+    creating a new preset)."""
+
+    old_name: str | None = Field(default=None, max_length=120)
+
+
 class PresetStore:
     """Loads/saves user/presets/*.json. Thread-safe (saves are rare)."""
 
@@ -134,7 +142,10 @@ class PresetStore:
             except (OSError, json.JSONDecodeError, Exception):
                 return None
 
-    def save(self, preset: Preset) -> str:
+    def save(self, preset: Preset, old_name: str | None = None) -> str:
+        """Save the preset (in place if the name is unchanged). If ``old_name``
+        is given and maps to a different file, the old file is deleted:
+        renaming a preset renames it instead of creating a new one."""
         with self._lock:
             id_ = sanitize_prompt(preset.name, max_len=120)
             self.dir.mkdir(parents=True, exist_ok=True)
@@ -142,6 +153,10 @@ class PresetStore:
             tmp.write_text(json.dumps(preset.to_dict(), indent=2, ensure_ascii=False) + "\n",
                            "utf-8")
             tmp.replace(self._path(preset.name))
+            if old_name:
+                old_id = sanitize_prompt(old_name, max_len=120)
+                if old_id != id_:
+                    self._path(old_name).unlink(missing_ok=True)
             return id_
 
     def delete(self, name: str) -> bool:

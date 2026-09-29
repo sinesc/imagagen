@@ -209,6 +209,38 @@ def test_preset_apply_and_manage(page, server):
     wait_until(lambda: page.evaluate("state.presets.length === 0"))
 
 
+def test_preset_edit_renames_and_saves_in_place(page, server):
+    base, _ = server
+    with httpx.Client(base_url=base, timeout=10) as c:
+        r = c.post("/api/presets", json={
+            "name": "SDXL 1024x1280 Standard", "width": 1024, "height": 1280,
+            "controls": {"width": True, "height": True},
+        })
+        assert r.status_code == 200, r.text
+    _open(page, base, "state.presets.length >= 1")
+
+    # edit the preset and change its name: it renames, no second preset
+    page.click("#preset-manage")
+    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
+    page.locator(".preset-manage-row .mini").first.click()
+    wait_until(lambda: page.locator("#dialog-title").inner_text() == "Edit preset")
+    page.locator(".preset-dialog label input").first.fill("1024x1280 Portrait")
+    page.click("#dialog-ok")
+    wait_until(lambda: page.evaluate(
+        "state.presets.map((p) => p.name).join(',')") == "1024x1280 Portrait")
+
+    # saving an edit without changing the name still works (in place)
+    page.locator(".preset-manage-row .mini").first.click()
+    wait_until(lambda: page.locator("#dialog-title").inner_text() == "Edit preset")
+    page.locator(".preset-row", has_text="width").first.locator(".preset-val").fill("768")
+    page.click("#dialog-ok")
+    wait_until(lambda: page.evaluate(
+        "state.presets.map((p) => p.name).join(',')") == "1024x1280 Portrait")
+    with httpx.Client(base_url=base, timeout=10) as c:
+        p = c.get("/api/presets/1024x1280-portrait", timeout=10).json()["preset"]
+    assert p["width"] == 768 and p["height"] == 1280
+
+
 def test_preset_selection_kept_cleared_on_edit_and_not_persisted(page, server):
     base, _ = server
     with httpx.Client(base_url=base, timeout=10) as c:

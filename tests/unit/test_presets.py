@@ -135,6 +135,31 @@ def test_soft_inpaint_sag_bool_roundtrip(tmp_path):
     assert "soft_inpaint" in PRESET_FIELDS and "sag" in PRESET_FIELDS
 
 
+def test_save_with_old_name_renames(tmp_path):
+    """Saving with old_name (editing a preset) renames it: the old file is
+    deleted, nothing is duplicated."""
+    s = PresetStore(tmp_path / "presets")
+    s.save(Preset(name="SDXL 1024x1280 Standard", width=1024, height=1280))
+    assert (tmp_path / "presets" / "sdxl-1024x1280-standard.json").is_file()
+    s.save(Preset(name="1024x1280 Portrait", width=1024, height=1280),
+           old_name="SDXL 1024x1280 Standard")
+    assert s.names() == ["1024x1280 Portrait"]
+    assert not (tmp_path / "presets" / "sdxl-1024x1280-standard.json").exists()
+    assert s.get("1024x1280 Portrait").width == 1024
+
+
+def test_save_same_name_no_old_name(tmp_path):
+    """Saving without old_name (new preset) or with the unchanged name (edit
+    without renaming) still overwrites in place, no stray files."""
+    s = PresetStore(tmp_path / "presets")
+    s.save(Preset(name="A", width=64))
+    s.save(Preset(name="B", width=64))
+    assert s.names() == ["A", "B"]
+    s.save(Preset(name="A", width=128), old_name="A")  # unchanged name
+    assert s.names() == ["A", "B"]
+    assert s.get("a").width == 128
+
+
 def test_unknown_keys_ignored_on_save(tmp_path): 
     s = PresetStore(tmp_path / "presets")
     p = Preset.model_validate({"name": "p", "width": 64,
