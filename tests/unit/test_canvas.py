@@ -392,10 +392,13 @@ def test_mask_stroke_paints_and_erases():
     m = c.mask
     assert m[24, 32] == 255
     assert m[0, 0] == 0
-    # shift = erase: the identical stroke removes exactly what it painted
+    # shift = erase: the identical stroke removes the paint -- the
+    # full-alpha core exactly; the soft edges keep a faint residue
+    # (the erase blends toward the brush-scaled cap, like the preview)
     c.stroke([(32.0, 24.0)], size=20, opacity=1.0, erase=True, target="mask")
     assert c.mask[24, 32] == 0
-    assert (c.mask == 0).all()  # AA fringe erased too (same shape, same opacity)
+    assert c.mask[0, 0] == 0
+    assert c.mask.max() < 100  # fringe residue only (max 255*s*(1-s) ~ 64)
 
 
 def test_mask_stroke_opacity_does_not_stack():
@@ -440,6 +443,27 @@ def test_mask_erase_respects_brush_shape(tmp_path):
     # ripples a few px either side, so stay clear of it)
     assert c.mask[24, 20] < 20
     assert c.mask[24, 46] > 200  # the black half kept the painted alpha
+
+
+def test_mask_erase_is_soft_like_the_preview(tmp_path):
+    # soft brush: flat full-alpha core, linear falloff (luminance = alpha)
+    yy, xx = np.mgrid[0:16, 0:16]
+    d = np.hypot(xx - 7.5, yy - 7.5)
+    a = (np.clip(1 - np.maximum(0.0, d - 2.0) / 6.0, 0, 1) * 255).astype("uint8")
+    Image.fromarray(a).save(tmp_path / "soft.png")
+    c = blank_canvas(64, 48)
+    c._brushes_dir = tmp_path
+    # paint the centre opaque with the circle brush, then erase with the
+    # soft brush at full opacity: the core zeroes out, but the rim pixels
+    # (small brush alpha) keep most of their value -- a hard footprint
+    # cap (the old min(region, cap x s) semantics) would have zeroed them
+    c.stroke([(32.0, 24.0)], size=24, opacity=1.0, target="mask")
+    assert c.mask[24, 38] == 255
+    c.stroke([(32.0, 24.0)], size=24, opacity=1.0, erase=True,
+             target="mask", brush="soft")
+    assert c.mask[24, 32] < 10  # core erased (flat centre resamples ~0.99)
+    rim = c.mask[24, 40]  # 8 px out: the soft brush alpha is ~4/10 there
+    assert 100 < rim < 255, f"rim should be partially erased: {rim}"
 
 
 def test_mask_stroke_does_not_touch_image():

@@ -724,8 +724,8 @@ class Canvas:
         # like image strokes, mask strokes use non-stacking opacity: the
         # added alpha is the fixed brush x 255 x opacity (overlapping
         # stamps do not stack, so a stroke's look does not depend on how
-        # long it is dragged); erasing caps the remaining alpha at
-        # brush x 255 x (1-opacity), the dual of adding
+        # long it is dragged); erasing blends the alpha toward brush x
+        # 255 x (1-opacity) -- soft, exactly like the client preview
         a = shape
         mh, mw = ent.mask.shape[:2]
         sh, sw = shape.shape
@@ -739,14 +739,16 @@ class Canvas:
                 continue
             region = m[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0]
             if erase:
-                # the cap IS the brush: where the shape is > 0 the remaining
-                # alpha is capped at shape x cap, so a soft brush erases
-                # soft (the exact dual of add's shape x opacity: a full
-                # erase removes exactly what a full add painted); where the
-                # shape is 0 the mask is untouched
+                # each stamp blends the alpha toward the brush-scaled cap
+                # (shape x cap): f(m) = m - s x (m - min(m, cap)). f is
+                # affine, so sequential stamps compose to coverage
+                # 1 - prod(1 - s_i) -- the same union coverage the client
+                # preview blends with, so commit == preview. A full erase
+                # (opacity 1) zeroes the full-alpha core exactly; only the
+                # soft edges keep a faint residue
                 s = a[sy0:ey0, sx0:ex0]
-                m[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0] = np.where(
-                    s > 0, np.minimum(region, cap * s), region
+                m[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0] = (
+                    region - s * (region - np.minimum(region, cap))
                 )
             else:
                 patch = (a[sy0:ey0, sx0:ex0] * 255.0) * opacity
