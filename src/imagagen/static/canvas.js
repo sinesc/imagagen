@@ -504,12 +504,20 @@ function strokeMaxCoverage(s, pts, raw) {
     if (rw <= 0 || rh <= 0) continue;
     const c = covCtx.getImageData(rx, ry, rw, rh);
     const cd = c.data;
-    const off = ((ry - y0) * raw.width + (rx - x0)) * 4;
-    for (let j = 0, k = off; j < rw * rh; j++, k += 4) {
-      const a = da[k + 3];
-      if (a > cd[j * 4 + 3]) {
-        cd[j * 4] = cd[j * 4 + 1] = cd[j * 4 + 2] = 128;
-        cd[j * 4 + 3] = a;
+    // per-row indexing: the destination row pitch (rw) differs from the
+    // source row pitch (raw.width) whenever the stamp is clipped at the
+    // left/right edge -- a flat walk would smear source rows across
+    const sy = ry - y0;
+    const sx = rx - x0;
+    for (let jy = 0; jy < rh; jy++) {
+      let k = ((sy + jy) * raw.width + sx) * 4;
+      let j = jy * rw * 4;
+      for (let jx = 0; jx < rw; jx++, k += 4, j += 4) {
+        const a = da[k + 3];
+        if (a > cd[j + 3]) {
+          cd[j] = cd[j + 1] = cd[j + 2] = 128;
+          cd[j + 3] = a;
+        }
       }
     }
     covCtx.putImageData(c, rx, ry);

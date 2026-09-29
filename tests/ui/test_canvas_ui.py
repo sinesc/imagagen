@@ -96,6 +96,33 @@ def test_brush_opacity_is_not_stacked(page, server):
         f"committed stroke stacked: {canvas_px(base, 100, 75)}, want ~{exp}"
 
 
+def test_brush_preview_clipped_at_image_edge(page, server):
+    # a brush stamp straddling the LEFT edge must preview its true shape,
+    # not the whole opaque square of the brush image (regression: the
+    # max-coverage walk indexed the source with the destination's row
+    # pitch, smearing opaque pixels across every row when the stamp was
+    # clipped horizontally)
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150
+    set_input(page, "#brush-color", "#ffffff")
+    set_input(page, "#brush-size", "0.323")  # 30 px
+
+    # one stamp centred at (-5, 75): the visible part is x in [0, 10);
+    # (8, 62) is inside the stamp's square but OUTSIDE the brush disc
+    sx, sy = screen_pos(page, -5, 75)
+    page.mouse.move(sx, sy)
+    page.mouse.down()
+    centre = _screen_px(page, 0, 75)
+    assert centre[0] > 200, f"preview centre should be white: {centre}"
+    corner = _screen_px(page, 8, 62)
+    assert corner[0] < 100, f"preview shows the opaque square: {corner}"
+    page.mouse.up()
+    # the commit agrees (the server was never affected)
+    assert wait_until(lambda: canvas_px(base, 0, 75)[0] > 200)
+    assert canvas_px(base, 8, 62)[0] < 100
+
+
 def test_paint_at_zoomed_transform(page, server):
     """Strokes land where the cursor is, at the current zoom level."""
     base, _ = server
