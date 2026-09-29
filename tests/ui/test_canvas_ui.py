@@ -390,7 +390,7 @@ def test_brush_outline_follows_cursor(page, server):
 
 def test_cursor_tracks_without_flicker_during_commit(page, server):
     """While a stroke commit is in flight the preview stays on screen
-    (view.holdStroke) AND the cursor outline keeps tracking the mouse
+    (view.holdStrokes) AND the cursor outline keeps tracking the mouse
     (regression: tracking was disabled for the whole round trip, freezing
     the brush outline at the stroke end until the server update arrived)."""
     base, _ = server
@@ -435,6 +435,49 @@ def test_cursor_tracks_without_flicker_during_commit(page, server):
     # the commit lands and the pixels stay
     assert wait_until(lambda: canvas_px(base, 100, 40) == (0, 0, 0))
     assert preview_px(100, 40) == [0, 0, 0]
+
+
+def test_rapid_strokes_keep_previous_preview_until_refresh(page, server):
+    """Rapid succession: while stroke 2 is drawn, stroke 1's preview must
+    STAY on screen (regression: the single holdStroke slot was replaced by
+    the new stroke's preview before stroke 1's refresh had landed, so the
+    stroke looked temporarily missing). Then the deferred refresh applies
+    the LAST server state and both strokes are visible."""
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150
+    set_input(page, "#brush-color", "#000000")
+
+    # Delay the stroke responses so the round-trip window is wide.
+    page.evaluate("""() => {
+        const orig = window.fetch;
+        window.fetch = async (url, opts) => {
+            const r = await orig(url, opts);
+            if (String(url).includes('/canvas/stroke'))
+                await new Promise((res) => setTimeout(res, 400));
+            return r;
+        };
+    }""")
+
+    # stroke 1 (top line), then stroke 2 (bottom line) before stroke 1's
+    # commit has resolved
+    stroke(page, [(60, 40), (140, 40)])
+    stroke(page, [(60, 110), (140, 110)])
+
+    # both previews must be on screen: the held one AND the live one
+    assert _screen_px(page, 100, 40) == [0, 0, 0], \
+        f"held preview of stroke 1 missing: {_screen_px(page, 100, 40)}"
+    assert _screen_px(page, 100, 110) == [0, 0, 0], \
+        f"live preview of stroke 2 missing: {_screen_px(page, 100, 110)}"
+
+    # the server commits both (in stroke order) and the deferred refresh
+    # lands the LAST state: both strokes stay on screen
+    assert wait_until(
+        lambda: canvas_px(base, 100, 40) == (0, 0, 0)
+        and canvas_px(base, 100, 110) == (0, 0, 0))
+    assert wait_until(
+        lambda: _screen_px(page, 100, 40) == [0, 0, 0]
+        and _screen_px(page, 100, 110) == [0, 0, 0])
 
 
 def test_brush_screen_size_mode(page, server):
