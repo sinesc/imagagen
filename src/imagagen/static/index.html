@@ -117,16 +117,16 @@
         <textarea id="negative" placeholder="Negative prompt"></textarea>
       </div>
       <div id="toolbar">
-        <button id="tool-brush" class="tool active mini" title="draw tool (D); hold shift to pick the canvas colour at the cursor as the brush colour"><u>d</u>raw</button>
+        <button id="tool-brush" class="tool active mini" title="draw tool (D); hold shift to pick the canvas colour at the cursor"><u>d</u>raw</button>
+        <label class="slab" title="brush colour (mask strokes ignore it)">
+          <input id="brush-color" type="color" value="#ffffff">
+        </label>
+        <span class="sep"></span>
         <button id="tool-smudge" class="tool mini" title="smudge tool (S); drag to smear/blur (smudge is sequential: each stamp drags the pixels the previous one moved)"><u>s</u>mudge</button>
         <button id="tool-clone" class="tool mini" title="clone tool (C); shift-click to pick the source, then drag to copy"><u>c</u>lone</button>
         <button id="tool-mask" class="tool mini" title="mask tool (M); draw with shift held to erase"><u>m</u>ask</button>
-        <button id="tool-crop" class="tool mini" title="crop tool (P); drag a rectangle to crop the displayed image (Esc while dragging aborts)">cro<u>p</u></button>
+        <span class="sep"></span>
         <select id="brush" title="brush shape (greyscale png from brushes/)"></select>
-        <label class="slab" title="brush colour (mask strokes ignore it)">
-          <span>colour</span>
-          <input id="brush-color" type="color" value="#ffffff">
-        </label>
         <label class="slab" title="brush size, logarithmic 10–300 px (canvas px; screen px when 'screen' is checked; Ctrl+mouse wheel adjusts it)">
           <span>size</span>
           <input id="brush-size" type="range" min="0" max="1" step="0.001" value="0">
@@ -151,6 +151,8 @@
         <span class="sep"></span>
         <select id="seg-model" title="segmentation model (tflite file from models/segmentation/)"></select>
         <button id="seg-run" class="mini" title="generate a person mask (selected body-part classes) from the current image, added to the mask buffer (union, undoable)">segment</button>
+        <span class="sep"></span>
+        <button id="tool-crop" class="tool mini" title="crop tool (P); drag a rectangle to crop the displayed image (Esc while dragging aborts)">cro<u>p</u></button>
         <span class="sep"></span>
         <button id="zoom-in" class="mini icon" title="zoom in (also: mouse wheel)">+</button>
         <button id="zoom-out" class="mini icon" title="zoom out">−</button>
