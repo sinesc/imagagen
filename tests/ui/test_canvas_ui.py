@@ -620,6 +620,31 @@ def test_clone_drag_copies_pixels(page, server):
     page.mouse.move(*screen_pos(page, 160, 75), steps=5)
     assert _screen_px(page, 150, 75) == list(LEFT), \
         f"live preview under cursor: {_screen_px(page, 150, 75)}"
+
+    # the brush tip follows the live sample point (cursor + offset =
+    # (50, 75)), not the picked source: scan diagonal ring pixels, clear
+    # of the crosshair arms (bright ring vs LEFT band sums 235)
+    def ring_bright_at(cx, cy):
+        return page.evaluate(
+            """([cx, cy]) => {
+                const ctx = document.getElementById('canvas').getContext('2d');
+                const dpr = view.dpr;
+                const k = (brushSizeCanvas() / 2) * Math.SQRT1_2; // canvas px
+                let best = 0;
+                for (const [dx, dy] of [[k, -k], [-k, -k], [k, k], [-k, k]])
+                  for (let ox = -2; ox <= 2; ox++) for (let oy = -2; oy <= 2; oy++) {
+                    const d = ctx.getImageData(
+                      Math.round((view.ox + (cx + dx) * view.scale) * dpr + ox),
+                      Math.round((view.oy + (cy + dy) * view.scale) * dpr + oy), 1, 1).data;
+                    best = Math.max(best, d[0] + d[1] + d[2]);
+                  }
+                return best;
+            }""",
+            [cx, cy],
+        )
+
+    assert ring_bright_at(50, 75) > 400  # ring at the live sample point
+    assert ring_bright_at(30, 75) < 400  # not at the picked source
     page.mouse.up()
     assert wait_until(lambda: canvas_px(base, 150, 75) == LEFT), \
         f"clone centre: {canvas_px(base, 150, 75)}"

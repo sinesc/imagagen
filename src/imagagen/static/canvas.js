@@ -415,13 +415,17 @@ function drawCloneCrosshairs(ctx) {
   };
   ctx.save();
   const src = cloneSourcePoint();
+  // during a clone stroke the brush follows the live sample point (the
+  // current source); at rest it sits at the picked source
+  const stroking = view.stroke && view.stroke.tool === "clone" && view.cursor;
   if (src) {
     cross(...src);
-    drawBrushRing(ctx, ...src); // the brush at the source too
+    if (!stroking) drawBrushRing(ctx, ...src);
   }
-  if (view.stroke && view.stroke.tool === "clone" && src && view.cursor) {
+  if (stroking) {
     const [x, y] = cloneCursorSample();
     cross(x, y);
+    drawBrushRing(ctx, x, y);
   }
   ctx.restore();
 }
