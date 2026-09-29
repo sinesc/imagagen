@@ -225,7 +225,7 @@ class ZImageBackend(ModelBackend):
             # out while it runs (see _generate_impl, the Flux/Forge pattern).
             # With text_encoder_device=cpu it never leaves the CPU.
             self.te_device = "cpu" if config.text_encoder_device == "cpu" else device
-            self.te = load_zit_encoder(str(infra / "zit_encoder.safetensors"), "cpu")
+            self.te = load_zit_encoder(str(infra / "qwen_3_4b.safetensors"), "cpu")
             self.te_tok = Qwen2Tokenizer.from_pretrained(
                 str(config.res_dir / "tokenizer_zimage"))
             # resident bytes of the encoder; the fit check below and the

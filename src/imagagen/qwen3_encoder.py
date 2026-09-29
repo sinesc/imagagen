@@ -1,7 +1,7 @@
 """Qwen3-4B text encoder for Z-Image, ported from the ComfyUI reference
 (``comfy/text_encoders/llama.py::Qwen3_4B`` + ``z_image.py``).
 
-The shipped ``zit_encoder.safetensors`` (Kijai scaled-fp8 layout) stores the
+The shipped ``qwen_3_4b.safetensors`` (Kijai scaled-fp8 layout) stores the
 embedding and all norms in bf16, and every attention/MLP projection as
 ``float8_e4m3fn`` with a per-linear ``scale_weight`` (fp32) and
 ``scale_input`` (bf16). The fp8 weights stay fp8 on the GPU and are cast to
@@ -198,7 +198,7 @@ class Qwen3Model(nn.Module):
 
 
 def load_zit_encoder(path, device):
-    """Load ``zit_encoder.safetensors`` (scaled fp8) into a :class:`Qwen3Model`
+    """Load ``qwen_3_4b.safetensors`` (scaled fp8) into a :class:`Qwen3Model`
     on ``device``."""
     import safetensors.torch as st
 
