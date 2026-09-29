@@ -852,6 +852,62 @@ def test_custom_brush_listed_and_used(page, server):
     assert edge[1] < centre[1], f"no falloff: centre={centre} edge={edge}"
 
 
+def test_soft_brush_preview_respects_shape(page, server):
+    """While stroking with a custom (soft) brush the LIVE preview must show
+    the brush's falloff, not a hard disc (the preview used to stamp a disc
+    for every brush, which differed strongly from the server commit)."""
+    base, root = server
+    yy, xx = np.mgrid[0:24, 0:24]
+    d = np.hypot(xx - 11.5, yy - 11.5)
+    a = (np.clip(1 - d / 12.0, 0, 1) * 255).astype("uint8")
+    buf = io.BytesIO()
+    Image.fromarray(a).save(buf, format="PNG")
+    (Path(root) / "user" / "brushes" / "soft24.png").write_bytes(buf.getvalue())
+
+    _open(page, base)
+    _show(page, base, 200, 150)
+    page.wait_for_function("brushNames.includes('soft24')")
+    page.wait_for_function("brushImages['soft24'] && brushImages['soft24'].ok")
+    page.select_option("#brush", "soft24")
+    set_input(page, "#brush-color", "#ffffff")
+    set_input(page, "#brush-size", "0.408")  # = 40 px
+
+    def preview_px(x, y):
+        # getImageData uses the element's backing store (no viewport offset)
+        return page.evaluate(
+            """([x, y]) => {
+                const ctx = document.getElementById('canvas').getContext('2d');
+                const px = Math.round((view.ox + x * view.scale) * view.dpr);
+                const py = Math.round((view.oy + y * view.scale) * view.dpr);
+                const d = ctx.getImageData(px, py, 1, 1).data;
+                return [d[0], d[1], d[2]];
+            }""",
+            [x, y],
+        )
+
+    # start a stroke and HOLD it: the preview is on screen, the server has
+    # not committed yet
+    sx, sy = screen_pos(page, 100, 75)
+    page.mouse.move(sx, sy)
+    page.mouse.down()
+    ex, ey = screen_pos(page, 104, 75)
+    page.mouse.move(ex, ey, steps=3)
+
+    centre = preview_px(100, 75)
+    assert centre[0] > 200, f"centre should be near white: {centre}"
+    # 18 px out: the soft brush's alpha is ~10% here; a hard disc would be
+    # full white (255)
+    rim = preview_px(100, 93)
+    assert BG[0] < rim[0] < 150, \
+        f"preview rim should show the soft falloff, not a hard disc: {rim}"
+
+    page.mouse.up()
+    assert wait_until(lambda: canvas_px(base, 100, 75)[0] > 200)
+    # the commit matches the preview: soft at the rim, not a hard disc
+    rim_s = canvas_px(base, 100, 93)
+    assert rim_s[0] < 150, f"server stamp not soft either: {rim_s}"
+
+
 # ---------------- generation modes ----------------
 
 

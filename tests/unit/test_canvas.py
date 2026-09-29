@@ -119,6 +119,18 @@ def test_circle_brush_shape_aa():
     assert 0 < s[0, 3] < 1  # edge pixels are antialiased
 
 
+def test_brush_png_bytes():
+    import io
+
+    c = Canvas()
+    a = np.asarray(Image.open(io.BytesIO(c.brush_png("circle"))).convert("L"))
+    assert a.shape == (256, 256)
+    assert a[128, 128] == 255  # centre fully opaque
+    assert a[0, 0] == 0  # corner transparent
+    with pytest.raises(KeyError):
+        c.brush_png("nope")
+
+
 def test_list_brushes(tmp_path):
     c = Canvas(brushes_dir=tmp_path)
     Image.new("L", (4, 4), 128).save(tmp_path / "b1.png")
@@ -408,6 +420,26 @@ def test_mask_erase_caps_alpha_by_opacity():
     # and like add, erase does not stack
     c.stroke([(32.0, 24.0)], size=20, opacity=0.5, erase=True, target="mask")
     assert c.mask[24, 32] == 127
+
+
+def test_mask_erase_respects_brush_shape(tmp_path):
+    # half brush: left half white (erases), right half black (no effect)
+    Image.fromarray(np.hstack([
+        np.full((8, 4), 255, dtype=np.uint8),
+        np.zeros((8, 4), dtype=np.uint8)])).save(tmp_path / "half.png")
+    c = blank_canvas(64, 48)
+    c._brushes_dir = tmp_path
+    c.stroke([(32.0, 24.0)], size=32, opacity=1.0, target="mask")
+    assert c.mask[24, 32] == 255
+    # erase with the half brush: the left half of the stamp zeroes out,
+    # the right half keeps the painted alpha (the cap IS the brush, the
+    # dual of add's brush x opacity -- not the whole square footprint)
+    c.stroke([(32.0, 24.0)], size=32, opacity=1.0, erase=True,
+             target="mask", brush="half")
+    # the white half erased (the seam sits at x=32; the LANCZOS upsampling
+    # ripples a few px either side, so stay clear of it)
+    assert c.mask[24, 20] < 20
+    assert c.mask[24, 46] > 200  # the black half kept the painted alpha
 
 
 def test_mask_stroke_does_not_touch_image():

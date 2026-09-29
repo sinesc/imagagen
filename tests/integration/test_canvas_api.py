@@ -264,6 +264,24 @@ def test_brushes_endpoint(tmp_path):
         assert r.json()["brushes"] == ["circle", "mybrush"]
 
 
+def test_brush_png_endpoint(tmp_path):
+    # the client's stroke preview fetches the exact brush shape (the
+    # luminance PNG, 256 px largest dimension); 404 for unknown names
+    with _client(tmp_path, brush="soft") as c:
+        r = c.get("/api/brush/circle.png")
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/png"
+        a = np.asarray(Image.open(io.BytesIO(r.content)).convert("L"))
+        assert a.shape == (256, 256)
+        assert a[128, 128] == 255  # centre opaque
+        assert a[0, 0] == 0  # corner transparent
+        r2 = c.get("/api/brush/soft.png")
+        a2 = np.asarray(Image.open(io.BytesIO(r2.content)).convert("L"))
+        assert a2.shape == (256, 256)  # 8x8 source scaled to 256
+        assert a2.max() == 200  # the brush file's luminance
+        assert c.get("/api/brush/nope.png").status_code == 404
+
+
 def test_stroke_with_custom_brush(tmp_path):
     with _client(tmp_path, brush="soft") as c:
         _set_canvas(c)

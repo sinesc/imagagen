@@ -210,10 +210,109 @@ function brushSizeCanvas() {
   return st.screen ? st.size / view.scale : st.size;
 }
 
+// ---------------- brush shapes ----------------
+// The server stamps with the EXACT brush shape: "circle" is built in, other
+// brushes are greyscale PNGs (luminance = alpha) resized to the stamp size.
+// The preview uses the same pixel data so a soft brush previews soft: the
+// brush's PNG bytes come from /api/brush/{name}.png once per name, and the
+// luminance is converted to alpha the same way as the mask overlay
+// (buildMaskLayer).
+const brushImages = {}; // name -> {canvas, w, h, ok}
+async function loadBrushImage(name) {
+  const entry = brushImages[name];
+  if (entry) return entry;
+  const e = { canvas: null, w: 0, h: 0, ok: false };
+  brushImages[name] = e;
+  try {
+    const r = await fetch(`/api/brush/${encodeURIComponent(name)}.png`);
+    if (!r.ok) return e;
+    const img = new Image();
+    img.src = URL.createObjectURL(await r.blob());
+    await new Promise((res) => {
+      img.onload = res;
+    });
+    e.w = img.naturalWidth;
+    e.h = img.naturalHeight;
+    const base = document.createElement("canvas");
+    base.width = e.w;
+    base.height = e.h;
+    const bctx = base.getContext("2d", { willReadFrequently: true });
+    bctx.drawImage(img, 0, 0);
+    const imgData = bctx.getImageData(0, 0, e.w, e.h);
+    const d = imgData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const a = d[i]; // greyscale: R = luminance
+      d[i] = d[i + 1] = d[i + 2] = 128;
+      d[i + 3] = a;
+    }
+    bctx.putImageData(imgData, 0, 0);
+    e.canvas = base;
+    e.ok = true;
+  } catch {
+    // keep ok=false: previews fall back to the disc
+  }
+  return e;
+}
+
+// the brush stamp at a concrete footprint: the base shape scaled to
+// (w, h) -- largest dim = round(size), aspect preserved (exactly
+// Canvas.brush_shape) -- optionally source-in filled so the alpha stays
+// the shape and the colour becomes `fill` (an rgba() with alpha < 1 scales
+// the alpha, e.g. the mask overlay's 0.9)
+const brushStamps = {}; // `${name}@${w}x${h}:${fill}` -> canvas
+function brushStamp(name, size, fill) {
+  const e = brushImages[name];
+  if (!e || !e.ok) return null;
+  const scale = Math.max(1, Math.round(size)) / Math.max(e.w, e.h);
+  const w = Math.max(1, Math.round(e.w * scale));
+  const h = Math.max(1, Math.round(e.h * scale));
+  const key = `${name}@${w}x${h}:${fill || ""}`;
+  const hit = brushStamps[key];
+  if (hit) return hit;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(e.canvas, 0, 0, w, h);
+  if (fill) {
+    ctx.globalCompositeOperation = "source-in";
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, 0, w, h);
+  }
+  // keyed by (name, size, fill): ctrl-wheel size storms can fill it up,
+  // so bound it with a full clear
+  if (Object.keys(brushStamps).length > 128) clearBrushStamps();
+  brushStamps[key] = c;
+  return c;
+}
+
+function clearBrushStamps() {
+  for (const k in brushStamps) delete brushStamps[k];
+}
+
 // brush footprint outline: dark halo + thin white ring, visible on any
 // background, 1-screen-px wide
 function drawBrushRing(ctx, x, y) {
-  const r = brushSizeCanvas() / 2;
+  const size = brushSizeCanvas();
+  // a custom brush: the disc is the wrong footprint, so outline the actual
+  // shape as a translucent white silhouette (the disc fallback applies
+  // until the brush image has loaded)
+  if (Tools.get().brush !== "circle") {
+    const shape = brushStamp(Tools.get().brush, size, "#ffffff");
+    if (shape) {
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      ctx.drawImage(
+        shape,
+        Math.round(x - shape.width / 2),
+        Math.round(y - shape.height / 2)
+      );
+      ctx.restore();
+      return;
+    }
+  }
+  const r = size / 2;
   if (r < 0.5) return;
   ctx.save();
   ctx.lineWidth = 3 / view.scale;
@@ -333,30 +432,56 @@ function newSmudgeWork() {
   return { canvas };
 }
 
-// scratch canvases for the erase preview (capped mask overlay + stamp
-// coverage, both layer-sized)
-const eraseLayer = {
+// scratch canvases for the stroke previews (layer-sized): the capped mask
+// overlay (erase), the stroke's stamp coverage (erase + clone), and the
+// clone's translated-image layer
+const stampLayer = {
   canvas: document.createElement("canvas"),
   w: 0,
   h: 0,
 };
-let eraseCoverage = null;
+let stampCoverage = null; // the stamp-coverage canvas (layer-sized)
+let smudgeTemp = null; // smudge: stamp-sized buffer for the shape-masked copy
+
+// a scratch layer at (w, h) + its context
+function layerCtx(L, w, h) {
+  if (L.w !== w || L.h !== h) {
+    L.canvas.width = w;
+    L.canvas.height = h;
+    L.w = w;
+    L.h = h;
+  }
+  return L.canvas.getContext("2d");
+}
+
+function coverageCtx(w, h) {
+  if (!stampCoverage) stampCoverage = document.createElement("canvas");
+  if (stampCoverage.width !== w || stampCoverage.height !== h) {
+    stampCoverage.width = w;
+    stampCoverage.height = h;
+  }
+  return stampCoverage.getContext("2d");
+}
 
 function drawPreview(ctx) {
   const st = Tools.get();
   const s = view.stroke;
   const pts = stampPositions(s.points, Math.max(1, s.size / 12));
   const r = Math.max(s.size / 2, 0.5);
+  // the selected brush at the stroke's frozen size: the exact shape the
+  // server stamps with (null until the brush image has loaded, then the
+  // branches fall back to the disc)
+  const raw = brushStamp(st.brush, s.size, null);
   ctx.globalAlpha = st.opacity;
   if (s.tool === "smudge") {
     // live smudge preview: SEQUENTIAL smear, accumulated on an offscreen
     // working image (like a real smudge, unlike brush/clone which recompute
-    // from scratch). For each new stamp centre, copy the working image at
-    // the previous centre onto the current one (integer displacement, same
-    // size, so no resampling) and alpha-blend it by the opacity, clipped to
-    // the stamp's disc. This is the same sequential accumulation the server
-    // commit does over its working copy (only the brush-edge antialiasing
-    // differs), so the no-flicker hand-off stays invisible.
+    // from scratch). For each new stamp centre, copy the brush-shaped
+    // region at the previous centre onto the current one (integer
+    // displacement, same size, so no resampling) and alpha-blend it by the
+    // brush shape x the opacity. This is the same sequential accumulation
+    // the server commit does over its working copy (only the brush-edge
+    // antialiasing differs), so the no-flicker hand-off stays invisible.
     const wctx = view.smudgeWork.canvas.getContext("2d");
     while (s.smudgeStamps < pts.length) {
       const i = s.smudgeStamps++; // new centre; i-1 is its predecessor
@@ -365,98 +490,148 @@ function drawPreview(ctx) {
       const dx = Math.round(cx - ox);
       const dy = Math.round(cy - oy);
       if (!dx && !dy) continue;
-      wctx.save();
-      wctx.beginPath();
-      wctx.arc(cx, cy, r, 0, Math.PI * 2);
-      wctx.clip();
+      if (!raw) {
+        // fallback: clip to the stamp's disc (brush image not loaded yet)
+        wctx.save();
+        wctx.beginPath();
+        wctx.arc(cx, cy, r, 0, Math.PI * 2);
+        wctx.clip();
+        wctx.globalAlpha = st.opacity;
+        wctx.drawImage(view.smudgeWork.canvas, dx, dy);
+        wctx.restore();
+        continue;
+      }
+      const x0 = Math.round(cx - raw.width / 2);
+      const y0 = Math.round(cy - raw.height / 2);
+      if (
+        !smudgeTemp ||
+        smudgeTemp.width !== raw.width ||
+        smudgeTemp.height !== raw.height
+      ) {
+        smudgeTemp = document.createElement("canvas");
+        smudgeTemp.width = raw.width;
+        smudgeTemp.height = raw.height;
+      }
+      const tctx = smudgeTemp.getContext("2d");
+      // temp[q] = work[q + (x0, y0) - (dx, dy)]: the pixels the PREVIOUS
+      // stamp just moved (off-image source leaves dest as-is) -- the same
+      // read as the server's src sub-rect
+      tctx.clearRect(0, 0, raw.width, raw.height);
+      tctx.drawImage(view.smudgeWork.canvas, dx - x0, dy - y0);
+      // mask the copy by the brush shape, then blend it by the opacity
+      tctx.globalCompositeOperation = "destination-in";
+      tctx.globalAlpha = 1;
+      tctx.drawImage(raw, 0, 0);
+      tctx.globalCompositeOperation = "source-over";
       wctx.globalAlpha = st.opacity;
-      // drawImage(img, a, b) places img's top-left at (a, b), so dest p
-      // shows img[p - (a, b)]: with (dx, dy) that is work[p - (dx, dy)],
-      // the pixels the PREVIOUS stamp just moved (off-image source leaves
-      // dest as-is) -- the same read as the server's src sub-rect
-      wctx.drawImage(view.smudgeWork.canvas, dx, dy);
-      wctx.restore();
+      wctx.drawImage(smudgeTemp, x0, y0);
+      wctx.globalAlpha = 1;
     }
     // blit the working image; the mask overlay goes on top of it so the
     // stack matches the base rendering (image, then mask)
     ctx.globalAlpha = 1;
     ctx.drawImage(view.smudgeWork.canvas, 0, 0);
     if (view.mask) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
-    ctx.globalAlpha = 1;
     return;
   }
   if (s.tool === "clone") {
     // live clone preview: paint the pre-stroke image (view.img) translated
-    // by the frozen offset, clipped to the UNION of the stamp footprints,
+    // by the frozen offset, masked by the UNION of the stamp footprints,
     // in ONE composite so the opacity applies to the stroke as a whole
     // (overlapping stamps must not stack, same as the server commit).
-    // Off-image source reads as transparent, same as the server skips it.
+    // The coverage canvas accumulates the shape alphas source-over: 1 -
+    // prod(1 - shape_i), exactly what the server commits; off-image source
+    // reads as transparent, same as the server skipping it.
     const [ox, oy] = s.cloneOffset;
-    ctx.save();
-    ctx.beginPath();
-    for (const [x, y] of pts) {
-      ctx.moveTo(x + r, y);
-      ctx.arc(x, y, r, 0, Math.PI * 2);
+    if (!raw) {
+      // fallback: clip to the union of the stamp discs
+      ctx.save();
+      ctx.beginPath();
+      for (const [x, y] of pts) {
+        ctx.moveTo(x + r, y);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+      }
+      ctx.clip();
+      ctx.globalAlpha = st.opacity;
+      // dest pixel p must show img[p + (ox, oy)]: drawImage(img, dx, dy)
+      // shows img[p - (dx, dy)], so the image goes at -offset
+      ctx.drawImage(view.img, -ox, -oy);
+      ctx.restore();
+      ctx.globalAlpha = 1;
+      return;
     }
-    ctx.clip();
-    ctx.globalAlpha = st.opacity;
+    const lctx = layerCtx(stampLayer, view.w, view.h);
+    const cctx = coverageCtx(view.w, view.h);
+    lctx.globalCompositeOperation = "source-over";
+    lctx.globalAlpha = 1;
+    lctx.clearRect(0, 0, view.w, view.h);
     // dest pixel p must show img[p + (ox, oy)]: drawImage(img, dx, dy) shows
     // img[p - (dx, dy)], so the image goes at -offset
-    ctx.drawImage(view.img, -ox, -oy);
-    ctx.restore();
+    lctx.drawImage(view.img, -ox, -oy);
+    cctx.globalCompositeOperation = "source-over";
+    cctx.globalAlpha = 1;
+    cctx.clearRect(0, 0, view.w, view.h);
+    for (const [x, y] of pts) {
+      cctx.drawImage(
+        raw,
+        Math.round(x - raw.width / 2),
+        Math.round(y - raw.height / 2)
+      );
+    }
+    // keep only the stroke's coverage (alpha = 1 - prod(1 - shape_i))
+    lctx.globalCompositeOperation = "destination-in";
+    lctx.drawImage(cctx.canvas, 0, 0);
+    lctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = st.opacity;
+    ctx.drawImage(stampLayer.canvas, 0, 0);
     ctx.globalAlpha = 1;
     return;
   }
   if (s.tool === "mask" && s.erase) {
-    // erasing caps the mask alpha at 255*(1-opacity) inside the stamped
-    // footprint (non-stacking, same as the server). The overlay alpha is
-    // the mask alpha x 0.9 (buildMaskLayer), so cap it at 0.9*255*
-    // (1-opacity), blended by the stamp coverage for the AA edge
+    // erasing caps the mask alpha at brush x 255*(1-opacity) (non-
+    // stacking, same as the server: sequential stamps give min(region,
+    // cap x max shape)). The overlay alpha is the mask alpha x 0.9
+    // (buildMaskLayer), so cap it at 0.9*255*(1-opacity), approached via
+    // the union stamp coverage (the preview's AA edge / overlap model)
     if (view.mask) {
-      let L = eraseLayer;
-      if (L.w !== view.w || L.h !== view.h) {
-        L.canvas.width = view.w;
-        L.canvas.height = view.h;
-        L.w = view.w;
-        L.h = view.h;
-      }
-      const lctx = L.canvas.getContext("2d");
+      const lctx = layerCtx(stampLayer, view.w, view.h);
+      const cctx = coverageCtx(view.w, view.h);
       lctx.globalCompositeOperation = "source-over";
       lctx.globalAlpha = 1;
-      lctx.clearRect(0, 0, L.canvas.width, L.canvas.height);
+      lctx.clearRect(0, 0, view.w, view.h);
       lctx.drawImage(view.mask, 0, 0);
-      // union bbox of the stamped circles, clamped to the layer
+      cctx.globalCompositeOperation = "source-over";
+      cctx.globalAlpha = 1;
+      cctx.clearRect(0, 0, view.w, view.h);
+      cctx.fillStyle = "#000";
+      const sw = raw ? raw.width : 2 * r;
+      const sh = raw ? raw.height : 2 * r;
+      // union bbox of the stamped footprints, clamped to the layer
       let bx0 = 1 / 0, by0 = 1 / 0, bx1 = -1 / 0, by1 = -1 / 0;
       for (const [x, y] of pts) {
-        bx0 = Math.min(bx0, x - r);
-        by0 = Math.min(by0, y - r);
-        bx1 = Math.max(bx1, x + r);
-        by1 = Math.max(by1, y + r);
-      }
-      bx0 = Math.max(0, Math.floor(bx0));
-      by0 = Math.max(0, Math.floor(by0));
-      bx1 = Math.min(L.w, Math.ceil(bx1));
-      by1 = Math.min(L.h, Math.ceil(by1));
-      if (bx1 > bx0 && by1 > by0) {
-        if (!eraseCoverage) eraseCoverage = document.createElement("canvas");
-        const cov = eraseCoverage;
-        if (cov.width !== L.w || cov.height !== L.h) {
-          cov.width = L.w;
-          cov.height = L.h;
-        }
-        const cctx = cov.getContext("2d");
-        cctx.clearRect(0, 0, cov.width, cov.height);
-        cctx.fillStyle = "#000";
-        for (const [x, y] of pts) {
+        const x0 = Math.round(x - sw / 2);
+        const y0 = Math.round(y - sh / 2);
+        if (raw) cctx.drawImage(raw, x0, y0);
+        else {
           cctx.beginPath();
           cctx.arc(x, y, r, 0, Math.PI * 2);
           cctx.fill();
         }
+        bx0 = Math.min(bx0, x0);
+        by0 = Math.min(by0, y0);
+        bx1 = Math.max(bx1, x0 + sw);
+        by1 = Math.max(by1, y0 + sh);
+      }
+      bx0 = Math.max(0, Math.floor(bx0));
+      by0 = Math.max(0, Math.floor(by0));
+      bx1 = Math.min(view.w, Math.ceil(bx1));
+      by1 = Math.min(view.h, Math.ceil(by1));
+      if (bx1 > bx0 && by1 > by0) {
         const bw = bx1 - bx0, bh = by1 - by0;
         const d = lctx.getImageData(bx0, by0, bw, bh);
         const c = cctx.getImageData(bx0, by0, bw, bh);
         const cap = 229.5 * (1 - st.opacity);
-        for (let i = 0, j = 0; i < d.data.length; i += 4, j++) {
+        for (let i = 0; i < d.data.length; i += 4) {
           const covA = c.data[i + 3] / 255;
           if (!covA) continue;
           const a = d.data[i + 3];
@@ -464,16 +639,57 @@ function drawPreview(ctx) {
         }
         lctx.putImageData(d, bx0, by0);
       }
-      ctx.drawImage(L.canvas, 0, 0);
+      // the layer carries the WHOLE capped mask: draw it at full alpha
+      ctx.globalAlpha = 1;
+      ctx.drawImage(stampLayer.canvas, 0, 0);
     }
     ctx.globalAlpha = 1;
     return;
   }
-  ctx.fillStyle = s.tool === "mask" ? "rgba(128,128,128,0.9)" : st.color;
-  for (const [x, y] of pts) {
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
+  if (s.tool === "mask") {
+    // adding paints the fixed brush x 255 x opacity (no stacking); the
+    // overlay alpha is the mask alpha x 0.9 (buildMaskLayer), so the
+    // stamp's own alpha is 0.9 x shape
+    const tint = raw
+      ? brushStamp(st.brush, s.size, "rgba(128,128,128,0.9)")
+      : null;
+    if (tint) {
+      for (const [x, y] of pts) {
+        ctx.drawImage(
+          tint,
+          Math.round(x - tint.width / 2),
+          Math.round(y - tint.height / 2)
+        );
+      }
+    } else {
+      ctx.fillStyle = "rgba(128,128,128,0.9)";
+      for (const [x, y] of pts) {
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+    return;
+  }
+  // brush tool: colour x brush x opacity, stamped sequentially so
+  // overlapping stamps stack like the server commit
+  const tint = raw ? brushStamp(st.brush, s.size, st.color) : null;
+  if (tint) {
+    for (const [x, y] of pts) {
+      ctx.drawImage(
+        tint,
+        Math.round(x - tint.width / 2),
+        Math.round(y - tint.height / 2)
+      );
+    }
+  } else {
+    ctx.fillStyle = st.color;
+    for (const [x, y] of pts) {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
   ctx.globalAlpha = 1;
 }
@@ -719,6 +935,7 @@ function setupCanvasInput() {
       }
     } catch (err) {
       view.smudgeWork = null;
+      clearBrushStamps();
       view.refreshing = false;
       setStatus(`stroke failed: ${err.message}`, true);
       viewRedraw();
@@ -729,6 +946,7 @@ function setupCanvasInput() {
       await viewRefresh();
     } finally {
       view.refreshing = false;
+      clearBrushStamps(); // the stamp cache was sized for this stroke
     }
   };
   c.addEventListener("pointerup", (e) => {

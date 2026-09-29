@@ -458,6 +458,16 @@ class Canvas:
         )
         return np.asarray(img, dtype=np.float32) / 255.0
 
+    def brush_png(self, name: str) -> bytes:
+        """The brush's greyscale PNG bytes (luminance = alpha) at 256 px
+        largest dimension, for the client's brush-shape previews.
+        Unknown names raise KeyError."""
+        shape = self.brush_shape(name, 256)
+        img = Image.fromarray((shape * 255.0).astype(np.uint8))
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
     # --- strokes ---
     @staticmethod
     def stamp_positions(
@@ -715,7 +725,7 @@ class Canvas:
         # added alpha is the fixed brush x 255 x opacity (overlapping
         # stamps do not stack, so a stroke's look does not depend on how
         # long it is dragged); erasing caps the remaining alpha at
-        # 255 x (1-opacity), the dual of adding
+        # brush x 255 x (1-opacity), the dual of adding
         a = shape
         mh, mw = ent.mask.shape[:2]
         sh, sw = shape.shape
@@ -729,8 +739,14 @@ class Canvas:
                 continue
             region = m[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0]
             if erase:
-                m[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0] = np.minimum(
-                    region, cap
+                # the cap IS the brush: where the shape is > 0 the remaining
+                # alpha is capped at shape x cap, so a soft brush erases
+                # soft (the exact dual of add's shape x opacity: a full
+                # erase removes exactly what a full add painted); where the
+                # shape is 0 the mask is untouched
+                s = a[sy0:ey0, sx0:ex0]
+                m[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0] = np.where(
+                    s > 0, np.minimum(region, cap * s), region
                 )
             else:
                 patch = (a[sy0:ey0, sx0:ex0] * 255.0) * opacity

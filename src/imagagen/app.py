@@ -776,6 +776,16 @@ def create_app(
     def list_brushes() -> dict:
         return {"brushes": canvas.list_brushes()}
 
+    @app.get("/api/brush/{name}.png")
+    def brush_png(name: str) -> Response:
+        """The brush's greyscale PNG (luminance = alpha) so the client's
+        stroke preview stamps the exact brush shape; 404 when unknown."""
+        try:
+            data = canvas.brush_png(name)
+        except KeyError:
+            return Response(status_code=404)
+        return Response(content=data, media_type="image/png")
+
     def canvas_flags() -> dict:
         return {
             "undo_mask": canvas.can_undo_mask(),

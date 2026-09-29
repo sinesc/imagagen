@@ -1402,6 +1402,9 @@ async function loadBrushes() {
     sel.appendChild(o);
   });
   if (brushNames.includes(cur)) sel.value = cur;
+  // fetch each brush's pixel data once so the stroke preview can stamp
+  // the exact shape (falls back to a disc if this is still in flight)
+  brushNames.forEach((n) => loadBrushImage(n));
   syncToolbar();
 }
 
