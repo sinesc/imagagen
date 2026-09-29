@@ -288,6 +288,9 @@ function brushStamp(name, size, fill) {
     ctx.globalCompositeOperation = "source-in";
     ctx.fillStyle = fill;
     ctx.fillRect(0, 0, w, h);
+  } else {
+    // the raw shape's pixel data, for incremental max-coverage builds
+    c.alphaData = ctx.getImageData(0, 0, w, h);
   }
   // keyed by (name, size, fill): ctrl-wheel size storms can fill it up,
   // so bound it with a full clear
@@ -470,6 +473,45 @@ function coverageCtx(w, h) {
     stampCoverage.height = h;
   }
   return stampCoverage.getContext("2d");
+}
+
+// the non-stacking tools' (brush, mask-add) coverage canvas: per pixel,
+// the MAX brush alpha over the stroke's stamp footprints (== the server's
+// coverage). Built incrementally on the stroke object (s.cov / s.covN):
+// only the stamps newer than the last frame are folded in, so the cost is
+// amortized O(stamp area) per stamp. Pixels take grey 128 so the canvas
+// can also be blitted directly as the mask overlay.
+function strokeMaxCoverage(s, pts, raw) {
+  if (!raw) return null;
+  const cov = s.cov || (s.cov = document.createElement("canvas"));
+  if (cov.width !== view.w || cov.height !== view.h) {
+    cov.width = view.w;
+    cov.height = view.h;
+  }
+  const covCtx = cov.getContext("2d", { willReadFrequently: true });
+  const da = raw.alphaData.data;
+  for (let i = s.covN || 0; i < pts.length; i++) {
+    const x0 = Math.round(pts[i][0] - raw.width / 2);
+    const y0 = Math.round(pts[i][1] - raw.height / 2);
+    const rx = Math.max(0, x0);
+    const ry = Math.max(0, y0);
+    const rw = Math.min(view.w, x0 + raw.width) - rx;
+    const rh = Math.min(view.h, y0 + raw.height) - ry;
+    if (rw <= 0 || rh <= 0) continue;
+    const c = covCtx.getImageData(rx, ry, rw, rh);
+    const cd = c.data;
+    const off = ((ry - y0) * raw.width + (rx - x0)) * 4;
+    for (let j = 0, k = off; j < rw * rh; j++, k += 4) {
+      const a = da[k + 3];
+      if (a > cd[j * 4 + 3]) {
+        cd[j * 4] = cd[j * 4 + 1] = cd[j * 4 + 2] = 128;
+        cd[j * 4 + 3] = a;
+      }
+    }
+    covCtx.putImageData(c, rx, ry);
+  }
+  s.covN = pts.length;
+  return cov;
 }
 
 function drawPreview(ctx) {
@@ -656,49 +698,91 @@ function drawPreview(ctx) {
     return;
   }
   if (s.tool === "mask") {
-    // adding paints the fixed brush x 255 x opacity (no stacking); the
-    // overlay alpha is the mask alpha x 0.9 (buildMaskLayer), so the
-    // stamp's own alpha is 0.9 x shape
-    const tint = raw
-      ? brushStamp(st.brush, s.size, "rgba(128,128,128,0.9)")
-      : null;
-    if (tint) {
-      for (const [x, y] of pts) {
-        ctx.drawImage(
-          tint,
-          Math.round(x - tint.width / 2),
-          Math.round(y - tint.height / 2)
-        );
-      }
-    } else {
+    // adding is NON-stacking, exactly like the server commit: the mask
+    // value is the fixed brush x 255 x opacity where the brush touched
+    // (max over the stamps), and the overlay alpha is 0.9 x that
+    // (buildMaskLayer) -- so build the overlay as max(base overlay,
+    // 0.9 x 255 x s_max x opacity), pixel-exact to the committed mask
+    const cov = strokeMaxCoverage(s, pts, raw);
+    if (!cov) {
+      // fallback: the old stacked discs (brush image not loaded yet)
       ctx.fillStyle = "rgba(128,128,128,0.9)";
       for (const [x, y] of pts) {
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fill();
       }
+      ctx.globalAlpha = 1;
+      return;
+    }
+    if (view.mask) {
+      const lctx = layerCtx(stampLayer, view.w, view.h);
+      lctx.globalCompositeOperation = "source-over";
+      lctx.globalAlpha = 1;
+      lctx.clearRect(0, 0, view.w, view.h);
+      lctx.drawImage(view.mask, 0, 0);
+      const cctx = cov.getContext("2d", { willReadFrequently: true });
+      // union bbox of the stamped footprints, clamped to the layer
+      let bx0 = 1 / 0, by0 = 1 / 0, bx1 = -1 / 0, by1 = -1 / 0;
+      for (const [x, y] of pts) {
+        bx0 = Math.min(bx0, x - raw.width / 2);
+        by0 = Math.min(by0, y - raw.height / 2);
+        bx1 = Math.max(bx1, x + raw.width / 2);
+        by1 = Math.max(by1, y + raw.height / 2);
+      }
+      bx0 = Math.max(0, Math.floor(bx0));
+      by0 = Math.max(0, Math.floor(by0));
+      bx1 = Math.min(view.w, Math.ceil(bx1));
+      by1 = Math.min(view.h, Math.ceil(by1));
+      if (bx1 > bx0 && by1 > by0) {
+        const bw = bx1 - bx0, bh = by1 - by0;
+        const d = lctx.getImageData(bx0, by0, bw, bh);
+        const c = cctx.getImageData(bx0, by0, bw, bh);
+        const target = 229.5 * st.opacity;
+        // the overlay is always grey 128; alpha-0 pixels read back with
+        // undefined RGB (0), so the RGB must be set alongside the alpha
+        for (let i = 0; i < d.data.length; i += 4) {
+          d.data[i] = d.data[i + 1] = d.data[i + 2] = 128;
+          const t = target * (c.data[i + 3] / 255);
+          if (t > d.data[i + 3]) d.data[i + 3] = t;
+        }
+        lctx.putImageData(d, bx0, by0);
+      }
+      ctx.globalAlpha = 1;
+      ctx.drawImage(stampLayer.canvas, 0, 0);
+    } else {
+      // no base mask: the overlay is just the grey coverage itself
+      ctx.globalAlpha = 0.9 * st.opacity;
+      ctx.drawImage(cov, 0, 0);
     }
     ctx.globalAlpha = 1;
     return;
   }
-  // brush tool: colour x brush x opacity, stamped sequentially so
-  // overlapping stamps stack like the server commit
-  const tint = raw ? brushStamp(st.brush, s.size, st.color) : null;
-  if (tint) {
-    for (const [x, y] of pts) {
-      ctx.drawImage(
-        tint,
-        Math.round(x - tint.width / 2),
-        Math.round(y - tint.height / 2)
-      );
-    }
-  } else {
-    ctx.fillStyle = st.color;
-    for (const [x, y] of pts) {
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
+  // brush tool: colour x brush x opacity, NON-stacking like the server
+  // commit: the colour is blended in ONCE by the stroke's max coverage x
+  // opacity (overlapping stamps do not darken the core)
+  const cov = strokeMaxCoverage(s, pts, raw);
+  if (cov) {
+    const lctx = layerCtx(stampLayer, view.w, view.h);
+    lctx.globalCompositeOperation = "source-over";
+    lctx.globalAlpha = 1;
+    lctx.fillStyle = st.color;
+    lctx.fillRect(0, 0, view.w, view.h);
+    // keep only the stroke's coverage (alpha = max shape over stamps)
+    lctx.globalCompositeOperation = "destination-in";
+    lctx.drawImage(cov, 0, 0);
+    lctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = st.opacity;
+    ctx.drawImage(stampLayer.canvas, 0, 0);
+    ctx.globalAlpha = 1;
+    return;
+  }
+  // fallback: the old stacked discs (brush image not loaded yet)
+  ctx.fillStyle = st.color;
+  for (const [x, y] of pts) {
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.globalAlpha = 1;
 }

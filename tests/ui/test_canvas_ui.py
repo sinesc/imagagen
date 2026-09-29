@@ -73,6 +73,29 @@ def test_paint_with_brush_color(page, server):
     assert canvas_px(base, 10, 10) == BG
 
 
+def test_brush_opacity_is_not_stacked(page, server):
+    # a continuous stroke at <1 opacity must paint the colour at THAT
+    # opacity: overlapping stamps do NOT accumulate (the stroke core stays
+    # at the stroke's opacity, in the live preview AND the commit)
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    set_input(page, "#brush-color", "#ff0000")
+    set_input(page, "#brush-opacity", "0.4")
+    page.mouse.move(*screen_pos(page, 60, 75))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 140, 75), steps=5)
+    exp = [0.4 * c + 0.6 * b for c, b in zip((255, 0, 0), BG)]
+    got = _screen_px(page, 100, 75)
+    assert all(abs(g - e) <= 1 for g, e in zip(got, exp)), \
+        f"live preview stacked: {got}, want ~{exp}"
+    page.mouse.up()
+    assert wait_until(
+        lambda: all(abs(int(g) - e) <= 1
+                    for g, e in zip(canvas_px(base, 100, 75), exp))), \
+        f"committed stroke stacked: {canvas_px(base, 100, 75)}, want ~{exp}"
+
+
 def test_paint_at_zoomed_transform(page, server):
     """Strokes land where the cursor is, at the current zoom level."""
     base, _ = server
@@ -135,6 +158,31 @@ def test_mask_tool_shift_erase_and_morph(page, server):
     assert wait_until(lambda: int((mask_arr(base) > 0).sum()) > ring + 100)
     page.click("#btn-redo")
     assert wait_until(lambda: bool((mask_arr(base) == 0).all()))
+
+
+def test_mask_preview_matches_commit(page, server):
+    # the live mask preview must look exactly like the committed mask
+    # overlay: non-stacking (max over the stamps) and the same 0.9
+    # "see-through" factor the committed overlay uses (buildMaskLayer)
+    base, _ = server
+    _open(page, base)
+    _show(page, base, 100, 80)
+    page.keyboard.press("m")
+
+    page.mouse.move(*screen_pos(page, 25, 40))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 75, 40), steps=5)
+    # live preview, stroke core: grey 128 at 0.9 alpha over BG -- a
+    # stacked (compounded) preview would be much closer to full 128
+    got = _screen_px(page, 50, 40)
+    exp_r = 0.9 * 128 + 0.1 * BG[0]
+    assert abs(got[0] - exp_r) <= 1, \
+        f"preview overlay not the 0.9 committed factor: {got}, want r~{exp_r}"
+    page.mouse.up()
+    assert wait_until(lambda: mask_arr(base) is not None and mask_arr(base)[40, 50] == 255)
+    # the committed overlay lands with the same look (no jump on refresh)
+    assert wait_until(
+        lambda: all(abs(a - b) <= 1 for a, b in zip(_screen_px(page, 50, 40), got)))
 
 
 # ---------------- zoom / pan ----------------

@@ -565,20 +565,29 @@ class Canvas:
             return False
         h, w = img.shape[:2]
         sh, sw = shape.shape
-        a = shape * opacity
+        a = shape
         cr, cg, cb = (min(max(c, 0), 255) for c in color)
-        img2 = img.astype(np.float32)
+        # non-stacking, like mask/clone: the stroke's coverage is the MAX
+        # brush alpha over all stamp footprints, and the colour is blended
+        # in ONCE with coverage x opacity (overlapping stamps must not
+        # stack, so a stroke's core is `opacity`, not ~1.0)
+        cov = np.zeros((h, w), np.float32)
         for cx, cy in centers:
             x0, y0 = int(round(cx - sw / 2)), int(round(cy - sh / 2))
             sx0, sy0 = max(-x0, 0), max(-y0, 0)
             ex0, ey0 = min(sw, w - x0), min(sh, h - y0)
             if ex0 <= sx0 or ey0 <= sy0:
                 continue
-            aa = a[sy0:ey0, sx0:ex0][..., None]
-            region = img2[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0]
-            img2[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0] = np.clip(
-                region * (1 - aa) + np.array([cr, cg, cb]) * aa, 0, 255
-            )
+            region = cov[y0 + sy0 : y0 + ey0, x0 + sx0 : x0 + ex0]
+            np.maximum(region, a[sy0:ey0, sx0:ex0], out=region)
+        img2 = img.astype(np.float32)
+        aa = cov * opacity
+        img2 = np.clip(
+            img2 * (1 - aa[..., None]) + np.array([cr, cg, cb], np.float32)
+            * aa[..., None],
+            0,
+            255,
+        )
         new_img = img2.astype(np.uint8)
         if np.array_equal(new_img, img):
             return False

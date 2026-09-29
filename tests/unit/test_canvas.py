@@ -68,6 +68,17 @@ def test_stroke_paints_with_color_and_opacity():
     assert 120 <= c2.image[24, 32, 0] <= 135
 
 
+def test_stroke_opacity_does_not_stack_within_stroke():
+    # like mask strokes, overlapping stamps do not stack the opacity: a
+    # long stroke's core is the stroke's `opacity`, not ~1.0
+    c = blank_canvas(128, 16, value=0)
+    c.stroke([(10.0, 8.0), (117.0, 8.0)], size=8, opacity=0.5,
+             color=(255, 255, 255))
+    img = c.image[:, :, 0]
+    assert img[8, 60] == pytest.approx(127, abs=2)  # core: 0.5, not ~1.0
+    assert img[0, 64] == 0  # far row untouched
+
+
 def test_stroke_covers_whole_line_including_endpoints():
     c = blank_canvas(128, 16, value=0)
     c.stroke([(10.0, 8.0), (117.0, 8.0)], size=8, opacity=1.0, color=(255, 255, 255))
