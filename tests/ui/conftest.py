@@ -186,7 +186,12 @@ def screen_pos(page, x: float, y: float) -> tuple[float, float]:
 
 
 def stroke(page, pts, shift: bool = False, button: str = "left"):
-    """Pointer stroke through canvas-pixel points."""
+    """Pointer stroke through canvas-pixel points.
+
+    The client commits strokes locally (no round trip), so the helper ends
+    with a forceSync: the server store catches up immediately and the
+    server-pixel assertions (canvas_px / mask_arr) stay valid.
+    """
     sx, sy = screen_pos(page, *pts[0])
     page.mouse.move(sx, sy)
     if shift:
@@ -198,6 +203,7 @@ def stroke(page, pts, shift: bool = False, button: str = "left"):
     page.mouse.up(button=button)
     if shift:
         page.keyboard.up("Shift")
+    page.evaluate("forceSync()")
 
 
 def dot(page, x: float, y: float, shift: bool = False):

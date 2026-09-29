@@ -240,46 +240,96 @@ def test_mask_stroke_does_not_double_existing_mask(page, server):
     page.mouse.up()
 
 
+# ---------------- client undo / redo ----------------
+
+
+def _mask_alpha(page, x, y):
+    return page.evaluate(
+        """([x, y]) => view.maskValues.getContext('2d',
+             {willReadFrequently: true}).getImageData(x, y, 1, 1).data[3]""",
+        [x, y],
+    )
+
+
+def test_client_undo_redo_draw(page, server):
+    # the draw undo/redo runs on the client's local PNG stack: the pixels
+    # revert immediately (no round trip) and the server catches up later
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150
+    set_input(page, "#brush-color", "#ff0000")
+    dot(page, 100, 75)
+    assert _screen_px(page, 100, 75) == [255, 0, 0]
+
+    page.click("#btn-undo")
+    assert wait_until(lambda: _screen_px(page, 100, 75) == list(BG)), \
+        f"undo: {_screen_px(page, 100, 75)}"
+    # the redo button re-arms for the draw stack
+    assert page.evaluate("!document.getElementById('btn-redo').disabled")
+
+    page.click("#btn-redo")
+    assert wait_until(lambda: _screen_px(page, 100, 75) == [255, 0, 0]), \
+        f"redo: {_screen_px(page, 100, 75)}"
+    # the server state follows the local one (idle sync)
+    assert wait_until(lambda: canvas_px(base, 100, 75) == (255, 0, 0))
+
+
+def test_client_undo_redo_mask(page, server):
+    # the mask undo/redo runs on the client's local value stack
+    base, _ = server
+    _open(page, base)
+    _show(page, base, 100, 80)
+    page.keyboard.press("m")
+    dot(page, 50, 40)
+    assert wait_until(lambda: _mask_alpha(page, 50, 40) == 255)
+
+    page.click("#btn-undo")
+    assert wait_until(lambda: _mask_alpha(page, 50, 40) == 0), \
+        f"undo: {_mask_alpha(page, 50, 40)}"
+
+    page.click("#btn-redo")
+    assert wait_until(lambda: _mask_alpha(page, 50, 40) == 255), \
+        f"redo: {_mask_alpha(page, 50, 40)}"
+    # the server mask follows the local one (idle sync)
+    assert wait_until(lambda: mask_arr(base)[40, 50] == 255)
+
+
 # ---------------- zoom / pan ----------------
 
 
-def test_stroke_preview_held_until_server_response(page, server):
-    """No flicker on release: the on-screen preview must stay visible while
-    the stroke request is in flight (regression: endStroke used to clear +
-    redraw before the round trip, so the stroke vanished for ~100 ms)."""
+def test_stroke_commits_locally_without_round_trip(page, server):
+    """The client is the editor: the stroke lands in the local state
+    IMMEDIATELY (no server round trip), the server stays untouched until
+    the sync is allowed through, and then it catches up."""
     base, _ = server
     _open(page, base)
-    _show(page, base)  # 200x150 white
+    _show(page, base)  # 200x150
     set_input(page, "#brush-color", "#000000")
 
-    # Delay the stroke response so the round-trip window is wide.
+    # block the sync endpoint: the server state must stay untouched
     page.evaluate("""() => {
-        const orig = window.fetch;
+        window.__origFetch = window.fetch;
         window.fetch = async (url, opts) => {
-            const r = await orig(url, opts);
-            if (String(url).includes('/canvas/stroke'))
-                await new Promise((res) => setTimeout(res, 250));
-            return r;
+            if (String(url).includes('/canvas/sync'))
+                return new Response('blocked', {status: 500});
+            return window.__origFetch(url, opts);
         };
     }""")
-    stroke(page, [(90, 40), (110, 40)])  # ends with mouse.up
+    stroke(page, [(90, 40), (110, 40)])  # ends with mouse.up + blocked sync
 
-    def preview_px():
-        return page.evaluate("""() => {
-            const c = document.getElementById('canvas');
-            const x = Math.round((view.ox + 100 * view.scale) * view.dpr);
-            const y = Math.round((view.oy + 40 * view.scale) * view.dpr);
-            const d = c.getContext('2d').getImageData(x, y, 1, 1).data;
-            return [d[0], d[1], d[2]];
-        }""")
+    # the pixel is on screen immediately (no round trip)
+    assert _screen_px(page, 100, 40) == [0, 0, 0], \
+        f"local commit missing: {_screen_px(page, 100, 40)}"
+    # ...and the server state is still the untouched background
+    assert canvas_px(base, 100, 40) == BG, \
+        f"server changed without a sync: {canvas_px(base, 100, 40)}"
 
-    # inside the 250 ms delay: the preview must still be on screen
-    assert preview_px() == [0, 0, 0], \
-        f"preview lost during round trip: {preview_px()}"
-    # ...and the server commits the stroke
+    # unblock and force the sync: the server state catches up
+    page.evaluate("window.fetch = window.__origFetch")
+    page.evaluate("forceSync()")
     assert wait_until(lambda: canvas_px(base, 100, 40) == (0, 0, 0))
-    # after the refresh the committed pixels are on screen
-    assert preview_px() == [0, 0, 0]
+    # ...and the local pixels stay put (no refresh-driven pop)
+    assert _screen_px(page, 100, 40) == [0, 0, 0]
 
 
 def test_zoom_wheel_fit_pan(page, server):
@@ -388,96 +438,37 @@ def test_brush_outline_follows_cursor(page, server):
     assert page.evaluate("view.cursor") is None
 
 
-def test_cursor_tracks_without_flicker_during_commit(page, server):
-    """While a stroke commit is in flight the preview stays on screen
-    (view.holdStrokes) AND the cursor outline keeps tracking the mouse
-    (regression: tracking was disabled for the whole round trip, freezing
-    the brush outline at the stroke end until the server update arrived)."""
-    base, _ = server
-    _open(page, base)
-    _show(page, base)
-    set_input(page, "#brush-color", "#000000")
-
-    # Delay the stroke response so the round-trip window is wide.
-    page.evaluate("""() => {
-        const orig = window.fetch;
-        window.fetch = async (url, opts) => {
-            const r = await orig(url, opts);
-            if (String(url).includes('/canvas/stroke'))
-                await new Promise((res) => setTimeout(res, 250));
-            return r;
-        };
-    }""")
-    stroke(page, [(90, 40), (110, 40)])  # ends with mouse.up
-
-    def preview_px(x, y):
-        return page.evaluate(
-            """([x, y]) => {
-                const ctx = document.getElementById('canvas').getContext('2d');
-                const d = ctx.getImageData(
-                    Math.round((view.ox + x * view.scale) * view.dpr),
-                    Math.round((view.oy + y * view.scale) * view.dpr), 1, 1).data;
-                return [d[0], d[1], d[2]];
-            }""",
-            [x, y],
-        )
-
-    frame = "document.getElementById('canvas').toDataURL()"
-    # inside the 250 ms delay: the preview is still on screen
-    assert preview_px(100, 40) == [0, 0, 0]
-    # ...and the cursor outline keeps tracking: moving the mouse changes
-    # the frame (the outline moved) without flashing the preview off
-    before = page.evaluate(frame)
-    sx, sy = screen_pos(page, 150, 100)
-    page.mouse.move(sx, sy, steps=3)
-    assert page.evaluate(frame) != before, "cursor outline did not track"
-    assert preview_px(100, 40) == [0, 0, 0], "preview flashed off"
-    # the commit lands and the pixels stay
-    assert wait_until(lambda: canvas_px(base, 100, 40) == (0, 0, 0))
-    assert preview_px(100, 40) == [0, 0, 0]
-
-
-def test_rapid_strokes_keep_previous_preview_until_refresh(page, server):
-    """Rapid succession: while stroke 2 is drawn, stroke 1's preview must
-    STAY on screen (regression: the single holdStroke slot was replaced by
-    the new stroke's preview before stroke 1's refresh had landed, so the
-    stroke looked temporarily missing). Then the deferred refresh applies
-    the LAST server state and both strokes are visible."""
+def test_rapid_strokes_stay_visible_locally(page, server):
+    """Rapid succession: stroke 1 commits locally at its pointerup, so its
+    pixels stay on screen while stroke 2 is drawn (no refresh race can
+    drop them), and the live preview of stroke 2 composes over them."""
     base, _ = server
     _open(page, base)
     _show(page, base)  # 200x150
     set_input(page, "#brush-color", "#000000")
 
-    # Delay the stroke responses so the round-trip window is wide.
-    page.evaluate("""() => {
-        const orig = window.fetch;
-        window.fetch = async (url, opts) => {
-            const r = await orig(url, opts);
-            if (String(url).includes('/canvas/stroke'))
-                await new Promise((res) => setTimeout(res, 400));
-            return r;
-        };
-    }""")
-
-    # stroke 1 (top line), then stroke 2 (bottom line) before stroke 1's
-    # commit has resolved
+    # stroke 1 (top line): committed locally, immediately on screen
     stroke(page, [(60, 40), (140, 40)])
-    stroke(page, [(60, 110), (140, 110)])
-
-    # both previews must be on screen: the held one AND the live one
     assert _screen_px(page, 100, 40) == [0, 0, 0], \
-        f"held preview of stroke 1 missing: {_screen_px(page, 100, 40)}"
+        f"stroke 1 commit missing: {_screen_px(page, 100, 40)}"
+
+    # stroke 2 (bottom line), still in flight (no mouse.up yet): stroke 1
+    # must NOT have disappeared and stroke 2's preview must be live
+    page.mouse.move(*screen_pos(page, 60, 110))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 140, 110), steps=5)
+    assert _screen_px(page, 100, 40) == [0, 0, 0], \
+        f"stroke 1 disappeared while stroke 2 in flight: {_screen_px(page, 100, 40)}"
     assert _screen_px(page, 100, 110) == [0, 0, 0], \
         f"live preview of stroke 2 missing: {_screen_px(page, 100, 110)}"
+    page.mouse.up()
 
-    # the server commits both (in stroke order) and the deferred refresh
-    # lands the LAST state: both strokes stay on screen
+    # both strokes visible on screen AND in the server state (synced)
+    assert _screen_px(page, 100, 40) == [0, 0, 0]
+    assert _screen_px(page, 100, 110) == [0, 0, 0]
     assert wait_until(
         lambda: canvas_px(base, 100, 40) == (0, 0, 0)
         and canvas_px(base, 100, 110) == (0, 0, 0))
-    assert wait_until(
-        lambda: _screen_px(page, 100, 40) == [0, 0, 0]
-        and _screen_px(page, 100, 110) == [0, 0, 0])
 
 
 def test_brush_screen_size_mode(page, server):
@@ -780,6 +771,7 @@ def test_clone_ctrl_moves_source_relative(page, server):
     page.mouse.down()
     page.mouse.move(*screen_pos(page, 190, 75), steps=3)
     page.mouse.up()
+    page.evaluate("forceSync()")  # push the local commits to the store
     # releasing CTRL reverts the source to the picked S
     page.keyboard.up("Control")
     assert page.evaluate("view.cloneGesture") is None
@@ -842,46 +834,6 @@ def test_clone_shift_click_reanchors_ctrl_gesture(page, server):
     assert page.evaluate("view.cloneSource") == pytest.approx([40, 75], abs=0.5)
     assert page.evaluate("cloneSourcePoint()") == pytest.approx([40, 75], abs=0.5)
     page.keyboard.up("Control")
-
-
-def test_clone_preview_held_until_server_response(page, server):
-    """No flicker on release: the on-screen clone preview must stay visible
-    while the commit round trip is in flight (same invariant as strokes)."""
-    base, _ = server
-    _open(page, base)
-    _two_band(base)
-    page.evaluate("viewRefresh()")
-    page.wait_for_function("document.getElementById('canvas').hidden === false")
-    page.keyboard.press("c")
-    dot(page, 30, 75, shift=True)
-
-    # Delay the clone response so the round-trip window is wide.
-    page.evaluate("""() => {
-        const orig = window.fetch;
-        window.fetch = async (url, opts) => {
-            const r = await orig(url, opts);
-            if (String(url).includes('/canvas/clone'))
-                await new Promise((res) => setTimeout(res, 250));
-            return r;
-        };
-    }""")
-    stroke(page, [(140, 75), (160, 75)])  # ends with mouse.up
-    # after release the stroke must NOT keep following the cursor while the
-    # commit is in flight: move the mouse away and the preview must stay
-    # where it was
-    page.mouse.move(*screen_pos(page, 170, 90))
-
-    # inside the 250 ms delay: the preview (LEFT over the RIGHT band) must
-    # still be on screen, not the un-stroked image underneath
-    assert _screen_px(page, 150, 75) == list(LEFT), \
-        f"preview lost during round trip: {_screen_px(page, 150, 75)}"
-    # ...and it must not have extended after the release
-    assert _screen_px(page, 170, 90) == list(RIGHT), \
-        f"stroke followed the cursor after release: {_screen_px(page, 170, 90)}"
-    # ...and the server commits the stroke
-    assert wait_until(lambda: canvas_px(base, 150, 75) == LEFT)
-    # after the refresh the committed pixels are on screen
-    assert _screen_px(page, 150, 75) == list(LEFT)
 
 
 # ---------------- smudge tool ----------------
@@ -948,37 +900,6 @@ def test_smudge_drag_smears(page, server):
     assert canvas_px(base, 10, 10) == LEFT  # left band untouched
     assert canvas_px(base, 148, 75) == RIGHT  # ahead of the trail: untouched
     assert canvas_px(base, 190, 140) == RIGHT  # right band corner untouched
-
-
-def test_smudge_preview_held_until_server_response(page, server):
-    """No flicker on release: the on-screen smudge preview must stay visible
-    while the commit round trip is in flight (same invariant as strokes)."""
-    base, _ = server
-    _open(page, base)
-    _two_band(base)
-    page.evaluate("viewRefresh()")
-    page.wait_for_function("document.getElementById('canvas').hidden === false")
-    page.keyboard.press("s")
-
-    # Delay the smudge response so the round-trip window is wide.
-    page.evaluate("""() => {
-        const orig = window.fetch;
-        window.fetch = async (url, opts) => {
-            const r = await orig(url, opts);
-            if (String(url).includes('/canvas/smudge'))
-                await new Promise((res) => setTimeout(res, 250));
-            return r;
-        };
-    }""")
-    stroke(page, [(40, 75), (90, 75)])  # ends with mouse.up
-    # inside the 250 ms delay: the smear preview (LEFT out in the RIGHT
-    # band) must still be on screen, not the un-stroked image underneath
-    assert _screen_px(page, 80, 75) == list(LEFT), \
-        f"preview lost during round trip: {_screen_px(page, 80, 75)}"
-    # ...and the server commits the stroke
-    assert wait_until(lambda: canvas_px(base, 80, 75) == LEFT)
-    # after the refresh the committed pixels are on screen
-    assert _screen_px(page, 80, 75) == list(LEFT)
 
 
 # ---------------- state persistence ----------------

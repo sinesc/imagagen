@@ -706,8 +706,7 @@ function openLoraManage() {
 // are live canvas image entities now, so selecting one is always a select
 // by id; the response carries the four undo/redo flags.
 async function restoreThumb(t) {
-  const r = await api("/api/canvas/select", { id: t.image_id });
-  storeUndoFlags(r);
+  await api("/api/canvas/select", { id: t.image_id });
 }
 
 // hover preview: the thumbnail's full image, zoom-to-fit, laid over the
@@ -796,8 +795,8 @@ function addCropThumbs(r) {
 
 async function doCrop(x, y, w, h) {
   try {
+    await forceSync(); // the server reads the canvas (pre-crop entity)
     const r = await api("/api/canvas/crop", { x, y, width: w, height: h });
-    storeUndoFlags(r);
     addCropThumbs(r);
     await viewRefresh();
   } catch (e) {
@@ -854,6 +853,7 @@ async function generate() {
   setStatus("queued…");
   saveUiState(); // persist the settings actually about to be used
   try {
+    await forceSync(); // the server snapshots the canvas (source, inpaint)
     const r = await api("/api/generate", body);
     state.job = r.job_id;
     // A different server_id means the server restarted since our last
@@ -1472,41 +1472,23 @@ function switchTool(t) {
 }
 
 // ---------------- undo / redo (per-image draw + per-image mask) ---------
-// The server reports, on every canvas-mutating response, how far each of
-// the two independent stacks of the CURRENT image can go: its draw stack
-// and its mask stack (each image owns its mask, at the image's size;
-// new images inherit the source image's mask state). One toolbar
-// undo/redo pair follows the active tool: "mask" drives the mask stack, any
-// other tool drives the draw stack.
-let undoFlags = { undo_mask: false, redo_mask: false,
-                  undo_draw: false, redo_draw: false };
+// One toolbar undo/redo pair follows the active tool: "mask" drives the
+// client's mask stack, any other tool drives the draw stack (the client
+// owns the stacks now; see canvas.js).
 function syncUndoButtons() {
-  const t = Tools.current === "mask" ? "mask" : "draw";
+  const mask = Tools.current === "mask";
+  const t = mask ? "mask" : "draw";
   $("btn-undo").textContent = `↩ undo ${t}`;
   $("btn-redo").textContent = `↪ redo ${t}`;
-  $("btn-undo").disabled = !undoFlags[`undo_${t}`];
-  $("btn-redo").disabled = !undoFlags[`redo_${t}`];
-}
-// Store the four flags from a canvas-mutating response and re-sync the
-// tool-dependent button state (called by every such handler, incl. the
-// stroke commit in canvas.js).
-function storeUndoFlags(r) {
-  if (r && typeof r === "object") {
-    for (const k of ["undo_mask", "redo_mask", "undo_draw", "redo_draw"]) {
-      if (typeof r[k] === "boolean") undoFlags[k] = r[k];
-    }
-  }
-  syncUndoButtons();
+  $("btn-undo").disabled = (mask ? undoMask : undoDraw).length === 0;
+  $("btn-redo").disabled = (mask ? redoMask : redoDraw).length === 0;
 }
 
 async function maskOp(op) {
   try {
-    const r = await api("/api/canvas/mask", {
-      op,
-      px: parseInt($("mask-px").value, 10) || 0,
-    });
-    storeUndoFlags(r);
-    await viewRefresh();
+    // client-side now (canvas.js): worker morphology / local clear
+    if (op === "clear") await maskClear();
+    else await maskMorph(op === "dilate");
   } catch (e) {
     setStatus(`mask ${op} failed: ${e.message}`, true);
   }
@@ -1550,8 +1532,10 @@ function openSegDialog() {
       .map((r) => r.textContent.trim());
     if (!classes.length) return false; // keep the dialog open
     try {
+      await forceSync(); // the server unions with ITS copy of the mask
+      const snap = view.maskValues ? await snapCanvas(view.maskValues) : null;
       const r = await api("/api/segmentation/mask", { model: model.id, classes });
-      storeUndoFlags(r);
+      if (r.changed && snap) stashMaskUndo(snap); // undoable across the refresh
       state.segClasses = classes;
       scheduleSaveUiState(0);
       setStatus(`mask generated: ${r.pixels.toLocaleString()} px (undo to revert)`);
@@ -1781,7 +1765,7 @@ async function importPng(file) {
     const { meta, width, height } = await metaRes.json();
     const up = await fetch("/api/canvas/upload", { method: "POST", body: await file.arrayBuffer() });
     if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
-    storeUndoFlags(await up.json());
+    await up.json();
     await applyPngMeta(meta, width, height);
     viewRefresh();
     setStatus(meta ? `imported ${file.name} (metadata applied)` : `loaded ${file.name} onto the canvas (no metadata)`);
@@ -1933,7 +1917,7 @@ function wireCanvasDrop() {
     try {
       const up = await fetch("/api/canvas/upload", { method: "POST", body: await file.arrayBuffer() });
       if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
-      storeUndoFlags(await up.json());
+      await up.json();
       viewRefresh();
       setStatus(`loaded ${file.name} onto the canvas`);
     } catch (err) {
@@ -2179,10 +2163,8 @@ function connectWS() {
         renderThumbs();
         break;
       case "canvas_set":
-        // the canvas auto-set to a fresh result entity: its draw history is
-        // empty and its mask history was inherited from the source image;
-        // re-sync both flag pairs from the event
-        storeUndoFlags(msg);
+        // the canvas auto-set to a fresh result entity: viewRefresh resets
+        // the local history stacks with the new state
         viewRefresh();
         break;
       case "done":
@@ -2215,20 +2197,33 @@ function connectWS() {
 $("btn-generate").onclick = generate;
 $("btn-save").onclick = async () => {
   try {
+    await forceSync(); // the server saves ITS copy
     const r = await api("/api/save", { prompt: $("prompt").value });
     setStatus(`saved ${r.path}`);
   } catch (e) {
     setStatus(`save failed: ${e.message}`, true);
   }
 };
+// the server is best-effort caught up before the tab goes: the 2 s idle
+// sync is the real safety net (the browser often kills large requests on
+// exit, and keepalive POSTs are size-limited)
+window.addEventListener("beforeunload", () => {
+  if (!canvasDirty || !view.has) return;
+  Promise.all([blobP(view.base), blobP(view.maskValues)])
+    .then(([img, mask]) => {
+      const fd = new FormData();
+      fd.append("image", img, "canvas.png");
+      fd.append("mask", mask, "mask.png");
+      fetch("/api/canvas/sync", { method: "POST", body: fd, keepalive: true });
+    });
+});
 function currentUndoTarget() {
   return Tools.current === "mask" ? "mask" : "draw";
 }
 $("btn-undo").onclick = async () => {
   const t = currentUndoTarget();
   try {
-    storeUndoFlags(await api("/api/canvas/undo", { target: t }));
-    await viewRefresh();
+    await undoStep(t); // canvas.js: local stack, no round trip
   } catch (e) {
     setStatus(`undo failed: ${e.message}`, true);
   }
@@ -2236,8 +2231,7 @@ $("btn-undo").onclick = async () => {
 $("btn-redo").onclick = async () => {
   const t = currentUndoTarget();
   try {
-    storeUndoFlags(await api("/api/canvas/redo", { target: t }));
-    await viewRefresh();
+    await redoStep(t); // canvas.js: local stack, no round trip
   } catch (e) {
     setStatus(`redo failed: ${e.message}`, true);
   }

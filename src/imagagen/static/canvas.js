@@ -1,20 +1,21 @@
-/* Canvas view: renders the server-authoritative image with a transparent
-   grey mask overlay, handles zoom (wheel, cursor-anchored) and pan
-   (middle-button drag) as pure client-side transforms, and captures left
-   pointer strokes as point lists in canvas-pixel coordinates.
+/* Canvas view: renders the canvas image with a transparent grey mask
+   overlay, handles zoom (wheel, cursor-anchored) and pan (middle-button
+   drag) as pure client-side transforms, and captures left pointer strokes
+   as point lists in canvas-pixel coordinates.
 
-   Strokes are stamped server-side (POST /api/canvas/stroke) -- the server
-   is the single source of truth. While a stroke is in flight the client
-   draws an optimistic preview (same stamp layout) so the brush feels
-   responsive. The authoritative canvas re-fetch is DEFERRED until the user
-   has stopped stroking for a moment (see the deferred stroke-commit
-   refresh below), and ended strokes keep their previews on screen in
-   view.holdStrokes until it lands. */
+   The client is the editor: stroke/mask commits are applied locally and
+   synchronously to view.base / view.maskValues (the preview IS the commit
+   result, so the hand-off is invisible), and undo/redo + the full-canvas
+   server sync are client-side. The server is the store -- it keeps a copy
+   of the displayed entity for generation, segmentation, save and crop --
+   and the client pushes the state to /api/canvas/sync before those reads
+   and on an idle timer (see the sync section below). */
 "use strict";
 
 const view = {
-  img: null, // HTMLImageElement: server image
-  mask: null, // offscreen canvas: grey mask overlay
+  base: null, // offscreen canvas (W×H canvas px): the committed image
+  maskValues: null, // offscreen canvas (W×H): grey 128, alpha = mask value
+  mask: null, // display overlay derived from maskValues (0.9 see-through)
   has: false,
   w: 0,
   h: 0,
@@ -23,10 +24,6 @@ const view = {
   oy: 0,
   dpr: 1,
   stroke: null, // {tool, points: [[x,y]...], erase, cloneOffset, smudgeStamps}
-  holdStrokes: [], // finished strokes whose committed pixels are not yet in
-  // view.img, kept for preview rendering until the deferred stroke refresh
-  // lands (viewRefresh drops the covered ones in its final frame, so cursor
-  // tracking can redraw without flashing a preview off)
   cloneSource: null, // [x,y] canvas px: clone tool's picked source S
   cloneGesture: null, // [ox,oy] canvas px: CTRL held -> the source follows
   // the cursor at this relative offset (a temporary move of the picked S)
@@ -107,74 +104,85 @@ function viewRedraw() {
   ctx.imageSmoothingEnabled = view.scale < 4; // crisp pixels up close
   ctx.translate(view.ox, view.oy);
   ctx.scale(view.scale, view.scale);
-  if (view.img) ctx.drawImage(view.img, 0, 0);
+  if (view.base) ctx.drawImage(view.base, 0, 0);
   // a mask stroke (add or erase) and smudge each draw their own full copy
   // of the mask inside drawStrokePreview (add: base + new, erase: capped,
   // smudge: base on top of the working image); drawing the base mask
   // underneath would show through and double the opacity of the existing
-  // mask -- so skip it when any previewed stroke (held OR active) is one
-  const previewed = [...view.holdStrokes, view.stroke];
-  const maskLayered = previewed.some(
-    (s) => s && (s.tool === "mask" || s.tool === "smudge")
-  );
+  // mask -- so skip it while such a stroke is active
+  const s0 = view.stroke;
+  const maskLayered = !!s0 && (s0.tool === "mask" || s0.tool === "smudge");
   if (view.mask && !maskLayered) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
-  if (view.stroke || view.holdStrokes.length) drawPreview(ctx);
+  if (view.stroke) drawStrokePreview(ctx, view.stroke);
   if (view.crop) drawCropOverlay(ctx);
   drawCursor(ctx);
   drawCloneCrosshairs(ctx);
   $("zoom-label").textContent = `${Math.round(view.scale * 100)}%`;
 }
 
-// mask PNG (greyscale, luminance = alpha) -> transparent grey overlay
-function buildMaskLayer(maskImg) {
-  const layer = document.createElement("canvas");
-  layer.width = maskImg.naturalWidth;
-  layer.height = maskImg.naturalHeight;
-  const lctx = layer.getContext("2d", { willReadFrequently: true });
-  lctx.drawImage(maskImg, 0, 0);
-  const data = lctx.getImageData(0, 0, layer.width, layer.height);
+// decoded mask PNG (greyscale, luminance = value) -> value canvas
+function maskValuesFromPng(img) {
+  const c = document.createElement("canvas");
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  const data = ctx.getImageData(0, 0, c.width, c.height);
   const d = data.data;
   for (let i = 0; i < d.length; i += 4) {
-    const a = d[i]; // greyscale: R=G=B=luminance
+    const a = d[i]; // greyscale: R = luminance
     d[i] = d[i + 1] = d[i + 2] = 128;
-    d[i + 3] = Math.min(255, a * 0.9);
+    d[i + 3] = a; // alpha = luminance
   }
-  lctx.putImageData(data, 0, 0);
-  return layer;
+  ctx.putImageData(data, 0, 0);
+  return c;
 }
 
-// fetch image + mask from the server and re-render.
-// options (all optional):
-//   fromStroke: this is the deferred stroke-commit refresh. It must NOT
-//     cancel the pending one, and it drops only the held strokes whose
-//     commits are in the fetched state (appliedSeq) -- a stroke that ended
-//     after the fetch started stays held (its pixels are not in this state
-//     yet) and waits for the next refresh
-//   appliedSeq: the commit sequence number the fetched state covers
-//   gen: the deferred-refresh generation this refresh was started under; a
-//     newer generation (a non-stroke refresh ran meanwhile) aborts the apply
-async function viewRefresh(options = {}) {
-  const fromStroke = !!options.fromStroke;
-  if (!fromStroke) {
-    // any other refresh (select, undo/redo, upload, generation result, mask
-    // op, boot) changes or rewinds the base the held previews were built
-    // against: cancel the deferred stroke refresh and drop them
-    cancelStrokeRefresh();
+// display overlay: the value canvas with a 0.9 see-through factor, derived
+// GPU-only (destination-in alpha scale -- no per-pixel loop)
+function buildMaskOverlay() {
+  if (!view.maskValues) {
+    view.mask = null;
+    return;
   }
+  const o = document.createElement("canvas");
+  o.width = view.maskValues.width;
+  o.height = view.maskValues.height;
+  const ctx = o.getContext("2d");
+  ctx.drawImage(view.maskValues, 0, 0);
+  ctx.globalCompositeOperation = "destination-in"; // alpha *= 0.9
+  ctx.globalAlpha = 0.9;
+  ctx.fillRect(0, 0, o.width, o.height);
+  view.mask = o;
+}
+
+// fetch image + mask from the server and re-render. The server's state
+// REPLACES the local state: a fresh entity (entity switch, generation
+// result, upload, crop, boot) or a server-side op (segmentation) landed, so
+// the local undo/redo stacks reset (client history is per-entity) and the
+// sync state resets (we ARE the server state now). A segmentation op stashes
+// its pre-op mask snapshot first (pendingMaskUndo) so the step stays
+// undoable across the refresh.
+async function viewRefresh() {
   const [ri, rm] = await Promise.all([
     fetch("/api/canvas.png"),
     fetch("/api/mask.png"),
   ]);
-  if (fromStroke && options.gen !== strokeRefreshGen) return; // cancelled
   const had = view.has;
   const oldW = view.w;
   const oldH = view.h;
+  undoDraw.length = redoDraw.length = undoMask.length = redoMask.length = 0;
+  if (pendingMaskUndo) {
+    undoMask.push(pendingMaskUndo);
+    pendingMaskUndo = null;
+  }
+  cancelSync();
   view.has = ri.ok;
   if (!view.has) {
-    view.img = null;
+    view.base = null;
+    view.maskValues = null;
     view.mask = null;
     view.w = view.h = 0;
-    dropHeldStrokes(); // the committed (empty) state is about to land
     clearBrushStamps();
     viewRedraw();
     return;
@@ -184,19 +192,23 @@ async function viewRefresh(options = {}) {
   await new Promise((r) => {
     img.onload = r;
   });
-  view.img = img;
+  const base = document.createElement("canvas");
+  base.width = img.naturalWidth;
+  base.height = img.naturalHeight;
+  base.getContext("2d").drawImage(img, 0, 0);
+  view.base = base;
   view.w = img.naturalWidth;
   view.h = img.naturalHeight;
+  view.maskValues = null;
   if (rm.ok) {
     const m = new Image();
     m.src = URL.createObjectURL(await rm.blob());
     await new Promise((r) => {
       m.onload = r;
     });
-    view.mask = buildMaskLayer(m);
-  } else {
-    view.mask = null;
+    view.maskValues = maskValuesFromPng(m);
   }
+  buildMaskOverlay();
   // keep the current zoom/pan unless the image appeared or changed size
   if (!had || view.w !== oldW || view.h !== oldH) {
     view.cloneSource = null; // old source point no longer makes sense
@@ -204,98 +216,201 @@ async function viewRefresh(options = {}) {
     viewResize(); // the canvas element may have been hidden (sized to 0)
     viewFit();
   }
-  // drop the held previews this state covers and land the committed pixels
-  // in ONE synchronous frame (no awaits between, so a cursor redraw can't
-  // interleave and flash an un-stroked region)
-  const appliedSeq = fromStroke ? (options.appliedSeq ?? 0) : Infinity;
-  view.holdStrokes = view.holdStrokes.filter((h) => h.seq > appliedSeq);
-  clearBrushStamps(); // the held previews are gone; the stamp cache was theirs
+  clearBrushStamps();
   viewRedraw();
 }
 
-// ---------------- deferred stroke-commit refresh ----------------
+// ---------------- server sync ----------------
 //
-// A stroke commit used to re-fetch the whole canvas right away, so during
-// rapid strokes the refresh raced the next stroke's preview and full-canvas
-// PNG round trips piled up (each stroke: POST + canvas.png + mask.png).
-// Instead: the commits still land server-side, in stroke order, but the
-// canvas re-fetch is DEFERRED until the user has stopped stroking for
-// STROKE_REFRESH_IDLE_MS, and then only the LAST server state is applied.
-// No updates land during a stroke; on screen, every ended stroke keeps its
-// (pixel-exact) preview via view.holdStrokes, composed over the same
-// pre-refresh base, so nothing ever disappears while the user works.
-const STROKE_REFRESH_IDLE_MS = 250;
-let strokeRefreshTimer = null; // the pending idle timer
-let strokeRefreshGen = 0; // bumped by cancelStrokeRefresh to void in-flight refreshes
-let strokeRefreshInFlight = false; // at most one deferred refresh outstanding
-let strokeRefreshDirty = false; // a refresh became due while one was in flight
-let strokeSeq = 0; // sequence number of the last dispatched commit
-let committedSeq = 0; // sequence number of the last RESOLVED commit (in order)
-let commitChain = Promise.resolve(); // serializes the commit POSTs
+// The client is the editor and the server the store: generation,
+// segmentation, save and crop read the server's copy, so the client pushes
+// the full state (image + mask) to /api/canvas/sync -- awaited by app.js
+// right before those reads, on an idle timer SYNC_IDLE_MS after the last
+// edit (keeps the server fresh for reload / multi-tab), and best-effort on
+// beforeunload (app.js).
+const SYNC_IDLE_MS = 2000;
+let canvasDirty = false; // local state has diverged from the server's
+let syncTimer = null; // the pending idle sync
+let syncPromise = null; // at most one sync outstanding
 
-function dropHeldStrokes() {
-  view.holdStrokes = [];
-}
-
-function cancelStrokeRefresh() {
-  strokeRefreshGen++;
-  if (strokeRefreshTimer) {
-    clearTimeout(strokeRefreshTimer);
-    strokeRefreshTimer = null;
+async function forceSync() {
+  if (!view.has || !canvasDirty || syncPromise) return syncPromise;
+  if (syncTimer) {
+    clearTimeout(syncTimer);
+    syncTimer = null;
   }
-  dropHeldStrokes();
-}
-
-// enqueue a commit POST behind the previous ones: the server stamps the
-// strokes in the order the user drew them, and the responses resolve in
-// that order (so committedSeq is a contiguous prefix of strokeSeq)
-function enqueueCommit(send) {
-  const run = commitChain.then(send);
-  commitChain = run.then(() => {}, () => {}); // the chain never rejects
-  return run;
-}
-
-// (re)start the 250 ms idle window; called when a stroke starts AND when
-// one ends, so the window is always measured from the last stroke end
-function scheduleStrokeRefresh() {
-  if (strokeRefreshTimer) clearTimeout(strokeRefreshTimer);
-  strokeRefreshTimer = setTimeout(fireStrokeRefresh, STROKE_REFRESH_IDLE_MS);
-}
-
-function fireStrokeRefresh() {
-  strokeRefreshTimer = null;
-  if (view.stroke) {
-    scheduleStrokeRefresh(); // no updates DURING a stroke: wait for it to end
-    return;
-  }
-  if (!view.holdStrokes.length) return; // nothing pending: view.img is current
-  if (strokeRefreshInFlight) {
-    strokeRefreshDirty = true; // coalesce: refetch once the in-flight one lands
-    return;
-  }
-  strokeRefreshInFlight = true;
-  const gen = strokeRefreshGen;
-  // wait for the commits in flight at this moment to resolve, then fetch
-  // the state that covers them; commits enqueued LATER stay held (their
-  // seq is above appliedSeq, so the apply keeps their previews)
-  commitChain.then(async () => {
+  syncPromise = (async () => {
     try {
-      if (gen !== strokeRefreshGen) return; // a non-stroke refresh ran
-      if (!view.holdStrokes.length) return; // cancelled / nothing pending
-      await viewRefresh({ fromStroke: true, appliedSeq: committedSeq, gen });
+      const fd = new FormData();
+      fd.append("image", await blobP(view.base), "canvas.png");
+      fd.append("mask", await blobP(view.maskValues), "mask.png");
+      const r = await fetch("/api/canvas/sync", { method: "POST", body: fd });
+      if (r.ok) canvasDirty = false;
+      // failure (an entity switch changed the size underneath us, the
+      // server is down): stay dirty and retry on the next idle tick;
+      // viewRefresh() clears the flag when fresh server state lands
+      if (canvasDirty) syncTimer = setTimeout(forceSync, SYNC_IDLE_MS);
     } finally {
-      strokeRefreshInFlight = false;
-      if (strokeRefreshDirty && gen === strokeRefreshGen) {
-        strokeRefreshDirty = false;
-        scheduleStrokeRefresh();
-      }
+      syncPromise = null;
     }
+  })();
+  return syncPromise;
+}
+
+function markDirty() {
+  canvasDirty = true;
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(forceSync, SYNC_IDLE_MS);
+}
+
+// fresh server state is about to replace the local state (viewRefresh): we
+// are the server state now, so the dirty flag and any pending sync clear
+function cancelSync() {
+  canvasDirty = false;
+  if (syncTimer) {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+  }
+}
+
+// ---------------- local undo/redo ----------------
+//
+// The server used to own the per-image history; the client owns it now: PNG
+// snapshots of view.base (draw) / view.maskValues (mask) taken BEFORE each
+// edit (at pointerdown, so the encode overlaps the drag), same depths the
+// server had. viewRefresh resets the stacks (new entity / server state).
+const UNDO_DRAW = 50;
+const UNDO_MASK = 200;
+const undoDraw = [], redoDraw = [], undoMask = [], redoMask = [];
+let pendingMaskUndo = null; // a pre-op mask snapshot that viewRefresh pushes
+// onto undoMask instead of dropping it (segmentation / server-side mask ops)
+
+// toBlob as a promise (this Chromium requires the callback form -- the
+// promise form throws "parameter 1 is not of type 'Function'")
+function blobP(c) {
+  return new Promise((resolve, reject) =>
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))),
+             "image/png"));
+}
+
+function snapCanvas(c) {
+  return blobP(c).then((b) => b.arrayBuffer()).then((buf) => new Uint8Array(buf));
+}
+
+async function restoreCanvas(c, bytes) {
+  const img = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, c.width, c.height); // drawImage composites
+  ctx.drawImage(img, 0, 0);
+  img.close();
+}
+
+function pushUndo(tool, snap) {
+  const mask = tool === "mask";
+  const undo = mask ? undoMask : undoDraw;
+  const redo = mask ? redoMask : redoDraw;
+  undo.push(snap);
+  if (undo.length > (mask ? UNDO_MASK : UNDO_DRAW)) undo.shift();
+  redo.length = 0;
+}
+
+function stashMaskUndo(snap) {
+  pendingMaskUndo = snap;
+}
+
+async function undoStep(target) { // "draw" | "mask"
+  const undo = target === "mask" ? undoMask : undoDraw;
+  const redo = target === "mask" ? redoMask : redoDraw;
+  const prev = await undo.pop(); // stack entries may be snapshot promises
+  if (prev === undefined) return;
+  const c = target === "mask" ? view.maskValues : view.base;
+  redo.push(await snapCanvas(c));
+  await restoreCanvas(c, prev);
+  if (target === "mask") buildMaskOverlay();
+  markDirty();
+  syncUndoButtons(); // app.js
+  viewRedraw();
+}
+
+async function redoStep(target) { // "draw" | "mask"
+  const undo = target === "mask" ? undoMask : undoDraw;
+  const redo = target === "mask" ? redoMask : redoDraw;
+  const nxt = await redo.pop(); // stack entries may be snapshot promises
+  if (nxt === undefined) return;
+  const c = target === "mask" ? view.maskValues : view.base;
+  undo.push(await snapCanvas(c));
+  await restoreCanvas(c, nxt);
+  if (target === "mask") buildMaskOverlay();
+  markDirty();
+  syncUndoButtons(); // app.js
+  viewRedraw();
+}
+
+// ---------------- mask morphology (worker) ----------------
+// The old server's /api/canvas/mask (scipy max/min filter over the disk)
+// runs client-side in a worker with the same disk, so the result is the
+// same; the op lands locally + one history step, like a stroke.
+let morphWorker = null;
+function workerPost(msg, transfer) {
+  if (!morphWorker) morphWorker = new Worker("/mask-morph.js");
+  return new Promise((resolve, reject) => {
+    const onMsg = (e) => {
+      morphWorker.removeEventListener("message", onMsg);
+      resolve(e.data.plane);
+    };
+    const onErr = (e) => {
+      morphWorker.removeEventListener("message", onMsg);
+      reject(e.error || e);
+    };
+    morphWorker.addEventListener("message", onMsg);
+    morphWorker.addEventListener("error", onErr);
+    morphWorker.postMessage(msg, transfer);
   });
+}
+
+async function maskMorph(dilate) {
+  const px = Math.round(Number($("mask-px").value));
+  if (!px || !view.maskValues) return;
+  const c = view.maskValues;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  const d = ctx.getImageData(0, 0, c.width, c.height);
+  const plane = new Uint8Array(c.width * c.height);
+  for (let i = 0; i < plane.length; i++) plane[i] = d.data[i * 4 + 3];
+  const snap = await snapCanvas(c); // BEFORE the mutation
+  const res = await workerPost({ w: c.width, h: c.height, r: px,
+                                 dilate, plane }, [plane.buffer]);
+  for (let i = 0; i < res.length; i++) d.data[i * 4 + 3] = res[i];
+  ctx.putImageData(d, 0, 0);
+  pushUndo("mask", snap);
+  buildMaskOverlay();
+  markDirty();
+  syncUndoButtons(); // app.js
+  viewRedraw();
+}
+
+async function maskClear() {
+  const c = view.maskValues;
+  if (!c) return;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  const d = ctx.getImageData(0, 0, c.width, c.height);
+  let any = false;
+  for (let i = 3; i < d.data.length; i += 4) {
+    if (d.data[i]) { any = true; break; }
+  }
+  if (!any) return; // nothing to clear (no history step, like the old server)
+  const snap = await snapCanvas(c);
+  for (let i = 3; i < d.data.length; i += 4) d.data[i] = 0;
+  ctx.putImageData(d, 0, 0);
+  pushUndo("mask", snap);
+  buildMaskOverlay();
+  markDirty();
+  syncUndoButtons(); // app.js
+  viewRedraw();
 }
 
 // ---------------- optimistic stroke preview ----------------
 
-// mirror of Canvas.stamp_positions (server is authoritative on commit)
+// mirror of Canvas.stamp_positions (the commit stamps with these centres)
 function stampPositions(points, spacing) {
   if (!points.length) return [];
   if (points.length === 1) return [points[0]];
@@ -325,12 +440,12 @@ function brushSizeCanvas() {
 }
 
 // ---------------- brush shapes ----------------
-// The server stamps with the EXACT brush shape: "circle" is built in, other
+// The commit stamps with the EXACT brush shape: "circle" is built in, other
 // brushes are greyscale PNGs (luminance = alpha) resized to the stamp size.
 // The preview uses the same pixel data so a soft brush previews soft: the
 // brush's PNG bytes come from /api/brush/{name}.png once per name, and the
-// luminance is converted to alpha the same way as the mask overlay
-// (buildMaskLayer).
+// luminance is converted to alpha the same way as the mask values
+// (maskValuesFromPng).
 const brushImages = {}; // name -> {canvas, w, h, ok}
 async function loadBrushImage(name) {
   const entry = brushImages[name];
@@ -542,12 +657,12 @@ function cloneCursorSample() {
 }
 
 // the smudge preview's working image: a copy of the pre-stroke image at
-// canvas-px resolution, accumulated stamp by stamp (see drawPreview)
+// canvas-px resolution, accumulated stamp by stamp (drawStrokePreview)
 function newSmudgeWork() {
   const canvas = document.createElement("canvas");
   canvas.width = view.w;
   canvas.height = view.h;
-  canvas.getContext("2d").drawImage(view.img, 0, 0);
+  canvas.getContext("2d").drawImage(view.base, 0, 0);
   return { canvas };
 }
 
@@ -583,7 +698,7 @@ function coverageCtx(w, h) {
 }
 
 // the non-stacking tools' (brush, mask-add) coverage canvas: per pixel,
-// the MAX brush alpha over the stroke's stamp footprints (== the server's
+// the MAX brush alpha over the stroke's stamp footprints (== the commit's
 // coverage). Built incrementally on the stroke object (s.cov / s.covN):
 // only the stamps newer than the last frame are folded in, so the cost is
 // amortized O(stamp area) per stamp. Pixels take grey 128 so the canvas
@@ -629,81 +744,73 @@ function strokeMaxCoverage(s, pts, raw) {
   return cov;
 }
 
-// composite preview: the held strokes (oldest first) then the active one.
-// Each is drawn with the parameters frozen at its commit, all over the same
-// pre-refresh base, so the composition matches the server's sequential
-// commits (exception: held mask strokes build against the stale base mask
-// -- a brief, local approximation until the deferred refresh lands)
-function drawPreview(ctx) {
-  const strokes = [...view.holdStrokes];
-  if (view.stroke) strokes.push(view.stroke);
-  for (const s of strokes) drawStrokePreview(ctx, s);
+// the smudge's sequential stamp accumulation, shared by the live preview
+// and the local commit (the commit finishes any stamps the preview has not
+// drawn yet) -- each stamp drags the brush-shaped region at the previous
+// centre to the current one (integer displacement, same size, no
+// resampling) and alpha-blends it by the brush shape x the opacity
+function smudgeAccumulate(s, st, pts, raw, r) {
+  const wctx = s.work.canvas.getContext("2d");
+  while (s.smudgeStamps < pts.length) {
+    const i = s.smudgeStamps++; // new centre; i-1 is its predecessor
+    const [ox, oy] = pts[i - 1];
+    const [cx, cy] = pts[i];
+    const dx = Math.round(cx - ox);
+    const dy = Math.round(cy - oy);
+    if (!dx && !dy) continue;
+    if (!raw) {
+      // fallback: clip to the stamp's disc (brush image not loaded yet)
+      wctx.save();
+      wctx.beginPath();
+      wctx.arc(cx, cy, r, 0, Math.PI * 2);
+      wctx.clip();
+      wctx.globalAlpha = st.opacity;
+      wctx.drawImage(s.work.canvas, dx, dy);
+      wctx.restore();
+      continue;
+    }
+    const x0 = Math.round(cx - raw.width / 2);
+    const y0 = Math.round(cy - raw.height / 2);
+    if (
+      !smudgeTemp ||
+      smudgeTemp.width !== raw.width ||
+      smudgeTemp.height !== raw.height
+    ) {
+      smudgeTemp = document.createElement("canvas");
+      smudgeTemp.width = raw.width;
+      smudgeTemp.height = raw.height;
+    }
+    const tctx = smudgeTemp.getContext("2d");
+    // temp[q] = work[q + (x0, y0) - (dx, dy)]: the pixels the PREVIOUS
+    // stamp just moved (off-image source leaves dest as-is) -- the same
+    // read the sequential smear does over its working copy
+    tctx.clearRect(0, 0, raw.width, raw.height);
+    tctx.drawImage(s.work.canvas, dx - x0, dy - y0);
+    // mask the copy by the brush shape, then blend it by the opacity
+    tctx.globalCompositeOperation = "destination-in";
+    tctx.globalAlpha = 1;
+    tctx.drawImage(raw, 0, 0);
+    tctx.globalCompositeOperation = "source-over";
+    wctx.globalAlpha = st.opacity;
+    wctx.drawImage(smudgeTemp, x0, y0);
+    wctx.globalAlpha = 1;
+  }
 }
 
 function drawStrokePreview(ctx, s) {
-  // held strokes render with the settings frozen at their commit (s.settings)
-  const st = s.settings || Tools.get();
+  const st = Tools.get();
   const pts = stampPositions(s.points, Math.max(1, s.size / 12));
   const r = Math.max(s.size / 2, 0.5);
   // the selected brush at the stroke's frozen size: the exact shape the
-  // server stamps with (null until the brush image has loaded, then the
+  // commit stamps with (null until the brush image has loaded, then the
   // branches fall back to the disc)
   const raw = brushStamp(st.brush, s.size, null);
   ctx.globalAlpha = st.opacity;
   if (s.tool === "smudge") {
     // live smudge preview: SEQUENTIAL smear, accumulated on an offscreen
     // working image (like a real smudge, unlike brush/clone which recompute
-    // from scratch). For each new stamp centre, copy the brush-shaped
-    // region at the previous centre onto the current one (integer
-    // displacement, same size, so no resampling) and alpha-blend it by the
-    // brush shape x the opacity. This is the same sequential accumulation
-    // the server commit does over its working copy (only the brush-edge
-    // antialiasing differs), so the no-flicker hand-off stays invisible.
-    const wctx = s.work.canvas.getContext("2d");
-    while (s.smudgeStamps < pts.length) {
-      const i = s.smudgeStamps++; // new centre; i-1 is its predecessor
-      const [ox, oy] = pts[i - 1];
-      const [cx, cy] = pts[i];
-      const dx = Math.round(cx - ox);
-      const dy = Math.round(cy - oy);
-      if (!dx && !dy) continue;
-      if (!raw) {
-        // fallback: clip to the stamp's disc (brush image not loaded yet)
-        wctx.save();
-        wctx.beginPath();
-        wctx.arc(cx, cy, r, 0, Math.PI * 2);
-        wctx.clip();
-        wctx.globalAlpha = st.opacity;
-        wctx.drawImage(s.work.canvas, dx, dy);
-        wctx.restore();
-        continue;
-      }
-      const x0 = Math.round(cx - raw.width / 2);
-      const y0 = Math.round(cy - raw.height / 2);
-      if (
-        !smudgeTemp ||
-        smudgeTemp.width !== raw.width ||
-        smudgeTemp.height !== raw.height
-      ) {
-        smudgeTemp = document.createElement("canvas");
-        smudgeTemp.width = raw.width;
-        smudgeTemp.height = raw.height;
-      }
-      const tctx = smudgeTemp.getContext("2d");
-      // temp[q] = work[q + (x0, y0) - (dx, dy)]: the pixels the PREVIOUS
-      // stamp just moved (off-image source leaves dest as-is) -- the same
-      // read as the server's src sub-rect
-      tctx.clearRect(0, 0, raw.width, raw.height);
-      tctx.drawImage(s.work.canvas, dx - x0, dy - y0);
-      // mask the copy by the brush shape, then blend it by the opacity
-      tctx.globalCompositeOperation = "destination-in";
-      tctx.globalAlpha = 1;
-      tctx.drawImage(raw, 0, 0);
-      tctx.globalCompositeOperation = "source-over";
-      wctx.globalAlpha = st.opacity;
-      wctx.drawImage(smudgeTemp, x0, y0);
-      wctx.globalAlpha = 1;
-    }
+    // from scratch) -- see smudgeAccumulate
+    smudgeAccumulate(s, st, pts, raw, r);
     // blit the working image; the mask overlay goes on top of it so the
     // stack matches the base rendering (image, then mask)
     ctx.globalAlpha = 1;
@@ -712,13 +819,12 @@ function drawStrokePreview(ctx, s) {
     return;
   }
   if (s.tool === "clone") {
-    // live clone preview: paint the pre-stroke image (view.img) translated
+    // live clone preview: paint the pre-stroke image (view.base) translated
     // by the frozen offset, masked by the UNION of the stamp footprints,
     // in ONE composite so the opacity applies to the stroke as a whole
-    // (overlapping stamps must not stack, same as the server commit).
-    // The coverage canvas accumulates the shape alphas source-over: 1 -
-    // prod(1 - shape_i), exactly what the server commits; off-image source
-    // reads as transparent, same as the server skipping it.
+    // (overlapping stamps must not stack). The coverage canvas accumulates
+    // the shape alphas source-over: 1 - prod(1 - shape_i); off-image source
+    // reads as transparent.
     const [ox, oy] = s.cloneOffset;
     if (!raw) {
       // fallback: clip to the union of the stamp discs
@@ -732,7 +838,7 @@ function drawStrokePreview(ctx, s) {
       ctx.globalAlpha = st.opacity;
       // dest pixel p must show img[p + (ox, oy)]: drawImage(img, dx, dy)
       // shows img[p - (dx, dy)], so the image goes at -offset
-      ctx.drawImage(s.img || view.img, -ox, -oy);
+      ctx.drawImage(s.img || view.base, -ox, -oy);
       ctx.restore();
       ctx.globalAlpha = 1;
       return;
@@ -743,10 +849,9 @@ function drawStrokePreview(ctx, s) {
     lctx.globalAlpha = 1;
     lctx.clearRect(0, 0, view.w, view.h);
     // dest pixel p must show img[p + (ox, oy)]: drawImage(img, dx, dy) shows
-    // img[p - (dx, dy)], so the image goes at -offset. s.img is the pre-stroke
-    // image the commit sampled (a held preview must not re-sample a
-    // refreshed base)
-    lctx.drawImage(s.img || view.img, -ox, -oy);
+    // img[p - (dx, dy)], so the image goes at -offset. s.img is the
+    // pre-stroke image the commit sampled
+    lctx.drawImage(s.img || view.base, -ox, -oy);
     cctx.globalCompositeOperation = "source-over";
     cctx.globalAlpha = 1;
     cctx.clearRect(0, 0, view.w, view.h);
@@ -768,10 +873,10 @@ function drawStrokePreview(ctx, s) {
   }
   if (s.tool === "mask" && s.erase) {
     // erasing caps the mask alpha at brush x 255*(1-opacity) (non-
-    // stacking, same as the server: sequential stamps give min(region,
-    // cap x max shape)). The overlay alpha is the mask alpha x 0.9
-    // (buildMaskLayer), so cap it at 0.9*255*(1-opacity), approached via
-    // the union stamp coverage (the preview's AA edge / overlap model)
+    // stacking: sequential stamps give min(region, cap x max shape)). The
+    // overlay alpha is the mask alpha x 0.9 (buildMaskOverlay), so cap it
+    // at 0.9*255*(1-opacity), approached via the union stamp coverage
+    // (the preview's AA edge / overlap model)
     if (view.mask) {
       const lctx = layerCtx(stampLayer, view.w, view.h);
       const cctx = coverageCtx(view.w, view.h);
@@ -826,10 +931,10 @@ function drawStrokePreview(ctx, s) {
     return;
   }
   if (s.tool === "mask") {
-    // adding is NON-stacking, exactly like the server commit: the mask
+    // adding is NON-stacking, exactly like the local commit: the mask
     // value is the fixed brush x 255 x opacity where the brush touched
     // (max over the stamps), and the overlay alpha is 0.9 x that
-    // (buildMaskLayer) -- so build the overlay as max(base overlay,
+    // (buildMaskOverlay) -- so build the overlay as max(base overlay,
     // 0.9 x 255 x s_max x opacity), pixel-exact to the committed mask
     const cov = strokeMaxCoverage(s, pts, raw);
     if (!cov) {
@@ -886,8 +991,8 @@ function drawStrokePreview(ctx, s) {
     ctx.globalAlpha = 1;
     return;
   }
-  // brush tool: colour x brush x opacity, NON-stacking like the server
-  // commit: the colour is blended in ONCE by the stroke's max coverage x
+  // brush tool: colour x brush x opacity, NON-stacking like the commit:
+  // the colour is blended in ONCE by the stroke's max coverage x
   // opacity (overlapping stamps do not darken the core)
   const cov = strokeMaxCoverage(s, pts, raw);
   if (cov) {
@@ -913,6 +1018,152 @@ function drawStrokePreview(ctx, s) {
     ctx.fill();
   }
   ctx.globalAlpha = 1;
+}
+
+// ---------------- local stroke commit ----------------
+
+// mask ADD, values: m = max(m, cov x 255 x opacity) per pixel -- the
+// stroke's max stamp coverage (the preview's strokeMaxCoverage canvas)
+// scaled to the value range the commit writes
+function commitMaskAdd(s, st) {
+  const pts = stampPositions(s.points, Math.max(1, s.size / 12));
+  const raw = brushStamp(st.brush, s.size, null);
+  const r = Math.max(s.size / 2, 0.5);
+  const cov = raw ? strokeMaxCoverage(s, pts, raw) : null;
+  const mctx = view.maskValues.getContext("2d", { willReadFrequently: true });
+  let bx0, by0, bx1, by1;
+  if (raw) {
+    // union bbox of the stamped footprints, clamped to the canvas
+    bx0 = by0 = 1 / 0; bx1 = by1 = -1 / 0;
+    for (const [x, y] of pts) {
+      bx0 = Math.min(bx0, x - raw.width / 2);
+      by0 = Math.min(by0, y - raw.height / 2);
+      bx1 = Math.max(bx1, x + raw.width / 2);
+      by1 = Math.max(by1, y + raw.height / 2);
+    }
+  } else {
+    // fallback (brush image not loaded): per-pixel disc coverage, max over
+    // the stamps (non-stacking, same model as the brush path)
+    bx0 = by0 = 1 / 0; bx1 = by1 = -1 / 0;
+    for (const [x, y] of pts) {
+      bx0 = Math.min(bx0, x - r);
+      by0 = Math.min(by0, y - r);
+      bx1 = Math.max(bx1, x + r);
+      by1 = Math.max(by1, y + r);
+    }
+  }
+  bx0 = Math.max(0, Math.floor(bx0));
+  by0 = Math.max(0, Math.floor(by0));
+  bx1 = Math.min(view.w, Math.ceil(bx1));
+  by1 = Math.min(view.h, Math.ceil(by1));
+  if (bx1 <= bx0 || by1 <= by0) return; // entirely off-canvas
+  const bw = bx1 - bx0, bh = by1 - by0;
+  const d = mctx.getImageData(bx0, by0, bw, bh);
+  const target = 255 * st.opacity;
+  if (raw) {
+    const c = cov.getContext("2d", { willReadFrequently: true })
+            .getImageData(bx0, by0, bw, bh).data;
+    for (let i = 0; i < d.data.length; i += 4) {
+      const t = target * (c[i + 3] / 255);
+      if (t > d.data[i + 3]) {
+        // the overlay is always grey 128; alpha-0 pixels read back with
+        // undefined RGB (0), so the RGB must be set alongside the alpha
+        d.data[i] = d.data[i + 1] = d.data[i + 2] = 128;
+        d.data[i + 3] = t;
+      }
+    }
+  } else {
+    for (let i = 0; i < d.data.length; i += 4) {
+      const x = bx0 + (i / 4) % bw;
+      const y = by0 + Math.floor(i / 4 / bw);
+      for (const [px, py] of pts) {
+        const dx = x - px, dy = y - py;
+        if (dx * dx + dy * dy <= r * r) {
+          d.data[i] = d.data[i + 1] = d.data[i + 2] = 128;
+          d.data[i + 3] = Math.max(d.data[i + 3], target);
+          break;
+        }
+      }
+    }
+  }
+  mctx.putImageData(d, bx0, by0);
+}
+
+// mask ERASE, values: m = m - covU x (m - min(m, cap)) with cap = 255 x
+// (1 - opacity) and covU the UNION stamp coverage (source-over alpha
+// accumulation -- sequential stamps compose to the union, matching the
+// per-stamp affine blends the old server commit used)
+function commitMaskErase(s, st) {
+  const pts = stampPositions(s.points, Math.max(1, s.size / 12));
+  const raw = brushStamp(st.brush, s.size, null);
+  const r = Math.max(s.size / 2, 0.5);
+  const cctx = coverageCtx(view.w, view.h);
+  cctx.globalCompositeOperation = "source-over";
+  cctx.globalAlpha = 1;
+  cctx.clearRect(0, 0, view.w, view.h);
+  const sw = raw ? raw.width : 2 * r;
+  const sh = raw ? raw.height : 2 * r;
+  let bx0 = 1 / 0, by0 = 1 / 0, bx1 = -1 / 0, by1 = -1 / 0;
+  for (const [x, y] of pts) {
+    const x0 = Math.round(x - sw / 2);
+    const y0 = Math.round(y - sh / 2);
+    if (raw) cctx.drawImage(raw, x0, y0);
+    else {
+      cctx.beginPath();
+      cctx.arc(x, y, r, 0, Math.PI * 2);
+      cctx.fill();
+    }
+    bx0 = Math.min(bx0, x0);
+    by0 = Math.min(by0, y0);
+    bx1 = Math.max(bx1, x0 + sw);
+    by1 = Math.max(by1, y0 + sh);
+  }
+  bx0 = Math.max(0, Math.floor(bx0));
+  by0 = Math.max(0, Math.floor(by0));
+  bx1 = Math.min(view.w, Math.ceil(bx1));
+  by1 = Math.min(view.h, Math.ceil(by1));
+  if (bx1 <= bx0 || by1 <= by0) return; // entirely off-canvas
+  const bw = bx1 - bx0, bh = by1 - by0;
+  const mctx = view.maskValues.getContext("2d", { willReadFrequently: true });
+  const d = mctx.getImageData(bx0, by0, bw, bh);
+  const c = cctx.getImageData(bx0, by0, bw, bh).data;
+  const cap = 255 * (1 - st.opacity);
+  for (let i = 0; i < d.data.length; i += 4) {
+    const covA = c[i + 3] / 255;
+    if (!covA) continue;
+    const a = d.data[i + 3];
+    d.data[i + 3] = a - covA * (a - Math.min(a, cap));
+  }
+  mctx.putImageData(d, bx0, by0);
+}
+
+// apply a finished stroke to the committed local state. The commit IS the
+// last preview frame (the previews are built to be pixel-exact), so the
+// hand-off is invisible.
+function commitStroke(s, st) {
+  const baseCtx = view.base.getContext("2d");
+  if (s.tool === "brush" || s.tool === "clone") {
+    // the preview's paint/clone branch blits the stroke's layer (colour x
+    // coverage, or the translated image x coverage) with the stroke's
+    // opacity onto the given ctx -- invoke it with the base canvas's
+    // context (identity transform; the layers are in canvas px)
+    drawStrokePreview(baseCtx, s);
+    return;
+  }
+  if (s.tool === "smudge") {
+    // finish any stamps the preview has not drawn yet, then blit the
+    // working image (the mask overlay stays in view.mask)
+    const pts = stampPositions(s.points, Math.max(1, s.size / 12));
+    smudgeAccumulate(s, st, pts, brushStamp(st.brush, s.size, null),
+                     Math.max(s.size / 2, 0.5));
+    baseCtx.drawImage(s.work.canvas, 0, 0);
+    return;
+  }
+  if (s.tool === "mask") {
+    if (s.erase) commitMaskErase(s, st);
+    else commitMaskAdd(s, st);
+    buildMaskOverlay();
+  }
 }
 
 // wheel delta with the shift-fallback described above
@@ -1027,15 +1278,16 @@ function setupCanvasInput() {
         tool,
         points: [p],
         size: brushSizeCanvas(),
-        // frozen for the whole stroke, integer canvas px, so the client
-        // preview and the server commit sample identical pixels
+        // frozen for the whole stroke, integer canvas px, so the preview
+        // and the commit sample identical pixels
         cloneOffset: [Math.round(src[0] - p[0]), Math.round(src[1] - p[1])],
-        // the pre-stroke image the commit samples (a held preview must not
-        // re-sample a refreshed base)
-        img: view.img,
+        // the pre-stroke image the commit samples
+        img: view.base,
+        // pre-stroke snapshot for the draw undo stack; toBlob captures at
+        // call time, so the encode overlaps the drag
+        snapP: snapCanvas(view.base),
       };
       c.setPointerCapture(e.pointerId);
-      scheduleStrokeRefresh(); // reset the deferred-refresh idle window
       viewRedraw();
       return;
     }
@@ -1050,22 +1302,24 @@ function setupCanvasInput() {
         size: brushSizeCanvas(),
         smudgeStamps: 1,
         work: newSmudgeWork(),
+        snapP: snapCanvas(view.base),
       };
       c.setPointerCapture(e.pointerId);
-      scheduleStrokeRefresh(); // reset the deferred-refresh idle window
       viewRedraw();
       return;
     }
     view.stroke = {
       tool,
       points: [p],
-      // freeze the canvas-px footprint at stroke start (the server stamps
+      // freeze the canvas-px footprint at stroke start (the commit stamps
       // with a single size, so a mid-stroke zoom can't change it)
       size: brushSizeCanvas(),
       erase: tool === "mask" && e.shiftKey, // shift = mask eraser
+      // pre-stroke snapshot for the right undo stack (draw vs mask)
+      snapP: tool === "mask" ? null : snapCanvas(view.base),
+      snapMaskP: tool === "mask" ? snapCanvas(view.maskValues) : null,
     };
     c.setPointerCapture(e.pointerId);
-    scheduleStrokeRefresh(); // reset the deferred-refresh idle window
     viewRedraw();
   });
 
@@ -1101,9 +1355,7 @@ function setupCanvasInput() {
           p[1] - (oldCursor[1] - view.oy) / view.scale
         ) * view.scale >= 1)
     ) {
-      // cursor outline moved at least 1 screen px; safe even while commits
-      // are in flight, because the held strokes' previews are re-drawn by
-      // the same frame (view.holdStrokes), so nothing flashes off
+      // cursor outline moved at least 1 screen px
       redraw = true;
     }
     if (redraw) viewRedraw();
@@ -1120,59 +1372,25 @@ function setupCanvasInput() {
     }
     if (!view.stroke) return;
     const s = view.stroke;
+    view.stroke = null;
     const st = Tools.get();
     // CTRL released during the stroke: the source reverts only now
     if (view.cloneGesture && !cloneCtrl) view.cloneGesture = null;
-    // Freeze the stroke BEFORE the round trip: stop recording points and
-    // keep the preview on screen (view.holdStrokes) until the deferred
-    // refresh lands -- otherwise the preview would vanish (flicker). Free
-    // the commit parameters too: the held preview must render with what was
-    // sent, not with the tools' current settings.
-    s.settings = { brush: st.brush, opacity: st.opacity, color: st.color };
-    s.seq = ++strokeSeq;
-    view.holdStrokes.push(s);
-    view.stroke = null;
-    scheduleStrokeRefresh(); // the canvas re-fetch waits for a stroke pause
-    let resp;
-    try {
-      if (s.tool === "clone") {
-        resp = await enqueueCommit(() => api("/api/canvas/clone", {
-          points: s.points,
-          offset: s.cloneOffset,
-          size: s.size, // canvas px (screen mode already divided by zoom)
-          opacity: s.settings.opacity,
-          brush: s.settings.brush,
-        }));
-      } else if (s.tool === "smudge") {
-        resp = await enqueueCommit(() => api("/api/canvas/smudge", {
-          points: s.points,
-          size: s.size, // canvas px (screen mode already divided by zoom)
-          opacity: s.settings.opacity,
-          brush: s.settings.brush,
-        }));
-      } else {
-        resp = await enqueueCommit(() => api("/api/canvas/stroke", {
-          points: s.points,
-          size: s.size, // canvas px (screen mode already divided by zoom)
-          opacity: s.settings.opacity,
-          brush: s.settings.brush,
-          color: s.settings.color || "#ffffff",
-          // Tools.current is "brush"|"mask"; the API wants "image"|"mask"
-          target: s.tool === "mask" ? "mask" : "image",
-          erase: s.erase,
-        }));
-      }
-    } catch (err) {
-      const i = view.holdStrokes.indexOf(s);
-      if (i >= 0) view.holdStrokes.splice(i, 1); // drop the dead preview
-      setStatus(`stroke failed: ${err.message}`, true);
+    if (s.tool === "smudge" && s.points.length < 2) {
+      // a single smudge click smears nothing: no commit, no history step
+      clearBrushStamps();
       viewRedraw();
       return;
     }
-    committedSeq = s.seq; // commits resolve in stroke order (serialized)
-    storeUndoFlags(resp); // the response carries the four undo/redo flags
-    // no viewRefresh here: the deferred stroke refresh applies the LAST
-    // server state once the user has stopped stroking
+    commitStroke(s, st); // local, synchronous: the preview's own result
+    clearBrushStamps(); // the preview is committed; its stamp cache is done
+    // the snapshot promise lands on the stack immediately (its encoding
+    // overlaps the drag); undoStep/redoStep await it on pop
+    pushUndo(s.tool, s.snapP || s.snapMaskP);
+    markDirty(); // the server's copy is behind; idle sync (or the next
+    // forceSync before a server-side read) pushes the state
+    syncUndoButtons(); // app.js
+    viewRedraw();
   };
   c.addEventListener("pointerup", (e) => {
     if (view.crop) { commitCrop(); return; }

@@ -6,9 +6,7 @@ tool) and the tool / mask / zoom hotkeys. Uses the mock-backend server in
 a temp root.
 """
 
-import json
-
-from conftest import wait_until
+from conftest import dot, set_canvas, set_input, wait_until
 
 
 def _open(page, base):
@@ -18,33 +16,50 @@ def _open(page, base):
 
 
 def test_undo_redo_hotkeys(page, server):
-    base, _root = server
+    # The undo/redo hotkeys act on the client's local stack (no server
+    # round trip): Ctrl+Z reverts the painted pixels, Ctrl+Y brings them
+    # back, and the target follows the active tool (mask -> mask stack)
+    BG = (20, 30, 40)  # set_canvas default
+    base, _ = server
     _open(page, base)
-    undo, redo = [], []
+    set_canvas(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    set_input(page, "#brush-color", "#ff0000")
 
-    def on_request(req):
-        if req.url.endswith("/api/canvas/undo"):
-            undo.append(json.loads(req.post_data)["target"])
-        elif req.url.endswith("/api/canvas/redo"):
-            redo.append(json.loads(req.post_data)["target"])
+    px = """([x, y]) => {
+        const c = document.getElementById('canvas');
+        const d = c.getContext('2d').getImageData(
+            Math.round((view.ox + x * view.scale) * view.dpr),
+            Math.round((view.oy + y * view.scale) * view.dpr), 1, 1).data;
+        return [d[0], d[1], d[2]];
+    }"""
 
-    page.on("request", on_request)
-    page.keyboard.press("Control+z")
-    wait_until(lambda: len(undo) == 1)
+    dot(page, 100, 75)
+    assert wait_until(lambda: page.evaluate(px, [100, 75]) == [255, 0, 0])
+
+    page.keyboard.press("Control+z")  # brush tool -> draw stack
+    assert wait_until(lambda: page.evaluate(px, [100, 75]) == list(BG))
     page.keyboard.press("Control+y")
-    wait_until(lambda: len(redo) == 1)
-    assert undo == ["draw"] and redo == ["draw"]  # brush tool -> draw stack
+    assert wait_until(lambda: page.evaluate(px, [100, 75]) == [255, 0, 0])
 
     # the target follows the active tool: mask -> mask stack
     page.click("#tool-mask")
+    dot(page, 60, 40)
+    m = ("([x, y]) => view.maskValues.getContext('2d', "
+         "{willReadFrequently: true}).getImageData(x, y, 1, 1).data[3]")
+    assert wait_until(lambda: page.evaluate(m, [60, 40]) == 255)
     page.keyboard.press("Control+z")
-    wait_until(lambda: len(undo) == 2)
-    assert undo[-1] == "mask"
+    assert wait_until(lambda: page.evaluate(m, [60, 40]) == 0)
+    page.keyboard.press("Control+y")
+    assert wait_until(lambda: page.evaluate(m, [60, 40]) == 255)
+    # ...and the draw pixels are untouched by the mask stack
+    assert page.evaluate(px, [100, 75]) == [255, 0, 0]
 
     # typing in a field: the browser's own undo must not be hijacked
     page.click("#prompt")
     page.keyboard.press("Control+z")
-    assert len(undo) == 2 and len(redo) == 1
+    assert page.evaluate(px, [100, 75]) == [255, 0, 0]  # unchanged
 
 
 def test_tool_and_view_hotkeys(page, server):
@@ -56,18 +71,11 @@ def test_tool_and_view_hotkeys(page, server):
         page.keyboard.press(key)
         assert page.evaluate("Tools.current") == tool
 
-    # mask ops: the hotkeys fire the same endpoints as the buttons
-    ops = []
-
-    def on_request(req):
-        if req.url.endswith("/api/canvas/mask"):
-            ops.append(json.loads(req.post_data).get("op"))
-
-    page.on("request", on_request)
+    # mask ops: the hotkeys fire the same client-side ops as the buttons
+    # (no server round trip any more); without a canvas they are no-ops
     for key in ("n", "k", "r"):
         page.keyboard.press(key)
-    wait_until(lambda: len(ops) == 3)
-    assert ops == ["dilate", "erode", "clear"]
+    assert page.evaluate("view.has") is False
 
     # f fits: a no-op without an image, but must not throw
     page.keyboard.press("f")
@@ -88,10 +96,10 @@ def test_hotkey_buttons_show_their_character_underlined(page, server):
         ("#tool-smudge", "smudge"),
         ("#tool-clone", "clone"),
         ("#tool-mask", "mask"),
-        ("#tool-crop", "crop p"),
+        ("#tool-crop", "crop"),
         ("#mask-dilate", "expand"),
-        ("#mask-erode", "shrink k"),
-        ("#mask-clear", "clear mask"),
+        ("#mask-erode", "shrink"),
+        ("#mask-clear", "clear"),
         ("#zoom-fit", "fit"),
     ]:
         btn = page.locator(sel)
