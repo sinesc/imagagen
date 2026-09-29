@@ -570,9 +570,36 @@ function drawBrushRing(ctx, x, y) {
 function drawCursor(ctx) {
   if (!view.has || !view.cursor) return;
   if (Tools.current === "crop") return; // the crop tool shows a rectangle, not a brush
+  if (Tools.current === "brush" && shiftDown)
+    return; // colour-picker mode: no brush preview under the mouse
   const x = (view.cursor[0] - view.ox) / view.scale;
   const y = (view.cursor[1] - view.oy) / view.scale;
   drawBrushRing(ctx, x, y);
+}
+
+// shift held: with the draw tool this is colour-picker mode (the brush
+// preview is hidden and a click picks the canvas colour at the cursor)
+let shiftDown = false;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Shift" && !shiftDown) { shiftDown = true; viewRedraw(); }
+});
+document.addEventListener("keyup", (e) => {
+  if (e.key === "Shift" && shiftDown) { shiftDown = false; viewRedraw(); }
+});
+
+// draw tool + shift held: pick the committed image's colour at the click as
+// the brush tool's colour (not a stroke; no pointer capture either, so the
+// following pointerup has nothing to commit)
+function pickBrushColor(p) {
+  const x = Math.min(view.w - 1, Math.max(0, Math.round(p[0])));
+  const y = Math.min(view.h - 1, Math.max(0, Math.round(p[1])));
+  const d = view.base.getContext("2d").getImageData(x, y, 1, 1).data;
+  const hex =
+    "#" + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join("");
+  Tools.state.brush.color = hex;
+  Tools.save();
+  syncToolbar(); // app.js: update the swatch
+  setStatus(`picked colour ${hex}`);
 }
 
 // CTRL gesture (clone tool, a source S is set): the source moves 1:1 with
@@ -1262,6 +1289,11 @@ function setupCanvasInput() {
       view.crop = { sx: p[0], sy: p[1], ex: p[0], ey: p[1] };
       c.setPointerCapture(e.pointerId);
       viewRedraw();
+      return;
+    }
+    if (tool === "brush" && e.shiftKey) {
+      // colour-picker mode: set the brush colour from the clicked pixel
+      pickBrushColor(p);
       return;
     }
     if (tool === "clone") {
