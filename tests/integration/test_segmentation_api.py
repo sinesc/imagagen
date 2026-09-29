@@ -105,7 +105,6 @@ def test_segmentation_mask_endpoint_writes_mask(client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True and body["changed"] is True
-    assert body["undo_mask"] is True and body["redo_mask"] is False
     # union of hair (4x4) and face (4x4) support: 32 pixels total
     assert body["pixels"] == 32
 
@@ -116,24 +115,23 @@ def test_segmentation_mask_endpoint_writes_mask(client):
     assert mask[0, 7] == 0        # neither class
 
 
-def test_segmentation_mask_is_undable(client):
-    set_canvas(client)
-    client.post("/api/canvas/mask", json={"op": "dilate", "px": 1})  # prior mask
-    client.post("/api/segmentation/mask", json={
-        "model": "selfie_multiclass_256x256.tflite", "classes": ["face"],
-    })
-    r = client.post("/api/canvas/undo", json={"target": "mask"})
-    assert r.status_code == 200
-    assert r.json()["redo_mask"] is True
-
-
 def test_segmentation_unions_with_existing_mask(client):
     set_canvas(client)
     # pre-paint a mask pixel at (3, 5): outside hair (cols/rows 0..3 x 0..3)
     # and outside face (4..) -> must survive a face-only segmentation
-    r = client.post("/api/canvas/stroke", json={
-        "points": [[3.0, 5.0]], "size": 1, "target": "mask", "opacity": 1.0,
-    })
+    from io import BytesIO
+
+    from PIL import Image
+
+    img = Image.new("RGB", (8, 8), (200, 30, 30))
+    mask = Image.new("RGBA", (8, 8), (128, 128, 128, 0))
+    mask.load()[3, 5] = (128, 128, 128, 255)
+    buf_i, buf_m = BytesIO(), BytesIO()
+    img.save(buf_i, format="PNG")
+    mask.save(buf_m, format="PNG")
+    r = client.post("/api/canvas/sync",
+                    files={"image": ("canvas.png", buf_i.getvalue(), "image/png"),
+                           "mask": ("mask.png", buf_m.getvalue(), "image/png")})
     assert r.status_code == 200
     before = mask_png(client)
     painted = np.argwhere(before > 0)

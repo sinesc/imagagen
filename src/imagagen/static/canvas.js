@@ -410,7 +410,8 @@ async function maskClear() {
 
 // ---------------- optimistic stroke preview ----------------
 
-// mirror of Canvas.stamp_positions (the commit stamps with these centres)
+// even stamp centres along the stroke: consecutive stamps are at least
+// `spacing` apart (1-D Poisson disk), the last point is always stamped
 function stampPositions(points, spacing) {
   if (!points.length) return [];
   if (points.length === 1) return [points[0]];

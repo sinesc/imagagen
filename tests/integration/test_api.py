@@ -189,37 +189,42 @@ def test_interrupt_drops_partial(client, tmp_path):
         assert client.get(f"/api/thumb/{job_id}/0.png").status_code == 404
 
 
-def test_canvas_upload_creates_new_image_not_undo_step(client):
-    """Uploads create a new image entity (and evict the previous one), they
-    do NOT push an undo step: the undo stack is the per-image draw stack."""
-    img = np.full((8, 8, 3), 200, dtype=np.uint8)
-    buf = __import__("io").BytesIO()
+def test_canvas_upload_replaces_current_image(client):
+    """Uploads create a new image entity and evict the previous one —
+    including any client edits that had been synced to it."""
+    import io
+
     from PIL import Image
 
+    img = np.full((8, 8, 3), 200, dtype=np.uint8)
+    buf = io.BytesIO()
     Image.fromarray(img).save(buf, format="PNG")
     r = client.post("/api/canvas/upload", content=buf.getvalue(),
                     headers={"content-type": "image/png"})
     assert r.json()["ok"] is True
     data = client.get("/api/canvas.png").content
-    assert Image.open(__import__("io").BytesIO(data)).size == (8, 8)
+    assert Image.open(io.BytesIO(data)).size == (8, 8)
 
-    # stroke the first image (its draw stack now has one step)
-    client.post("/api/canvas/stroke", json={
-        "points": [[4.0, 4.0]], "size": 4, "color": "#ff0000", "target": "image"})
+    # a client edit is synced onto the first image (pixel (4, 4) painted red)
+    edited = img.copy()
+    edited[4, 4] = (255, 0, 0)
+    buf_i, buf_m = io.BytesIO(), io.BytesIO()
+    Image.fromarray(edited).save(buf_i, format="PNG")
+    Image.new("RGBA", (8, 8), (128, 128, 128, 0)).save(buf_m, format="PNG")
+    r = client.post("/api/canvas/sync",
+                    files={"image": ("canvas.png", buf_i.getvalue(), "image/png"),
+                           "mask": ("mask.png", buf_m.getvalue(), "image/png")})
+    assert r.json()["ok"] is True
+    arr = np.asarray(Image.open(io.BytesIO(client.get("/api/canvas.png").content)))
+    assert arr[4, 4, 0] == 255
 
-    # upload a second image: a NEW entity, the first is evicted
+    # upload a second image: a NEW entity, the first (and its edit) is evicted
     img2 = np.zeros((8, 8, 3), dtype=np.uint8)
-    buf2 = __import__("io").BytesIO()
+    buf2 = io.BytesIO()
     Image.fromarray(img2).save(buf2, format="PNG")
     client.post("/api/canvas/upload", content=buf2.getvalue())
-    assert Image.open(__import__("io").BytesIO(client.get("/api/canvas.png").content)) \
-        .getpixel((0, 0)) == (0, 0, 0)
-    # the second image's draw stack is empty (nothing to undo), and the
-    # stroke on the evicted first image is gone
-    r = client.post("/api/canvas/undo", json={"target": "draw"})
-    assert r.json()["undo_draw"] is False
-    arr = np.asarray(Image.open(__import__("io").BytesIO(client.get("/api/canvas.png").content)))
-    assert arr[0, 0, 0] == 0
+    arr = np.asarray(Image.open(io.BytesIO(client.get("/api/canvas.png").content)))
+    assert arr[4, 4, 0] == 0  # the synced edit is gone with the evicted entity
 
 
 def test_save_empty_canvas_rejected(client):

@@ -2,7 +2,7 @@
 
 The MediaPipe segmenter is injected with fakes: these tests cover the
 service's model discovery, class validation, union/alpha math, and the
-canvas mask write (undo), without mediapipe or a real .tflite file. The
+canvas mask write, without mediapipe or a real .tflite file. The
 real model + inference is exercised by dev/segmentation_check.py
 and the (skipping) browser test in tests/ui/test_segmentation_ui.py.
 """
@@ -184,7 +184,7 @@ def test_generate_rejects_empty_selection(tmp_path):
 
 # ---------------- canvas mask write ----------------
 
-def test_canvas_set_mask_replaces_and_undoes():
+def test_canvas_set_mask_replaces():
     c = Canvas()
     c.import_image(_png(np.full((4, 4, 3), 9, np.uint8)))
     c.set_mask(np.full((4, 4), 30, np.uint8))  # some pre-existing mask
@@ -192,12 +192,7 @@ def test_canvas_set_mask_replaces_and_undoes():
 
     new = np.zeros((4, 4), np.uint8)
     new[1, 1] = 255
-    assert c.set_mask(new)  # changed -> one undo step
-    assert np.array_equal(c.mask, new)
-
-    c.undo("mask")
-    assert (c.mask == 30).all()
-    c.redo("mask")
+    assert c.set_mask(new)  # changed
     assert np.array_equal(c.mask, new)
     # the image was not touched
     assert (c.image == 9).all()

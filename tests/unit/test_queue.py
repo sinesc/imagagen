@@ -130,13 +130,10 @@ def test_first_image_auto_sets_canvas():
     assert canvas.has_image()
     assert not any(e["type"] == "source_image" for e in events)
     assert any(e["type"] == "canvas_set" for e in events)
-    # canvas_set emitted exactly once (first image only) and carries the
-    # per-image undo/redo flags of the (fresh) result entity
+    # canvas_set emitted exactly once (first image only)
     cs = [e for e in events if e["type"] == "canvas_set"]
     assert len(cs) == 1
     assert cs[0]["job"] == job.id
-    assert cs[0]["undo_mask"] is False and cs[0]["redo_mask"] is False
-    assert cs[0]["undo_draw"] is False and cs[0]["redo_draw"] is False
 
 
 def test_generate_retains_nonempty_canvas_as_source_thumbnail():

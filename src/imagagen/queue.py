@@ -517,11 +517,7 @@ class GenerationQueue:
             if job.source_png is None:
                 self.canvas.set_current(eid)
                 self.emit({"type": "canvas_set", "job": job.id,
-                           "index": task.index,
-                           "undo_mask": self.canvas.can_undo_mask(),
-                           "redo_mask": self.canvas.can_redo_mask(),
-                           "undo_draw": self.canvas.can_undo_draw(),
-                           "redo_draw": self.canvas.can_redo_draw()})
+                           "index": task.index})
         self._settle(job, task.index)
 
     def _settle(self, job: Job, index: int) -> None:

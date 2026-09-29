@@ -206,68 +206,9 @@ class SaveBody(BaseModel):
     prompt: str
 
 
-# Max brush slider value in px. Keep in sync with BRUSH_SIZE_MAX in
-# static/app.js (covered by test_stroke_bad_values_422).
-MAX_BRUSH_SIZE = 300.0
-# The client zoom range is 1/512..64 (see viewZoomAt in static/canvas.js).
-# In "screen" mode the slider value is in screen px and is sent as
-# size / zoom, so canvas-px stamps span 1/64 .. 300*64 px.
-MAX_ZOOM = 64.0
-MIN_BRUSH_SIZE = 1.0 / MAX_ZOOM
-MAX_BRUSH_SIZE_ZOOMED = MAX_BRUSH_SIZE * MAX_ZOOM
-
-
-class StrokeBody(BaseModel):
-    points: list[list[float]] = Field(..., min_length=1)  # canvas-pixel coords
-    size: float = Field(10.0, ge=MIN_BRUSH_SIZE, le=MAX_BRUSH_SIZE_ZOOMED)
-    opacity: float = Field(1.0, ge=0.0, le=1.0)
-    brush: str = "circle"
-    erase: bool = False  # mask tool: shift-draw
-    color: str = "#ffffff"  # hex, image tool only
-    target: str = "image"  # "image" | "mask"
-
-    def hexcolor(self) -> tuple[int, int, int]:
-        s = self.color.lstrip("#")
-        if len(s) == 3:
-            s = "".join(c * 2 for c in s)
-        if len(s) != 6 or not all(c in "0123456789abcdefABCDEF" for c in s):
-            raise ValueError(f"bad color: {self.color!r}")
-        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
-
-
-class CloneBody(BaseModel):
-    # A clone stroke: for each stamp centre C, copy the brush-shaped region
-    # sampled at C + offset onto C (see Canvas.clone). offset is in
-    # canvas px, integer (the client rounds it so the live preview and the
-    # commit agree).
-    points: list[list[float]] = Field(..., min_length=1)  # canvas-pixel coords
-    offset: list[float] = Field(..., min_length=2, max_length=2)
-    size: float = Field(10.0, ge=MIN_BRUSH_SIZE, le=MAX_BRUSH_SIZE_ZOOMED)
-    opacity: float = Field(1.0, ge=0.0, le=1.0)
-    brush: str = "circle"
-
-
-class SmudgeBody(BaseModel):
-    # A smudge stroke: a sequential smear along the stroke (see
-    # Canvas.smudge) -- no external source, just the canvas itself.
-    points: list[list[float]] = Field(..., min_length=1)  # canvas-pixel coords
-    size: float = Field(10.0, ge=MIN_BRUSH_SIZE, le=MAX_BRUSH_SIZE_ZOOMED)
-    opacity: float = Field(1.0, ge=0.0, le=1.0)
-    brush: str = "circle"
-
-
-class MaskOpBody(BaseModel):
-    op: str  # "dilate" | "erode" | "clear"
-    px: int = Field(4, ge=0, le=100)
-
-
 class SegmentationMaskBody(BaseModel):
     model: str  # file name in models/segmentation/
     classes: list[str] = Field(default_factory=list)  # class labels to union
-
-
-class UndoRedoBody(BaseModel):
-    target: str = "draw"  # "mask" or "draw"
 
 
 class SelectBody(BaseModel):
@@ -812,14 +753,6 @@ def create_app(
             return Response(status_code=404)
         return Response(content=data, media_type="image/png")
 
-    def canvas_flags() -> dict:
-        return {
-            "undo_mask": canvas.can_undo_mask(),
-            "redo_mask": canvas.can_redo_mask(),
-            "undo_draw": canvas.can_undo_draw(),
-            "redo_draw": canvas.can_redo_draw(),
-        }
-
     @app.post("/api/canvas/upload")
     async def upload_canvas(request: Request) -> dict:
         data = await request.body()
@@ -827,7 +760,7 @@ def create_app(
             canvas.import_image(data)
         except Exception:
             return JSONResponse({"error": "could not read image"}, status_code=400)
-        return {"ok": True, "canvas": canvas.has_image(), **canvas_flags()}
+        return {"ok": True, "canvas": canvas.has_image()}
 
     @app.post("/api/png-meta")
     async def png_meta(request: Request) -> dict:
@@ -884,7 +817,7 @@ def create_app(
             canvas.set_current(f"job:{body.job}:{body.index}")
         except ValueError as e:
             return {"error": str(e)}
-        return {"ok": True, **canvas_flags()}
+        return {"ok": True}
 
     @app.post("/api/canvas/select")
     def select_canvas_image(body: SelectBody) -> dict:
@@ -892,7 +825,7 @@ def create_app(
             canvas.set_current(body.id)
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-        return {"ok": True, **canvas_flags()}
+        return {"ok": True}
 
     @app.post("/api/canvas/crop")
     def canvas_crop(body: CropBody) -> dict:
@@ -908,7 +841,6 @@ def create_app(
             "crop_image_id": crop_id,
             "prev_url": f"/api/canvas/image.png?id={prev_id}",
             "crop_url": f"/api/canvas/image.png?id={crop_id}",
-            **canvas_flags(),
         }
 
     @app.get("/api/canvas/image.png")
@@ -918,80 +850,6 @@ def create_app(
         if data is None:
             return Response(status_code=404)
         return Response(content=data, media_type="image/png")
-
-    @app.post("/api/canvas/undo")
-    def canvas_undo(body: UndoRedoBody) -> dict:
-        if body.target not in ("mask", "draw"):
-            return JSONResponse({"error": "unknown target"}, status_code=422)
-        canvas.undo("mask" if body.target == "mask" else "image")
-        return {"ok": True, **canvas_flags()}
-
-    @app.post("/api/canvas/redo")
-    def canvas_redo(body: UndoRedoBody) -> dict:
-        if body.target not in ("mask", "draw"):
-            return JSONResponse({"error": "unknown target"}, status_code=422)
-        canvas.redo("mask" if body.target == "mask" else "image")
-        return {"ok": True, **canvas_flags()}
-
-    @app.post("/api/canvas/stroke")
-    def canvas_stroke(body: StrokeBody) -> dict:
-        try:
-            color = body.hexcolor()
-        except ValueError as e:
-            return JSONResponse({"error": str(e)}, status_code=422)
-        try:
-            canvas.stroke(
-                points=[(float(x), float(y)) for x, y in body.points],
-                size=body.size,
-                opacity=body.opacity,
-                brush=body.brush,
-                erase=body.erase,
-                color=color,
-                target=body.target,
-            )
-        except (ValueError, KeyError) as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        return {"ok": True, **canvas_flags()}
-
-    @app.post("/api/canvas/clone")
-    def canvas_clone(body: CloneBody) -> dict:
-        try:
-            canvas.clone(
-                points=[(float(x), float(y)) for x, y in body.points],
-                offset=(body.offset[0], body.offset[1]),
-                size=body.size,
-                opacity=body.opacity,
-                brush=body.brush,
-            )
-        except (ValueError, KeyError) as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        return {"ok": True, **canvas_flags()}
-
-    @app.post("/api/canvas/smudge")
-    def canvas_smudge(body: SmudgeBody) -> dict:
-        try:
-            canvas.smudge(
-                points=[(float(x), float(y)) for x, y in body.points],
-                size=body.size,
-                opacity=body.opacity,
-                brush=body.brush,
-            )
-        except (ValueError, KeyError) as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        return {"ok": True, **canvas_flags()}
-
-    @app.post("/api/canvas/mask")
-    def canvas_mask_op(body: MaskOpBody) -> dict:
-        if body.op not in ("dilate", "erode", "clear"):
-            return JSONResponse({"error": "unknown op"}, status_code=422)
-        if not canvas.has_image():
-            return JSONResponse({"error": "canvas is empty"}, status_code=400)
-        changed = {
-            "dilate": lambda: canvas.mask_dilate(body.px),
-            "erode": lambda: canvas.mask_erode(body.px),
-            "clear": lambda: canvas.mask_clear(),
-        }[body.op]()
-        return {"ok": True, "changed": changed, **canvas_flags()}
 
     # --- person mask generation (Phase 5) ---
     # Segmentation models are .tflite files in models/segmentation/; the
@@ -1029,7 +887,6 @@ def create_app(
             "ok": True,
             "changed": changed,
             "pixels": int((merged > 0).sum()),
-            **canvas_flags(),
         }
 
     # --- save ---

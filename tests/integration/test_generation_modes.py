@@ -53,8 +53,24 @@ def _set_canvas(c, w=32, h=24, value=10):
 
 
 def _mask_dot(c, x: float, y: float, size: float = 8.0):
-    r = c.post("/api/canvas/stroke", json={
-        "points": [[x, y]], "size": size, "target": "mask"})
+    # paint a mask square centred on (x, y) — the client does the brush
+    # work; the server only receives the synced state
+    img = c.get("/api/canvas.png")
+    assert img.status_code == 200
+    w, h = Image.open(io.BytesIO(img.content)).size
+    img_p = Image.open(io.BytesIO(img.content)).convert("RGB")
+    mask = Image.new("RGBA", (w, h), (128, 128, 128, 0))
+    px = mask.load()
+    r = size // 2
+    for yy in range(max(0, int(y - r)), min(h, int(y + r + 1))):
+        for xx in range(max(0, int(x - r)), min(w, int(x + r + 1))):
+            px[xx, yy] = (128, 128, 128, 255)
+    buf_i, buf_m = io.BytesIO(), io.BytesIO()
+    img_p.save(buf_i, format="PNG")
+    mask.save(buf_m, format="PNG")
+    r = c.post("/api/canvas/sync",
+               files={"image": ("canvas.png", buf_i.getvalue(), "image/png"),
+                      "mask": ("mask.png", buf_m.getvalue(), "image/png")})
     assert r.status_code == 200, r.text
 
 
@@ -411,12 +427,21 @@ def test_inpaint_carries_metadata_to_canvas(client):
     assert meta["prompt"] == "painted over"
 
 
-def test_strokes_retain_canvas_metadata(client):
+def test_client_edits_retain_canvas_metadata(client):
     # empty canvas: the first result is auto-set and carries its metadata
     with client.websocket_connect("/api/ws") as ws:
         _generate(client, ws, prompt="before strokes", mode="generate")
-    client.post("/api/canvas/stroke", json={
-        "points": [[4.0, 4.0]], "size": 4, "target": "image"})
+    # a synced client edit (pixel painted) must keep the PNG metadata
+    data = client.get("/api/canvas.png").content
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+    img.load()[4, 4] = (255, 0, 0)
+    w, h = img.size
+    buf_i, buf_m = io.BytesIO(), io.BytesIO()
+    img.save(buf_i, format="PNG")
+    Image.new("RGBA", (w, h), (128, 128, 128, 0)).save(buf_m, format="PNG")
+    client.post("/api/canvas/sync",
+                files={"image": ("canvas.png", buf_i.getvalue(), "image/png"),
+                       "mask": ("mask.png", buf_m.getvalue(), "image/png")})
     meta = _canvas_meta(client)
     assert meta is not None
     assert meta["prompt"] == "before strokes"

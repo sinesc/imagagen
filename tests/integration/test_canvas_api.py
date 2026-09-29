@@ -1,4 +1,5 @@
-"""Phase 2 API: strokes, mask buffer + ops, brushes, mask.png."""
+"""Canvas API: state sync (the client is the editor), brush PNGs,
+mask.png, select, crop and entity PNGs."""
 
 import io
 
@@ -7,7 +8,7 @@ from PIL import Image
 from PIL import PngImagePlugin
 from starlette.testclient import TestClient
 
-from imagagen.app import MAX_BRUSH_SIZE, MAX_BRUSH_SIZE_ZOOMED, create_app
+from imagagen.app import create_app
 from imagagen.backends import MockBackend
 from imagagen.config import Config
 
@@ -47,217 +48,6 @@ def _mask(c) -> np.ndarray | None:
     return np.asarray(Image.open(io.BytesIO(r.content)).convert("L"))
 
 
-def test_stroke_paints_image(tmp_path):
-    with _client(tmp_path) as c:
-        _set_canvas(c)
-        r = c.post("/api/canvas/stroke", json={
-            "points": [[16.0, 12.0]], "size": 12, "opacity": 1.0,
-            "color": "#ff0000", "target": "image",
-        })
-        # the draw stack now has one step; the mask stack is untouched
-        assert r.json() == {"ok": True, "undo_mask": False, "redo_mask": False,
-                            "undo_draw": True, "redo_draw": False}
-        img = _img(c)
-        assert img[12, 16][0] == 255 and img[12, 16][1] == 0
-        assert img[0, 0][0] == 10  # untouched corner
-
-
-def test_stroke_empty_canvas_400(tmp_path):
-    with _client(tmp_path) as c:
-        r = c.post("/api/canvas/stroke", json={"points": [[1.0, 1.0]], "size": 10})
-        assert r.status_code == 400
-
-
-def test_stroke_bad_values_422(tmp_path):
-    with _client(tmp_path) as c:
-        _set_canvas(c)
-        assert c.post("/api/canvas/stroke", json={
-            "points": [], "size": 10}).status_code == 422  # need >= 1 point
-        assert c.post("/api/canvas/stroke", json={
-            "points": [[1.0, 1.0]], "size": 0}).status_code == 422
-        assert c.post("/api/canvas/stroke", json={
-            "points": [[1.0, 1.0]], "opacity": 2.0}).status_code == 422
-        assert c.post("/api/canvas/stroke", json={
-            "points": [[1.0, 1.0]], "color": "#zzz"}).status_code == 422
-        # size boundary (must stay in sync with the frontend slider, app.js;
-        # zoomed bounds cover "screen" mode: size/zoom, see MAX_ZOOM in app.py)
-        assert c.post("/api/canvas/stroke", json={
-            "points": [[1.0, 1.0]], "size": MAX_BRUSH_SIZE}).status_code == 200
-        assert c.post("/api/canvas/stroke", json={
-            "points": [[1.0, 1.0]],
-            "size": MAX_BRUSH_SIZE_ZOOMED}).status_code == 200
-        assert c.post("/api/canvas/stroke", json={
-            "points": [[1.0, 1.0]],
-            "size": MAX_BRUSH_SIZE_ZOOMED + 1}).status_code == 422
-
-
-def test_stroke_unknown_brush_400(tmp_path):
-    with _client(tmp_path) as c:
-        _set_canvas(c)
-        r = c.post("/api/canvas/stroke", json={
-            "points": [[16.0, 12.0]], "size": 10, "brush": "nope"})
-        assert r.status_code == 400  # KeyError from the brush loader
-
-
-def test_clone_paints_image(tmp_path):
-    with _client(tmp_path) as c:
-        left, right = (123, 45, 67), (10, 20, 30)
-        arr = np.zeros((48, 64, 3), np.uint8)
-        arr[:, :32] = left
-        arr[:, 32:] = right
-        buf = io.BytesIO()
-        Image.fromarray(arr).save(buf, format="PNG")
-        _set_canvas(c, buf.getvalue())
-        r = c.post("/api/canvas/clone", json={
-            "points": [[44.0, 24.0]], "offset": [-30.0, 0.0],
-            "size": 20, "opacity": 1.0})
-        # a clone stroke is a draw step; the mask stack is untouched
-        assert r.json() == {"ok": True, "undo_mask": False, "redo_mask": False,
-                            "undo_draw": True, "redo_draw": False}
-        img = _img(c)
-        assert img[24, 44].tolist() == list(left)  # copied from the left band
-        assert img[0, 0].tolist() == list(left)  # untouched corner
-
-
-def test_clone_empty_canvas_400(tmp_path):
-    with _client(tmp_path) as c:
-        r = c.post("/api/canvas/clone", json={
-            "points": [[1.0, 1.0]], "offset": [1.0, 1.0]})
-        assert r.status_code == 400
-
-
-def test_clone_bad_values_422(tmp_path):
-    with _client(tmp_path) as c:
-        _set_canvas(c)
-        assert c.post("/api/canvas/clone", json={
-            "points": [], "offset": [1.0, 1.0]}).status_code == 422
-        assert c.post("/api/canvas/clone", json={
-            "points": [[1.0, 1.0]], "offset": [1.0]}).status_code == 422
-        assert c.post("/api/canvas/clone", json={
-            "points": [[1.0, 1.0]], "offset": [1.0, 1.0, 1.0]}).status_code == 422
-        assert c.post("/api/canvas/clone", json={
-            "points": [[1.0, 1.0]], "offset": [1.0, 1.0],
-            "size": 0}).status_code == 422
-        assert c.post("/api/canvas/clone", json={
-            "points": [[1.0, 1.0]], "offset": [1.0, 1.0],
-            "opacity": 2.0}).status_code == 422
-        # size boundary (same as /api/canvas/stroke)
-        assert c.post("/api/canvas/clone", json={
-            "points": [[1.0, 1.0]], "offset": [1.0, 1.0],
-            "size": MAX_BRUSH_SIZE_ZOOMED}).status_code == 200
-        assert c.post("/api/canvas/clone", json={
-            "points": [[1.0, 1.0]], "offset": [1.0, 1.0],
-            "size": MAX_BRUSH_SIZE_ZOOMED + 1}).status_code == 422
-
-
-def test_clone_unknown_brush_400(tmp_path):
-    with _client(tmp_path) as c:
-        _set_canvas(c)
-        r = c.post("/api/canvas/clone", json={
-            "points": [[16.0, 12.0]], "offset": [5.0, 0.0],
-            "size": 10, "brush": "nope"})
-        assert r.status_code == 400  # KeyError from the brush loader
-
-
-def test_smudge_smears_image(tmp_path):
-    with _client(tmp_path) as c:
-        left, right = (123, 45, 67), (10, 20, 30)
-        arr = np.zeros((48, 64, 3), np.uint8)
-        arr[:, :32] = left
-        arr[:, 32:] = right
-        buf = io.BytesIO()
-        Image.fromarray(arr).save(buf, format="PNG")
-        _set_canvas(c, buf.getvalue())
-        # sequential smear: the left band is carried to the drag endpoint
-        r = c.post("/api/canvas/smudge", json={
-            "points": [[16.0, 24.0], [56.0, 24.0]], "size": 20,
-            "opacity": 1.0})
-        # a smudge stroke is a draw step; the mask stack is untouched
-        assert r.json() == {"ok": True, "undo_mask": False, "redo_mask": False,
-                            "undo_draw": True, "redo_draw": False}
-        img = _img(c)
-        assert img[24, 48].tolist() == list(left)  # sequential carry
-        assert img[24, 10].tolist() == list(left)  # source region untouched
-
-
-def test_smudge_empty_canvas_400(tmp_path):
-    with _client(tmp_path) as c:
-        r = c.post("/api/canvas/smudge", json={
-            "points": [[1.0, 1.0], [5.0, 1.0]], "size": 10})
-        assert r.status_code == 400
-
-
-def test_smudge_bad_values_422(tmp_path):
-    with _client(tmp_path) as c:
-        _set_canvas(c)
-        assert c.post("/api/canvas/smudge", json={
-            "points": [], "size": 10}).status_code == 422
-        assert c.post("/api/canvas/smudge", json={
-            "points": [[1.0, 1.0], [5.0, 1.0]],
-            "size": 0}).status_code == 422
-        assert c.post("/api/canvas/smudge", json={
-            "points": [[1.0, 1.0], [5.0, 1.0]],
-            "opacity": 2.0}).status_code == 422
-        # size boundary (same as /api/canvas/stroke)
-        assert c.post("/api/canvas/smudge", json={
-            "points": [[1.0, 1.0], [5.0, 1.0]],
-            "size": MAX_BRUSH_SIZE_ZOOMED}).status_code == 200
-        assert c.post("/api/canvas/smudge", json={
-            "points": [[1.0, 1.0], [5.0, 1.0]],
-            "size": MAX_BRUSH_SIZE_ZOOMED + 1}).status_code == 422
-
-
-def test_smudge_unknown_brush_400(tmp_path):
-    with _client(tmp_path) as c:
-        _set_canvas(c)
-        r = c.post("/api/canvas/smudge", json={
-            "points": [[16.0, 12.0], [40.0, 12.0]], "size": 10,
-            "brush": "nope"})
-        assert r.status_code == 400  # KeyError from the brush loader
-
-
-def test_mask_roundtrip(tmp_path):
-    with _client(tmp_path) as c:
-        _set_canvas(c)
-        assert _mask(c) is None or (_mask(c) == 0).all()
-        c.post("/api/canvas/stroke", json={
-            "points": [[16.0, 12.0]], "size": 10, "target": "mask"})
-        m = _mask(c)
-        assert m is not None and m[12, 16] == 255
-        # shift-draw erases
-        c.post("/api/canvas/stroke", json={
-            "points": [[16.0, 12.0]], "size": 10, "target": "mask",
-            "erase": True})
-        assert _mask(c)[12, 16] == 0
-
-
-def test_mask_dilate_erode_clear(tmp_path):
-    with _client(tmp_path) as c:
-        _set_canvas(c)
-        c.post("/api/canvas/stroke", json={
-            "points": [[16.0, 12.0]], "size": 8, "target": "mask"})
-        before = int((_mask(c) > 0).sum())
-
-        r = c.post("/api/canvas/mask", json={"op": "dilate", "px": 4})
-        assert r.json()["ok"] is True
-        assert int((_mask(c) > 0).sum()) > before
-
-        c.post("/api/canvas/mask", json={"op": "erode", "px": 4})
-        c.post("/api/canvas/mask", json={"op": "clear"})
-        assert (_mask(c) == 0).all()
-
-        # clear on an already-empty mask: ok but no change, no undo entry
-        r = c.post("/api/canvas/mask", json={"op": "clear"})
-        assert r.json()["changed"] is False
-
-
-def test_mask_op_validation(tmp_path):
-    with _client(tmp_path) as c:
-        assert c.post("/api/canvas/mask", json={"op": "flip"}).status_code == 422
-        r = c.post("/api/canvas/mask", json={"op": "dilate", "px": 4})
-        assert r.status_code == 400  # empty canvas
-
-
 def test_brushes_endpoint(tmp_path):
     with _client(tmp_path, brush="mybrush") as c:
         r = c.get("/api/brushes")
@@ -283,57 +73,12 @@ def test_brush_png_endpoint(tmp_path):
         assert c.get("/api/brush/nope.png").status_code == 404
 
 
-def test_stroke_with_custom_brush(tmp_path):
-    with _client(tmp_path, brush="soft") as c:
-        _set_canvas(c)
-        r = c.post("/api/canvas/stroke", json={
-            "points": [[16.0, 12.0]], "size": 16, "brush": "soft",
-            "color": "#ffffff"})
-        assert r.status_code == 200
-        img = _img(c)
-        assert img[12, 16][0] > 150  # luminance-200 brush painted
-
-
-def test_undo_redo_over_api_with_mask(tmp_path):
-    with _client(tmp_path) as c:
-        _set_canvas(c)
-        c.post("/api/canvas/stroke", json={
-            "points": [[16.0, 12.0]], "size": 10, "color": "#00ff00",
-            "target": "image"})
-        c.post("/api/canvas/stroke", json={
-            "points": [[16.0, 12.0]], "size": 10, "target": "mask"})
-        assert _mask(c)[12, 16] == 255
-
-        # undo the mask stroke (independent of the draw stack)
-        r = c.post("/api/canvas/undo", json={"target": "mask"})
-        assert r.json()["undo_mask"] is False  # nothing left to undo in mask
-        assert r.json()["undo_draw"] is True  # the image stroke still undoable
-        assert _mask(c)[12, 16] == 0  # mask stroke reverted
-        assert _img(c)[12, 16][1] == 255  # image stroke intact
-
-        c.post("/api/canvas/redo", json={"target": "mask"})
-        assert _mask(c)[12, 16] == 255
-
-        # the draw stack is independent: undo it separately
-        c.post("/api/canvas/undo", json={"target": "draw"})
-        assert _img(c)[12, 16][1] == 10  # image stroke reverted
-        assert _mask(c)[12, 16] == 255  # mask stroke still applied
-
-
-def test_undo_redo_unknown_target_422(tmp_path):
-    with _client(tmp_path) as c:
-        _set_canvas(c)
-        assert c.post("/api/canvas/undo", json={"target": "bogus"}).status_code == 422
-        assert c.post("/api/canvas/redo", json={"target": "bogus"}).status_code == 422
-
-
 def test_select_switches_and_rejects_unknown(tmp_path):
     with _client(tmp_path) as c:
         c.post("/api/canvas/upload", content=_png_bytes(32, 24, 1))  # upload:0
-        # re-selecting the current id is a no-op that succeeds + returns flags
+        # re-selecting the current id is a no-op that succeeds
         r = c.post("/api/canvas/select", json={"id": "upload:0"})
         assert r.status_code == 200 and r.json()["ok"] is True
-        assert "undo_draw" in r.json() and "redo_mask" in r.json()
         # unknown id -> 400
         assert c.post("/api/canvas/select", json={"id": "nope"}).status_code == 400
 
@@ -341,8 +86,8 @@ def test_select_switches_and_rejects_unknown(tmp_path):
 def test_mask_png_follows_image_size(tmp_path):
     with _client(tmp_path) as c:
         _set_canvas(c)  # 32x24
-        c.post("/api/canvas/stroke", json={
-            "points": [[16.0, 12.0]], "size": 10, "target": "mask"})
+        c.post("/api/canvas/sync", files=_sync_payload(mask_px=(16, 12),
+                                                        mask_value=255))
         assert _mask(c).shape == (24, 32)
         _set_canvas(c, _png_bytes(64, 48))  # mask.png now follows the image
         assert _mask(c).shape == (48, 64)
@@ -353,8 +98,8 @@ def test_mask_retained_across_same_size_image(tmp_path):
     result auto-set into the canvas, or a thumb selection)."""
     with _client(tmp_path) as c:
         _set_canvas(c)
-        c.post("/api/canvas/stroke", json={
-            "points": [[16.0, 12.0]], "size": 10, "target": "mask"})
+        c.post("/api/canvas/sync", files=_sync_payload(mask_px=(16, 12),
+                                                        mask_value=255))
         assert _mask(c)[12, 16] == 255
         _set_canvas(c)  # new image, same size -> mask survives
         assert _mask(c)[12, 16] == 255
@@ -365,13 +110,22 @@ def test_new_image_inherits_mask_scaled_to_new_size(tmp_path):
     scaled (fit-within, centered) to the new size (not reset)."""
     with _client(tmp_path) as c:
         _set_canvas(c)  # 32x24
-        c.post("/api/canvas/stroke", json={
-            "points": [[16.0, 12.0]], "size": 10, "target": "mask"})
+        # a 2x2 mask block (a single pixel would resample down when the
+        # mask is scaled to the new image size)
+        payload = _sync_payload(mask_px=(16, 12), mask_value=255)
+        mask = Image.open(io.BytesIO(payload["mask"][1])).convert("RGBA")
+        px = mask.load()
+        for yy, xx in ((11, 16), (12, 15), (12, 16), (11, 15)):
+            px[xx, yy] = (128, 128, 128, 255)
+        buf = io.BytesIO()
+        mask.save(buf, format="PNG")
+        payload["mask"] = ("mask.png", buf.getvalue(), "image/png")
+        c.post("/api/canvas/sync", files=payload)
         assert _mask(c)[12, 16] == 255
         _set_canvas(c, _png_bytes(64, 48))  # different size -> mask scaled
         m = _mask(c)
         assert m.shape == (48, 64)  # mask.png follows the image size
-        assert m[24, 32] == 255  # the dot scaled 2x (12,16 -> 24,32)
+        assert m[24, 32] == 255  # the block scaled 2x (12,16 -> 24,32)
 
 
 def _png_with_meta(w=16, h=12) -> bytes:
@@ -446,9 +200,6 @@ def test_crop_crops_image_and_returns_urls(tmp_path):
         assert j["prev_image_id"] != j["crop_image_id"]
         assert j["prev_url"].startswith("/api/canvas/image.png?id=")
         assert j["crop_url"].startswith("/api/canvas/image.png?id=")
-        # the four undo/redo flags are present (canvas-mutating response)
-        for k in ("undo_mask", "redo_mask", "undo_draw", "redo_draw"):
-            assert isinstance(j[k], bool)
         # the canvas now shows the cropped image (12x8)
         img = _img(c)
         assert img.shape == (8, 12, 3)
@@ -510,13 +261,14 @@ def test_image_png_unknown_id_404(tmp_path):
 
 # ---------------- client-authoritative state sync ----------------
 
-def _sync_payload(w=32, h=24, img_value=200, mask_value=128) -> dict:
+def _sync_payload(w=32, h=24, img_value=200, mask_value=128,
+                 mask_px=(5, 5)) -> dict:
     """Multipart files as the client sends them: the image canvas blob and
     the mask value canvas (RGBA, alpha = value)."""
     img = Image.new("RGB", (w, h), (img_value, img_value, img_value))
     mask = Image.new("RGBA", (w, h), (128, 128, 128, 0))
     px = mask.load()
-    px[5, 5] = (128, 128, 128, mask_value)
+    px[mask_px] = (128, 128, 128, mask_value)
     buf_i, buf_m = io.BytesIO(), io.BytesIO()
     img.save(buf_i, format="PNG")
     mask.save(buf_m, format="PNG")

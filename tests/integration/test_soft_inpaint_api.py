@@ -40,9 +40,22 @@ def _png_bytes(value=10, size=64) -> bytes:
 
 def _setup_canvas(c, size=64):
     assert c.post("/api/canvas/upload", content=_png_bytes(size=size)).status_code == 200
-    assert c.post("/api/canvas/stroke", json={
-        "points": [[size / 2, size / 2]], "size": 8, "target": "mask"}
-    ).status_code == 200
+    # paint a small mask square in the centre (the client does the brush
+    # work; the server only receives the synced state)
+    img = Image.new("RGB", (size, size), (10, 10, 10))
+    mask = Image.new("RGBA", (size, size), (128, 128, 128, 0))
+    px = mask.load()
+    mid = size // 2
+    for y in range(mid - 2, mid + 2):
+        for x in range(mid - 2, mid + 2):
+            px[x, y] = (128, 128, 128, 255)
+    buf_i, buf_m = io.BytesIO(), io.BytesIO()
+    img.save(buf_i, format="PNG")
+    mask.save(buf_m, format="PNG")
+    assert c.post("/api/canvas/sync",
+                  files={"image": ("canvas.png", buf_i.getvalue(), "image/png"),
+                         "mask": ("mask.png", buf_m.getvalue(), "image/png")}
+                  ).status_code == 200
 
 
 def _wait_done(ws, job: str, timeout: float = 10.0):
