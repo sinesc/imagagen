@@ -4,16 +4,17 @@ source image), mask morphology, entity eviction.
 Pure-Python (numpy/PIL/scipy) -- no GPU, no model.
 """
 
+import io
+
 import numpy as np
 import pytest
 from PIL import Image
+from PIL import PngImagePlugin
 
 from imagagen.canvas import Canvas, DRAW_HISTORY, MASK_HISTORY
 
 
 def _png(arr: np.ndarray) -> bytes:
-    import io
-
     buf = io.BytesIO()
     Image.fromarray(arr).save(buf, format="PNG")
     return buf.getvalue()
@@ -593,6 +594,42 @@ def test_set_mask_identical_pushes_no_step():
     n = len(ent.mask_undo)
     assert not c.set_mask(m.copy())  # identical -> no step
     assert len(ent.mask_undo) == n
+
+
+# ---------------- client-authoritative state push ----------------
+
+def test_replace_state_swaps_image_and_mask():
+    c = blank_canvas(64, 48, value=10)
+    img = np.full((48, 64, 3), 200, dtype=np.uint8)
+    img[5, 5] = (1, 2, 3)
+    mask = np.zeros((48, 64), dtype=np.uint8)
+    mask[5, 5] = 128
+    c.replace_state(img, mask)
+    np.testing.assert_array_equal(c.image, img)
+    np.testing.assert_array_equal(c.mask, mask)
+    # the cold store follows the hot state
+    np.testing.assert_array_equal(
+        np.asarray(Image.open(io.BytesIO(c.to_png_bytes()))), img
+    )
+
+
+def test_replace_state_preserves_png_info_chunks():
+    arr = np.full((24, 32, 3), 10, dtype=np.uint8)
+    buf = io.BytesIO()
+    pnginfo = PngImagePlugin.PngInfo()
+    pnginfo.add_text("parameters", "a prompt")
+    Image.fromarray(arr).save(buf, format="PNG", pnginfo=pnginfo)
+    c = Canvas()
+    c.import_image(buf.getvalue())
+    c.replace_state(arr.copy(), np.zeros((24, 32), dtype=np.uint8))
+    assert c.png_info() == {"parameters": "a prompt"}
+
+
+def test_replace_state_empty_canvas_raises():
+    c = Canvas()
+    with pytest.raises(ValueError):
+        c.replace_state(np.zeros((8, 8, 3), dtype=np.uint8),
+                        np.zeros((8, 8), dtype=np.uint8))
 
 
 # ---------------- undo/redo: per-image draw + per-image mask ----------------

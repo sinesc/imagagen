@@ -4,6 +4,7 @@ import io
 
 import numpy as np
 from PIL import Image
+from PIL import PngImagePlugin
 from starlette.testclient import TestClient
 
 from imagagen.app import MAX_BRUSH_SIZE, MAX_BRUSH_SIZE_ZOOMED, create_app
@@ -505,3 +506,91 @@ def test_crop_bad_values_422(tmp_path):
 def test_image_png_unknown_id_404(tmp_path):
     with _client(tmp_path) as c:
         assert c.get("/api/canvas/image.png?id=nope").status_code == 404
+
+
+# ---------------- client-authoritative state sync ----------------
+
+def _sync_payload(w=32, h=24, img_value=200, mask_value=128) -> dict:
+    """Multipart files as the client sends them: the image canvas blob and
+    the mask value canvas (RGBA, alpha = value)."""
+    img = Image.new("RGB", (w, h), (img_value, img_value, img_value))
+    mask = Image.new("RGBA", (w, h), (128, 128, 128, 0))
+    px = mask.load()
+    px[5, 5] = (128, 128, 128, mask_value)
+    buf_i, buf_m = io.BytesIO(), io.BytesIO()
+    img.save(buf_i, format="PNG")
+    mask.save(buf_m, format="PNG")
+    return {
+        "image": ("canvas.png", buf_i.getvalue(), "image/png"),
+        "mask": ("mask.png", buf_m.getvalue(), "image/png"),
+    }
+
+
+def test_sync_replaces_image_and_mask(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c)  # 32x24, value 10
+        r = c.post("/api/canvas/sync", files=_sync_payload())
+        assert r.status_code == 200 and r.json()["ok"]
+        img = _img(c)
+        assert (img == 200).all()
+        # the client's RGBA value PNG decodes via its alpha channel
+        np.testing.assert_array_equal(_mask(c)[5, 5], 128)
+        assert (_mask(c) == 0).sum() == 32 * 24 - 1
+
+
+def test_sync_empty_canvas_400(tmp_path):
+    with _client(tmp_path) as c:
+        assert c.post("/api/canvas/sync", files=_sync_payload()).status_code == 400
+
+
+def test_sync_missing_parts_400(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c)
+        r = c.post(
+            "/api/canvas/sync",
+            files={"image": ("canvas.png", _png_bytes(), "image/png")},
+        )
+        assert r.status_code == 400
+        r = c.post(
+            "/api/canvas/sync",
+            files={
+                "mask": ("mask.png", _png_bytes(32, 24, 128), "image/png")
+            },
+        )
+        assert r.status_code == 400
+
+
+def test_sync_size_mismatch_400(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c)  # 32x24
+        r = c.post("/api/canvas/sync", files=_sync_payload(w=16, h=16))
+        assert r.status_code == 400
+        # the state is untouched
+        assert (_img(c) == 10).all()
+
+
+def test_sync_preserves_png_info_chunks(tmp_path):
+    buf = io.BytesIO()
+    pnginfo = PngImagePlugin.PngInfo()
+    pnginfo.add_text("parameters", "a prompt")
+    Image.new("RGB", (32, 24), (10, 10, 10)).save(buf, format="PNG",
+                                                   pnginfo=pnginfo)
+    with _client(tmp_path) as c:
+        _set_canvas(c, data=buf.getvalue())
+        r = c.post("/api/canvas/sync", files=_sync_payload())
+        assert r.status_code == 200
+        data = c.get("/api/canvas.png").content
+        assert Image.open(io.BytesIO(data)).info.get("parameters") == "a prompt"
+
+
+def test_sync_bad_png_400(tmp_path):
+    with _client(tmp_path) as c:
+        _set_canvas(c)
+        r = c.post(
+            "/api/canvas/sync",
+            files={
+                "image": ("canvas.png", b"not a png", "image/png"),
+                "mask": ("mask.png", _png_bytes(32, 24, 0), "image/png"),
+            },
+        )
+        assert r.status_code == 400

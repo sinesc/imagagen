@@ -6,6 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",  # multipart form parsing (canvas sync upload)
     "pillow>=10",
     "numpy>=2",
     "pydantic>=2",

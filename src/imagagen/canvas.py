@@ -65,7 +65,10 @@ def _encode_mask(m: np.ndarray) -> bytes:
 
 
 def _decode_mask(data: bytes) -> np.ndarray:
-    return np.asarray(Image.open(BytesIO(data)).convert("L"))
+    im = Image.open(BytesIO(data))
+    if "A" in im.getbands():  # client value canvas: alpha = value
+        im = im.getchannel("A")
+    return np.asarray(im.convert("L"))
 
 
 def _png_text_chunks(data: bytes) -> dict:
@@ -177,6 +180,17 @@ class Canvas:
     def current_id(self) -> str | None:
         with self._lock:
             return self._current
+
+    def replace_state(self, img: np.ndarray, mask: np.ndarray) -> None:
+        """Client-authoritative state push: replace the displayed entity's
+        image and mask. PNG text chunks (metadata) are preserved."""
+        with self._lock:
+            if self._current is None:
+                raise ValueError("cannot replace state on an empty canvas")
+            ent = self._images[self._current]
+            ent.image = np.ascontiguousarray(img)
+            ent.mask = np.ascontiguousarray(mask)
+            ent.png = _encode_png(ent.image, ent.info)
 
     # --- entity management ---
     def _inherit_mask_state_locked(

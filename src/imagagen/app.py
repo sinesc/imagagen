@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from . import metadata, wildcards
 from .backends import GenerateRequest, ModelBackend
-from .canvas import Canvas
+from .canvas import Canvas, _decode_mask, _decode_png
 from .config import Config, ensure_dirs, load_config
 from .generation import INPAINT_PADDING, GenerationError, with_inpaint
 from .lora_settings import LoraSettings, all_settings, save_settings
@@ -771,6 +771,32 @@ def create_app(
         if data is None:
             return Response(status_code=404)
         return Response(content=data, media_type="image/png")
+
+    @app.post("/api/canvas/sync")
+    async def canvas_sync(request: Request) -> dict:
+        """Client-authoritative state push: the browser editor owns the live
+        canvas and pushes the full state (image + mask PNGs) after edits."""
+        if not canvas.has_image():
+            return JSONResponse({"error": "canvas is empty"}, status_code=400)
+        form = await request.form()
+        img_file, mask_file = form.get("image"), form.get("mask")
+        if img_file is None or mask_file is None:
+            return JSONResponse(
+                {"error": "image and mask required"}, status_code=400
+            )
+        try:
+            img = _decode_png(await img_file.read())
+            mask = _decode_mask(await mask_file.read())
+        except Exception:
+            return JSONResponse({"error": "could not read image"}, status_code=400)
+        size = canvas.size()
+        if size is None:
+            return JSONResponse({"error": "canvas is empty"}, status_code=400)
+        w, h = size
+        if img.shape != (h, w, 3) or mask.shape != (h, w):
+            return JSONResponse({"error": "size mismatch"}, status_code=400)
+        canvas.replace_state(img, mask)
+        return {"ok": True}
 
     @app.get("/api/brushes")
     def list_brushes() -> dict:
