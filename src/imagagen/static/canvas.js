@@ -20,6 +20,9 @@ const view = {
   oy: 0,
   dpr: 1,
   stroke: null, // {tool, points: [[x,y]...], erase, cloneOffset, smudgeStamps}
+  holdStroke: null, // the finished stroke kept for preview rendering while
+  // its commit is in flight (cleared by viewRefresh before its final
+  // redraw): cursor tracking can redraw without flashing the preview off
   smudgeWork: null, // {canvas}: smudge tool's offscreen working image (canvas
   // px), the pre-stroke image plus the drag accumulated stamp by stamp
   cloneSource: null, // [x,y] canvas px: clone tool's picked source S
@@ -29,7 +32,6 @@ const view = {
   // region used is its clamped intersection with the image (cropRect)
   pan: null,
   cursor: null, // [mx,my] in CSS px relative to the canvas element
-  refreshing: false, // stroke commit in flight: don't clobber the preview
 };
 
 const cv = () => $("canvas");
@@ -104,11 +106,13 @@ function viewRedraw() {
   ctx.translate(view.ox, view.oy);
   ctx.scale(view.scale, view.scale);
   if (view.img) ctx.drawImage(view.img, 0, 0);
-  // an active erase stroke draws its own punched copy of the mask; the base
-  // mask would show through underneath it (double opacity)
-  const erasing = view.stroke && view.stroke.erase;
+  // an active erase stroke (or a held one awaiting its commit) draws its
+  // own punched copy of the mask; the base mask would show through
+  // underneath it (double opacity)
+  const active = view.stroke || view.holdStroke;
+  const erasing = active && active.erase;
   if (view.mask && !erasing) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
-  if (view.stroke) drawPreview(ctx);
+  if (active) drawPreview(ctx);
   if (view.crop) drawCropOverlay(ctx);
   drawCursor(ctx);
   drawCloneCrosshairs(ctx);
@@ -147,6 +151,7 @@ async function viewRefresh() {
     view.img = null;
     view.mask = null;
     view.w = view.h = 0;
+    view.holdStroke = null; // the committed (empty) state is about to land
     viewRedraw();
     return;
   }
@@ -176,6 +181,10 @@ async function viewRefresh() {
     viewResize(); // the canvas element may have been hidden (sized to 0)
     viewFit();
   }
+  // drop the held preview and land the committed pixels in ONE synchronous
+  // frame (no awaits between, so a cursor redraw can't interleave and
+  // flash the un-stroked image)
+  view.holdStroke = null;
   viewRedraw();
 }
 
@@ -465,7 +474,7 @@ function coverageCtx(w, h) {
 
 function drawPreview(ctx) {
   const st = Tools.get();
-  const s = view.stroke;
+  const s = view.stroke || view.holdStroke;
   const pts = stampPositions(s.points, Math.max(1, s.size / 12));
   const r = Math.max(s.size / 2, 0.5);
   // the selected brush at the stroke's frozen size: the exact shape the
@@ -867,23 +876,22 @@ function setupCanvasInput() {
         redraw = true;
       }
     } else if (
-      // while the commit round-trip is in flight the last frame (with the
-      // optimistic preview) must be kept on screen -- redrawing for the
-      // cursor outline would flash the un-stroked image (see endStroke)
-      !view.refreshing &&
       (!oldCursor ||
         Math.hypot(
           p[0] - (oldCursor[0] - view.ox) / view.scale,
           p[1] - (oldCursor[1] - view.oy) / view.scale
         ) * view.scale >= 1)
     ) {
-      redraw = true; // cursor outline moved at least 1 screen px
+      // cursor outline moved at least 1 screen px; safe even while a commit
+      // is in flight, because the held stroke's preview is re-drawn by the
+      // same frame (view.holdStroke), so nothing flashes off
+      redraw = true;
     }
     if (redraw) viewRedraw();
   });
   c.addEventListener("pointerleave", () => {
     view.cursor = null;
-    if (!view.refreshing) viewRedraw();
+    viewRedraw();
   });
 
   const endStroke = async () => {
@@ -894,15 +902,16 @@ function setupCanvasInput() {
     if (!view.stroke) return;
     const s = view.stroke;
     const st = Tools.get();
+    const work = view.smudgeWork; // smudge's working image for this stroke
     // CTRL released during the stroke: the source reverts only now
-    // (no redraw -- the held frame stays until viewRefresh redraws)
     if (view.cloneGesture && !cloneCtrl) view.cloneGesture = null;
     // Freeze the stroke BEFORE the round trip: stop recording points and
-    // hold the last frame (with the preview) until the committed pixels
-    // arrive -- otherwise the stroke would keep following the cursor while
-    // the request is in flight, and the preview would vanish (flicker).
+    // keep the preview on screen (view.holdStroke) until the committed
+    // pixels arrive -- otherwise the preview would vanish (flicker). Cursor
+    // tracking stays live because the held preview is re-drawn by every
+    // frame, and viewRefresh drops it in the same frame as the new pixels.
+    view.holdStroke = s;
     view.stroke = null;
-    view.refreshing = true;
     let resp;
     try {
       if (s.tool === "clone") {
@@ -920,7 +929,6 @@ function setupCanvasInput() {
           opacity: st.opacity,
           brush: st.brush,
         });
-        view.smudgeWork = null;
       } else {
         resp = await api("/api/canvas/stroke", {
           points: s.points,
@@ -934,9 +942,9 @@ function setupCanvasInput() {
         });
       }
     } catch (err) {
-      view.smudgeWork = null;
+      if (view.holdStroke === s) view.holdStroke = null;
+      if (view.smudgeWork === work) view.smudgeWork = null;
       clearBrushStamps();
-      view.refreshing = false;
       setStatus(`stroke failed: ${err.message}`, true);
       viewRedraw();
       return;
@@ -945,7 +953,7 @@ function setupCanvasInput() {
     try {
       await viewRefresh();
     } finally {
-      view.refreshing = false;
+      if (view.smudgeWork === work) view.smudgeWork = null;
       clearBrushStamps(); // the stamp cache was sized for this stroke
     }
   };

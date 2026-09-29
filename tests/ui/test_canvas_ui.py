@@ -285,28 +285,53 @@ def test_brush_outline_follows_cursor(page, server):
     assert page.evaluate("view.cursor") is None
 
 
-def test_cursor_moves_do_not_redraw_during_commit(page, server):
-    """The no-flicker-on-release fix (endStroke) relies on no redraw while the
-    stroke commit is in flight; cursor tracking must not break that."""
+def test_cursor_tracks_without_flicker_during_commit(page, server):
+    """While a stroke commit is in flight the preview stays on screen
+    (view.holdStroke) AND the cursor outline keeps tracking the mouse
+    (regression: tracking was disabled for the whole round trip, freezing
+    the brush outline at the stroke end until the server update arrived)."""
     base, _ = server
     _open(page, base)
     _show(page, base)
-    box = page.locator("#canvas").bounding_box()
-    cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-    page.mouse.move(cx, cy)  # outline rendered
+    set_input(page, "#brush-color", "#000000")
+
+    # Delay the stroke response so the round-trip window is wide.
+    page.evaluate("""() => {
+        const orig = window.fetch;
+        window.fetch = async (url, opts) => {
+            const r = await orig(url, opts);
+            if (String(url).includes('/canvas/stroke'))
+                await new Promise((res) => setTimeout(res, 250));
+            return r;
+        };
+    }""")
+    stroke(page, [(90, 40), (110, 40)])  # ends with mouse.up
+
+    def preview_px(x, y):
+        return page.evaluate(
+            """([x, y]) => {
+                const ctx = document.getElementById('canvas').getContext('2d');
+                const d = ctx.getImageData(
+                    Math.round((view.ox + x * view.scale) * view.dpr),
+                    Math.round((view.oy + y * view.scale) * view.dpr), 1, 1).data;
+                return [d[0], d[1], d[2]];
+            }""",
+            [x, y],
+        )
+
     frame = "document.getElementById('canvas').toDataURL()"
+    # inside the 250 ms delay: the preview is still on screen
+    assert preview_px(100, 40) == [0, 0, 0]
+    # ...and the cursor outline keeps tracking: moving the mouse changes
+    # the frame (the outline moved) without flashing the preview off
     before = page.evaluate(frame)
-
-    page.evaluate("view.refreshing = true")
-    page.mouse.move(cx + 30, cy + 30, steps=3)
-    # the frame must be UNCHANGED: no redraw while the commit is in flight
-    assert page.evaluate(frame) == before
-
-    page.evaluate("view.refreshing = false")
-    page.mouse.move(cx + 50, cy + 50, steps=3)
-    assert (
-        page.evaluate(frame) != before
-    ), "cursor outline should be tracked again once the commit finishes"
+    sx, sy = screen_pos(page, 150, 100)
+    page.mouse.move(sx, sy, steps=3)
+    assert page.evaluate(frame) != before, "cursor outline did not track"
+    assert preview_px(100, 40) == [0, 0, 0], "preview flashed off"
+    # the commit lands and the pixels stay
+    assert wait_until(lambda: canvas_px(base, 100, 40) == (0, 0, 0))
+    assert preview_px(100, 40) == [0, 0, 0]
 
 
 def test_brush_screen_size_mode(page, server):
