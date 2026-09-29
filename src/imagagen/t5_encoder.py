@@ -1,7 +1,7 @@
 """T5-XXL text encoder for FLUX, ported from the Forge reference
 (``backend/nn/t5.py``).
 
-The shipped ``t5xxl_fp8_e4m3fn.safetensors`` stores the weights in
+The shipped ``t5xxl.safetensors`` stores the weights in
 ``float8_e4m3fn`` (~4.9 GB). They are kept in fp8 on the GPU and cast to the
 compute dtype (bf16) per-op in :class:`Fp8Linear`, so the resident size stays
 ~4.9 GB instead of the ~9.8 GB a bf16 copy would need.
@@ -214,7 +214,7 @@ def T5XXL(
 
 
 def load_t5_encoder(path, device):
-    """Load ``t5xxl_fp8_e4m3fn.safetensors`` (fp8) into a :class:`T5` on ``device``."""
+    """Load ``t5xxl.safetensors`` (fp8) into a :class:`T5` on ``device``."""
     import safetensors.torch as st
 
     file = st.load_file(path)

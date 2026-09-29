@@ -230,7 +230,7 @@ class FluxBackend(ModelBackend):
             self.te_device = "cpu" if config.text_encoder_device == "cpu" else device
             self.clip = load_clip_l(str(infra / "clip_l.safetensors"), "cpu")
             self.t5 = load_t5_encoder(
-                str(infra / "t5xxl_fp8_e4m3fn.safetensors"), "cpu"
+                str(infra / "t5xxl.safetensors"), "cpu"
             )
             self.clip_tok = CLIPTokenizer.from_pretrained(str(config.res_dir / "tokenizer_clip"))
             self.t5_tok = AutoTokenizer.from_pretrained(str(config.res_dir / "tokenizer_t5"))
