@@ -2265,7 +2265,8 @@ document.addEventListener("keydown", (e) => {
 });
 
 // D / S / C / M / P switch tools, N / K / R act on the mask, F fits the
-// image, CTRL+Z / CTRL+Y undo / redo (all when not typing in a field);
+// image, CTRL+S saves, CTRL+G generates, CTRL+Z / CTRL+Y undo / redo
+// (all when not typing in a field);
 // CTRL (clone tool, a source set) makes the source follow the cursor until
 // it is released
 document.addEventListener("keydown", (e) => {
@@ -2279,6 +2280,16 @@ document.addEventListener("keydown", (e) => {
   if (e.ctrlKey && (e.key === "y" || e.key === "Y")) {
     e.preventDefault();
     $("btn-redo").onclick();
+    return;
+  }
+  if (e.ctrlKey && !e.shiftKey && (e.key === "s" || e.key === "S")) {
+    e.preventDefault(); // keep the browser's save dialog from popping up
+    $("btn-save").onclick();
+    return;
+  }
+  if (e.ctrlKey && !e.shiftKey && (e.key === "g" || e.key === "G")) {
+    e.preventDefault();
+    $("btn-generate").onclick();
     return;
   }
   if (e.key === "d" || e.key === "D") switchTool("brush");

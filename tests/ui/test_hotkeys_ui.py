@@ -2,8 +2,8 @@
 Playwright).
 
 Covers the undo/redo hotkeys (Ctrl+Z / Ctrl+Y, target follows the active
-tool) and the tool / mask / zoom hotkeys. Uses the mock-backend server in
-a temp root.
+tool), the tool / mask / zoom hotkeys, and the save (Ctrl+S) / generate
+(Ctrl+G) hotkeys. Uses the mock-backend server in a temp root.
 """
 
 from conftest import dot, set_canvas, set_input, wait_until
@@ -85,6 +85,26 @@ def test_tool_and_view_hotkeys(page, server):
     page.click("#prompt")
     page.keyboard.press("m")
     assert page.evaluate("Tools.current") == "crop"
+
+
+def test_save_and_generate_hotkeys(page, server):
+    base, root = server
+    _open(page, base)
+    set_canvas(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+
+    # Ctrl+G starts generation: a job gets queued on the mock backend and
+    # the status line reflects it
+    page.keyboard.press("Control+g")
+    assert wait_until(lambda: page.evaluate("state.job") is not None)
+    assert wait_until(lambda: page.evaluate("state.generating") is False)
+
+    # Ctrl+S saves the server's canvas copy into the output directory
+    page.keyboard.press("Control+s")
+    status = page.locator("#status-line")
+    assert wait_until(lambda: status.evaluate("e => e.textContent").startswith("saved "))
+    assert list((root / "output").glob("*.png"))
 
 
 def test_hotkey_buttons_show_their_character_underlined(page, server):
