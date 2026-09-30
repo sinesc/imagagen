@@ -143,6 +143,23 @@ def test_disabled_saving_skips_file(tmp_path):
         assert not (us(tmp_path)).exists()
 
 
+def test_disabled_saving_keeps_state_in_memory(tmp_path):
+    """save-ui-state = false only disables the disk write: a live server
+    still serves the latest state, so a browser reload restores it."""
+    app = create_app(
+        config=Config(root=tmp_path, save_ui_state=False),
+        backend=MockBackend(),
+    )
+    with TestClient(app) as c:
+        r = c.post("/api/ui-state", json={"prompt": "live only", "steps": 33})
+        assert r.json() == {"ok": True}
+        assert not (us(tmp_path)).exists()
+        # what a browser reload fetches: the in-memory state
+        state = c.get("/api/ui-state").json()["state"]
+        assert state["prompt"] == "live only"
+        assert state["steps"] == 33
+
+
 def test_disabled_saving_still_loads_existing_file(tmp_path):
     (us(tmp_path)).write_text(json.dumps({"prompt": "old"}))
     app = create_app(

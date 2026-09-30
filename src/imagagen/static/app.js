@@ -778,6 +778,27 @@ function clearThumbs() {
   renderThumbs();
 }
 
+// page load: rebuild the strip from the server's jobs. The strip normally
+// accumulates from WS 'source_image'/'image' events, which are lost across
+// a reload. The server only retains in-flight jobs plus the last finished
+// one (older jobs are dropped on submit), so only those are restorable.
+function restoreQueueThumbs(q) {
+  for (const j of [...((q && q.jobs) || [])].reverse()) {  // newest job first
+    if (j.source) state.thumbs.push({ source: true, url: j.source.url,
+                                      image_id: j.source.image_id });
+    for (const r of j.results) {
+      state.thumbs.push({ job: j.id, index: r.index, url: r.url, seed: r.seed,
+                          image_id: r.image_id });
+    }
+  }
+  // highlight the entity currently on the canvas, if it is a thumbnail
+  if (q && q.current) {
+    const i = state.thumbs.findIndex((t) => t.image_id === q.current);
+    if (i >= 0) state.currentThumb = i;
+  }
+  if (state.thumbs.length) renderThumbs();
+}
+
 // ---------------- crop tool (drag a rectangle) ----------------
 // A crop turns the displayed image into a NEW canvas entity: the pre-crop
 // image stays (pinned server-side) as a restorable thumbnail and the crop
@@ -2072,8 +2093,9 @@ async function init() {
   let lr = { loras: [] };
   let sy = { styles: [] };
   let sm = { models: [] };
+  let q = { jobs: [] };
   try {
-    [m, s, u, pr, lr, sy, sm] = await Promise.all([
+    [m, s, u, pr, lr, sy, sm, q] = await Promise.all([
       fetch("/api/models").then((r) => r.json()),
       fetch("/api/samplers").then((r) => r.json()),
       fetch("/api/ui-state").then((r) => (r.ok ? r.json() : null)),
@@ -2081,6 +2103,7 @@ async function init() {
       fetch("/api/loras").then((r) => r.json()),
       fetch("/api/styles").then((r) => (r.ok ? r.json() : { styles: [] })),
       fetch("/api/segmentation/models").then((r) => (r.ok ? r.json() : { models: [] })),
+      fetch("/api/queue").then((r) => (r.ok ? r.json() : null)),
     ]);
   } catch (e) {
     console.error("init:", e);
@@ -2112,6 +2135,7 @@ async function init() {
   }
   fillPresetSelect($("preset"));
   applyUiState(u && u.state);
+  restoreQueueThumbs(q); // thumbnails are not persisted; pull the server's jobs
   syncMode();
   await refreshSamplers(); // family-correct sampler lists for the selected model
   applyFamilyControls(); // family-specific main-form controls

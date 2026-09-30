@@ -131,6 +131,42 @@ def test_generate_batch_seeds_and_completion_order(client, tmp_path):
         assert sorted(parsed_seeds) == [100, 101, 102]
 
 
+def test_queue_restores_last_finished_job(client, tmp_path):
+    """GET /api/queue lets the UI rebuild its thumbnail strip after a
+    browser reload: the in-flight/last-finished job and its thumbnails."""
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": "q", "width": 64, "height": 64, "steps": 2, "seed": 7,
+        })
+        job_id = r.json()["job_id"]
+        _wait_for(client, ws, "done")
+
+    body = client.get("/api/queue").json()
+    # generate on an empty canvas: no source thumbnail, one result
+    assert body["jobs"] == [{
+        "id": job_id,
+        "source": None,
+        "results": [{"index": 0, "seed": 7,
+                     "url": f"/api/thumb/{job_id}/0.png",
+                     "image_id": f"job:{job_id}:0"}],
+    }]
+    # the auto-set first result is the entity currently on the canvas
+    assert body["current"] == f"job:{job_id}:0"
+    # the listed thumbnail is still retrievable
+    assert client.get(f"/api/thumb/{job_id}/0.png").status_code == 200
+
+    # a new submission drops the earlier job (its entities become
+    # evictable), so only the newest job remains restorable
+    with client.websocket_connect("/api/ws") as ws:
+        r2 = client.post("/api/generate", json={
+            "prompt": "q2", "width": 64, "height": 64, "steps": 2,
+        })
+        job_id2 = r2.json()["job_id"]
+        _wait_for(client, ws, "done")
+    body = client.get("/api/queue").json()
+    assert [j["id"] for j in body["jobs"]] == [job_id2]
+
+
 def test_generate_missing_wildcard_rejected(client, tmp_path):
     # an unresolved wildcard is a submit-time error: a 400 with a message
     # (terminal + UI status line), and no job is queued

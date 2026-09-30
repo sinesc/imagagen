@@ -256,7 +256,8 @@ def create_app(
     app.state.canvas = canvas
     app.state.queue = queue
     app.state.registry = registry
-    app.state.ui_state = UiStateStore(config.ui_state_path)
+    app.state.ui_state = UiStateStore(config.ui_state_path,
+                                      persist=config.save_ui_state)
     # model configurations: files in user/model-configs/ + in-memory
     # defaults for unconfigured models (Phase 4)
     app.state.config_store = ConfigStore(config, lambda: registry.list())
@@ -640,6 +641,33 @@ def create_app(
                 queue.interrupt(jid)
         return {"ok": True}
 
+    @app.get("/api/queue")
+    def queue_jobs() -> dict:
+        # Fetched on page load so the UI can rebuild its thumbnail strip
+        # after a browser reload: the 'source_image'/'image' WS events
+        # emitted before the reload are lost. The server only retains
+        # in-flight jobs plus the last finished one (older jobs are
+        # dropped on submit, queue.py), so those are the only restorable
+        # thumbnails.
+        jobs = []
+        for jid in sorted(queue.jobs()):
+            job = queue.job(jid)
+            jobs.append({
+                "id": job.id,
+                "source": (
+                    {"url": f"/api/thumb/{job.id}/source.png",
+                     "image_id": job.source_image_id}
+                    if job.source_png is not None else None
+                ),
+                "results": [
+                    {"index": idx, "seed": job.base_seed + idx,
+                     "url": f"/api/thumb/{job.id}/{idx}.png",
+                     "image_id": f"job:{job.id}:{idx}"}
+                    for idx in sorted(job.results)
+                ],
+            })
+        return {"jobs": jobs, "current": canvas.current_id()}
+
     @app.get("/api/thumb/{job_id}/source.png")
     def thumb_source(job_id: int) -> Response:
         # the source image (canvas snapshot at submit time; inpaint
@@ -694,8 +722,9 @@ def create_app(
             return JSONResponse(
                 {"error": f"invalid state: {e.errors()[:3]}"}, status_code=422
             )
-        if config.save_ui_state:
-            app.state.ui_state.save(state)
+        # always keeps the in-memory copy (served on browser reloads);
+        # save-ui-state=false only suppresses the disk write
+        app.state.ui_state.save(state)
         return {"ok": True}
 
     # --- canvas ---

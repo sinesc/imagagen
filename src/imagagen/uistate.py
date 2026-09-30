@@ -87,29 +87,44 @@ class UiState(BaseModel):
 class UiStateStore:
     """Loads/saves :class:`UiState` as JSON at a fixed path.
 
+    The latest state is always kept in memory: a running server serves it
+    via :meth:`load` even when disk persistence is disabled
+    (``persist=False``), so a browser reload still restores the settings.
+    ``persist`` only controls whether saves are also written to disk.
+
     Corrupt or partial files never crash a server start: they fall back
     to defaults. Saves are atomic (write temp file + rename) so a crash
     mid-write cannot leave a truncated state file behind.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, persist: bool = True) -> None:
         self.path = path
+        self.persist = persist
+        self._state: UiState | None = None  # in-memory copy of the latest state
 
     def load(self) -> UiState:
+        if self._state is not None:
+            return self._state
         try:
             raw = json.loads(self.path.read_text("utf-8"))
         except (OSError, json.JSONDecodeError):
-            return UiState()
+            raw = None
         if not isinstance(raw, dict):
-            return UiState()
-        try:
-            return UiState.model_validate(raw)
-        except ValidationError:
-            # e.g. an old file whose limits changed: start fresh rather
-            # than fail to boot
-            return UiState()
+            state = UiState()
+        else:
+            try:
+                state = UiState.model_validate(raw)
+            except ValidationError:
+                # e.g. an old file whose limits changed: start fresh rather
+                # than fail to boot
+                state = UiState()
+        self._state = state
+        return state
 
     def save(self, state: UiState) -> None:
+        self._state = state
+        if not self.persist:
+            return
         tmp = self.path.with_suffix(".json.tmp")
         tmp.write_text(
             json.dumps(state.model_dump(), indent=2, ensure_ascii=False) + "\n",
