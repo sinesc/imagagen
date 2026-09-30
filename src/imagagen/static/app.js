@@ -174,7 +174,11 @@ function makeCombobox(root, options, cfg = {}) {
       }
       const li = el("li", { class: "combo-item", role: "option" }, o.text);
       li.dataset.value = o.value;
-      li.onclick = () => pick(o.value, true);
+      // Pick on mousedown (like a native select), not click: the mousedown
+      // blurs the input, and the blur handler closes the list after 120 ms.
+      // On a slow press (>120 ms) the list hides before the trailing click
+      // lands, so a click-based pick never fires and the old value remains.
+      li.onmousedown = (e) => { if (e.button === 0) pick(o.value, true); };
       list.append(li);
       any = true;
     }
