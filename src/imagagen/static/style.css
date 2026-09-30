@@ -260,7 +260,8 @@ button.mini.icon {
   border-radius: 4px;
 }
 #thumbs img.selected { border-color: #4da3ff; }
-#thumbs img.source { border-color: #2ecc71; } /* source image (canvas snapshot) */
+#thumbs img.source { border-color: #444; } /* source image (canvas snapshot) */
+#thumbs img.source.selected { border-color: #2ecc71; } /* green while selected */
 
 /* prompt box: top of the stage, full width, ~3:1 positive:negative.
    Top padding matches #controls so the "Prompt" label lines up with
