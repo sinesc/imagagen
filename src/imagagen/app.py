@@ -22,7 +22,9 @@ from .backends import GenerateRequest, ModelBackend
 from .canvas import Canvas, _decode_mask, _decode_png
 from .config import Config, ensure_dirs, load_config
 from .generation import INPAINT_PADDING, GenerationError, with_inpaint
-from .lora_settings import LoraSettings, all_settings, save_settings
+from .lora_settings import (
+    LoraSettings, all_settings, apply_lora_texts, save_settings
+)
 from .model_configs import (
     ConfigError,
     ConfigStore,
@@ -381,10 +383,11 @@ def create_app(
     def prompt_tokens(body: dict) -> dict:
         """Live CLIP token count of the prompt field (UI counter).
 
-        The selected styles are applied first (after comment lines are
-        dropped), exactly as ``/api/generate`` does, so the count reflects
-        the full prompt the model will actually see (a style can push a
-        short raw prompt past one CLIP window).
+        The selected styles and LoRA activation texts are applied first
+        (after comment lines are dropped), exactly as ``/api/generate``
+        does, so the count reflects the full prompt the model will
+        actually see (a style or LoRA text can push a short raw prompt
+        past one CLIP window).
 
         ``tokens`` is None when the tokenizer could not be loaded; the UI then
         hides the counter. ``windows`` is how many 75-token CLIP windows the
@@ -398,6 +401,8 @@ def create_app(
             body.get("styles", []),
             app.state.style_store.get,
         )
+        # LoRA activation texts are part of the model prompt, too
+        prompt, _ = apply_lora_texts(prompt, "", body.get("loras", []), config)
         tokens = count_prompt_tokens(prompt)
         if tokens is None:
             return {"tokens": None, "windows": 0}
@@ -550,9 +555,13 @@ def create_app(
         model_id = entry.model_id
         # Styles are applied right before the prompt reaches the model
         # (in list order; {prompt} replaced with the prompt so far).
+        # Each enabled LoRA's activation/negative text (from its settings
+        # file) is applied the same way (in LoRA list order, after the
+        # styles); empty texts are a no-op.
         # The raw (unapplied) prompt and the style *contents* are kept for
         # the image metadata: the PNG must round-trip as "same prompt +
-        # same style list", not as the pre-applied text.
+        # same style list", not as the pre-applied text. The LoRAs are
+        # likewise recorded by name/weight, not their expanded texts.
         # comments (a # and everything after it on a line) are ignored
         # during processing; meta_prompt/meta_negative below keep the raw
         # text so they remain in the stored metadata
@@ -561,6 +570,9 @@ def create_app(
             strip_prompt_comments(body.negative_prompt),
             body.styles,
             app.state.style_store.get,
+        )
+        prompt, negative_prompt = apply_lora_texts(
+            prompt, negative_prompt, loras, config
         )
         # Wildcards are validated up front (seed-independent structural
         # errors: a missing file or a recursion) so the whole job is rejected

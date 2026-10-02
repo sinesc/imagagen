@@ -77,11 +77,13 @@ async function updatePromptTokens() {
   const out = $("prompt-tokens");
   let r;
   try {
-    // styles are applied server-side (exactly as generation does), so the
-    // count reflects the full prompt the model will actually see
+    // styles and LoRA activation texts are applied server-side (exactly
+    // as generation does), so the count reflects the full prompt the
+    // model will actually see
     r = await api("/api/prompt-tokens", {
       prompt: $("prompt").value,
       styles: getStyles(),
+      loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
     });
   } catch (e) {
     return;
@@ -467,6 +469,8 @@ function readLoraList(listEl) {
 function mainLoraChange() {
   onUserFieldChange("loras");
   scheduleSaveUiState();
+  // a LoRA's activation text is part of the model prompt
+  schedulePromptTokens();
 }
 // items: [name, weight] or [name, weight, enabled]
 function renderMainLoras(items) {

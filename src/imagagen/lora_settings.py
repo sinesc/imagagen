@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .models import list_loras, lora_paths
+from .styles import apply_one
 
 
 class LoraSettings(BaseModel):
@@ -77,6 +78,31 @@ def get_settings(name: str, config) -> dict | None:
         return None
     with _lock:
         return _to_file(_from_file(_read_file(p)))
+
+
+def apply_lora_texts(
+    prompt: str,
+    negative_prompt: str,
+    loras: list[tuple[str, float]],
+    config,
+) -> tuple[str, str]:
+    """Apply each enabled LoRA's activation/negative text to the prompt /
+    negative prompt (in LoRA list order).
+
+    Each text is applied exactly like a style's text (see :func:`apply_one`):
+    a ``{prompt}`` placeholder is replaced with the prompt so far, otherwise
+    the text is appended comma-separated; empty texts are a no-op. This is
+    processing-only: the saved image metadata records the LoRAs by
+    name/weight as before, not the expanded texts.
+    """
+    for name, _weight in loras:
+        s = get_settings(name, config)
+        if s is None:
+            continue
+        # get_settings dicts carry the Forge file keys ("activation text", ...)
+        prompt = apply_one(s.get("activation text", ""), prompt)
+        negative_prompt = apply_one(s.get("negative text", ""), negative_prompt)
+    return prompt, negative_prompt
 
 
 def all_settings(config) -> dict:

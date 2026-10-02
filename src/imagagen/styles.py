@@ -229,7 +229,7 @@ def strip_prompt_comments(text: str) -> str:
 
 
 def _extract_style_text(style_text: str, prompt: str) -> tuple[bool, str]:
-    """Inverse of :func:`_apply_one`, in canonical form (see
+    """Inverse of :func:`apply_one`, in canonical form (see
     :func:`normalize_prompt`). If ``style_text`` was applied last to yield
     ``prompt`` (via :func:`apply_styles`), return ``(True, prompt before it
     was applied)``; otherwise ``(False, prompt)`` unchanged.
@@ -251,8 +251,9 @@ def _extract_style_text(style_text: str, prompt: str) -> tuple[bool, str]:
     return False, prompt
 
 
-def _apply_one(text: str, current: str) -> str:
-    """Apply one style text to the accumulated prompt: the {prompt}
+def apply_one(text: str, current: str) -> str:
+    """Apply one fragment text (a style's or a LoRA's activation/negative
+    text) to the accumulated prompt: the {prompt}
     placeholder is replaced with everything so far; without it the style
     text is appended (comma-separated, the A1111 convention)."""
     if not text:
@@ -279,6 +280,6 @@ def apply_styles(
         s = get(name)
         if s is None:
             continue
-        prompt = _apply_one(s.prompt, prompt)
-        negative_prompt = _apply_one(s.negative_prompt, negative_prompt)
+        prompt = apply_one(s.prompt, prompt)
+        negative_prompt = apply_one(s.negative_prompt, negative_prompt)
     return prompt, negative_prompt
