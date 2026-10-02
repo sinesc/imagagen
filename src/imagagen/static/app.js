@@ -2414,6 +2414,8 @@ document.addEventListener(
   $(id).addEventListener("input", () => { onUserFieldChange(id); scheduleSaveUiState(); });
 });
 $("prompt").addEventListener("input", schedulePromptTokens);
+// the mask bbox outline is grown by this field: redraw as it changes
+$("mask-padding").addEventListener("input", viewRedraw);
 $("seed-from-image").onclick = () => {
   const t = state.thumbs[state.currentThumb];
   // no image selected, or the selected image has no known seed

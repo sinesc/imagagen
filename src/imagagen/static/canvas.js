@@ -16,6 +16,8 @@ const view = {
   base: null, // offscreen canvas (W×H canvas px): the committed image
   maskValues: null, // offscreen canvas (W×H): grey 128, alpha = mask value
   mask: null, // display overlay derived from maskValues (0.9 see-through)
+  maskBbox: null, // {x,y,w,h} canvas px of the current mask (alpha > 0);
+  // null when the mask is empty; refreshed with the overlay
   has: false,
   w: 0,
   h: 0,
@@ -114,6 +116,7 @@ function viewRedraw() {
   const maskLayered = !!s0 && (s0.tool === "mask" || s0.tool === "smudge");
   if (view.mask && !maskLayered) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
   if (view.stroke) drawStrokePreview(ctx, view.stroke);
+  drawMaskOutline(ctx);
   if (view.crop) drawCropOverlay(ctx);
   drawCursor(ctx);
   drawCloneCrosshairs(ctx);
@@ -159,6 +162,73 @@ function buildMaskOverlay() {
   ctx.globalAlpha = 0.9;
   ctx.drawImage(view.maskValues, 0, 0);
   view.mask = o;
+  computeMaskBbox();
+}
+
+// bounding box of the current mask (alpha > 0) in canvas px, or null when
+// the mask is empty. Recomputed exactly where the overlay is -- i.e. every
+// time the mask changes (commit, morph, clear, refresh, undo/redo).
+function computeMaskBbox() {
+  view.maskBbox = null;
+  if (!view.maskValues) return;
+  const c = view.maskValues;
+  const data = c.getContext("2d", { willReadFrequently: true })
+    .getImageData(0, 0, c.width, c.height).data;
+  let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
+  for (let y = 0, i = 3; y < c.height; y++) {
+    for (let x = 0; x < c.width; x++, i += 4) {
+      if (data[i]) {
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+  if (x1 >= x0) view.maskBbox = { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+
+// faint outline rect for the current mask: the mask bbox grown by the
+// "Mask pad" value on each side (capped at the mask's largest extent,
+// like the server's inpaint box) and clamped to the canvas; null when the
+// mask is empty. An in-flight mask stroke is not committed yet, so the
+// live stroke footprint is united in as well.
+function maskOutlineBox() {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const b = view.maskBbox;
+  if (b) {
+    x0 = b.x; y0 = b.y; x1 = b.x + b.w; y1 = b.y + b.h;
+  }
+  const s = view.stroke;
+  if (s && s.tool === "mask" && s.points.length) {
+    const r = Math.max(s.size / 2, 0.5);
+    for (const [px, py] of s.points) {
+      if (px - r < x0) x0 = px - r;
+      if (py - r < y0) y0 = py - r;
+      if (px + r > x1) x1 = px + r;
+      if (py + r > y1) y1 = py + r;
+    }
+  }
+  if (x1 <= x0 || y1 <= y0) return null; // empty mask, no live stroke
+  let pad = parseInt(
+    document.getElementById("mask-padding").value, 10) || 0;
+  pad = Math.max(0, Math.min(pad, Math.max(x1 - x0, y1 - y0)));
+  const ox0 = Math.max(0, Math.floor(x0 - pad));
+  const oy0 = Math.max(0, Math.floor(y0 - pad));
+  const ox1 = Math.min(view.w, Math.ceil(x1 + pad));
+  const oy1 = Math.min(view.h, Math.ceil(y1 + pad));
+  if (ox1 <= ox0 || oy1 <= oy0) return null;
+  return { x: ox0, y: oy0, w: ox1 - ox0, h: oy1 - oy0 };
+}
+
+function drawMaskOutline(ctx) {
+  const r = maskOutlineBox();
+  if (!r) return;
+  ctx.save();
+  ctx.lineWidth = 1 / view.scale; // 1 screen px, faint grey
+  ctx.strokeStyle = "rgba(128,128,128,0.6)";
+  ctx.strokeRect(r.x, r.y, r.w, r.h);
+  ctx.restore();
 }
 
 // fetch image + mask from the server and re-render. The server's state
@@ -187,6 +257,7 @@ async function viewRefresh() {
     view.base = null;
     view.maskValues = null;
     view.mask = null;
+    view.maskBbox = null;
     view.w = view.h = 0;
     clearBrushStamps();
     viewRedraw();

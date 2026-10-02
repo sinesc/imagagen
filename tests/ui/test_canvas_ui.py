@@ -195,6 +195,70 @@ def test_mask_tool_shift_erase_and_morph(page, server):
     assert wait_until(lambda: bool((mask_arr(base) == 0).all()))
 
 
+def test_mask_bbox_outline(page, server):
+    # a faint grey outline traces the current mask's bounding box grown by
+    # the "Mask pad" context ring (capped at the mask's extent, like the
+    # server's inpaint box); empty mask -> no outline
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150
+    W, H = 200, 150
+
+    assert page.evaluate("maskOutlineBox()") is None  # empty mask
+
+    page.keyboard.press("m")
+    dot(page, 100, 75)  # 30 px disc, dead centre
+    m = None
+    def masked():
+        nonlocal m
+        m = mask_arr(base)
+        return m is not None and m[75, 100] == 255
+    assert wait_until(masked)
+    rows = np.where((m > 0).any(axis=1))[0]
+    cols = np.where((m > 0).any(axis=0))[0]
+    y0, y1 = int(rows[0]), int(rows[-1]) + 1
+    x0, x1 = int(cols[0]), int(cols[-1]) + 1
+
+    def expected(pad_field: int):
+        pad = min(pad_field, max(x1 - x0, y1 - y0))
+        ox0, oy0 = max(0, x0 - pad), max(0, y0 - pad)
+        ox1, oy1 = min(W, x1 + pad), min(H, y1 + pad)
+        return {"x": ox0, "y": oy0, "w": ox1 - ox0, "h": oy1 - oy0}
+
+    assert wait_until(
+        lambda: page.evaluate("maskOutlineBox()") == expected(256))
+
+    # the outline is actually drawn: a grey line on the backing store at
+    # the box's top edge (measured as lift of the red channel above the
+    # BG red, so it holds for any subpixel coverage of the 1-screen-px line)
+    lift = page.evaluate(
+        """() => {
+            const b = maskOutlineBox();
+            const c = document.getElementById('canvas');
+            const x = Math.round((view.ox + (b.x + b.w / 2) * view.scale) * view.dpr);
+            const y = Math.round((view.oy + b.y * view.scale) * view.dpr);
+            const d = c.getContext('2d').getImageData(
+                Math.max(0, x - 3), Math.max(0, y - 3), 7, 7).data;
+            let best = 0;
+            for (let i = 0; i < d.length; i += 4) {
+                const grey = Math.abs(d[i] - d[i + 1]) < 20
+                    && Math.abs(d[i + 1] - d[i + 2]) < 20;
+                if (grey) best = Math.max(best, d[i] - 20); // BG red = 20
+            }
+            return best;
+        }""")
+    assert lift > 10, f"no faint grey line at the box top edge: lift={lift}"
+
+    # the "Mask pad" field rescales the ring (redraws at once)
+    set_input(page, "#mask-padding", "8")
+    assert wait_until(
+        lambda: page.evaluate("maskOutlineBox()") == expected(8))
+
+    # clearing the mask removes the outline again
+    page.click("#mask-clear")
+    assert wait_until(lambda: page.evaluate("maskOutlineBox()") is None)
+
+
 def test_mask_preview_matches_commit(page, server):
     # the live mask preview must look exactly like the committed mask
     # overlay: non-stacking (max over the stamps) and the same 0.9
