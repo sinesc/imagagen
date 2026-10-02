@@ -161,8 +161,9 @@ def test_generate_applies_styles_and_metadata(client):
 
 
 def test_generate_ignores_comment_lines(client):
-    """Lines starting with # (tabs/spaces allowed) are ignored during
-    processing but stay in the raw prompt recorded in the metadata."""
+    """Comments (a # and everything after it on a line) are ignored
+    during processing but stay in the raw prompt recorded in the
+    metadata."""
     raw = "# top note\na frog\n# mid note\n\t# indented\nb"
     raw_negative = "ugly\n# no"
     # the token counter agrees with the comment-free equivalent

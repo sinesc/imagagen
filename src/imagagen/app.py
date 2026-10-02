@@ -553,7 +553,7 @@ def create_app(
         # The raw (unapplied) prompt and the style *contents* are kept for
         # the image metadata: the PNG must round-trip as "same prompt +
         # same style list", not as the pre-applied text.
-        # comment lines (leading "#", tabs/spaces allowed) are ignored
+        # comments (a # and everything after it on a line) are ignored
         # during processing; meta_prompt/meta_negative below keep the raw
         # text so they remain in the stored metadata
         prompt, negative_prompt = apply_styles(

@@ -235,11 +235,12 @@ def test_strip_prompt_comments():
 
     assert strip_prompt_comments("a\n# comment\nb") == "a\nb"
     assert strip_prompt_comments("  # indented comment\n\t# tab-indented\nb") == "b"
-    # mid-line # is NOT a comment (line must START with it)
-    assert strip_prompt_comments("a #1\n#x") == "a #1"
+    # mid-line # also starts a comment (the # and the rest of the line go)
+    assert strip_prompt_comments("a #1\n#x") == "a"
+    assert strip_prompt_comments("a #1 #2") == "a"
     assert strip_prompt_comments("#") == ""
     assert strip_prompt_comments("a\r\n# c\r\nb") == "a\r\nb"
-    # blank lines and other content are kept verbatim
+    # blank lines and # -free lines are kept verbatim
     assert strip_prompt_comments("a\n\n# c\nb") == "a\n\nb"
 
 

@@ -206,22 +206,26 @@ def normalize_prompt(text: str) -> str:
     return ", ".join(term for term in terms if term)
 
 
-# A prompt line whose first non-space/non-tab character is # is a
-# comment: it is dropped before prompt processing (styles, wildcards,
-# token counting, model encoding), but the RAW prompt -- comments
-# included -- is what gets recorded in the image metadata.
-_PROMPT_COMMENT_RE = re.compile(r"^[ \t]*#")
+# A # starts a comment wherever it occurs on a line (like in a shell or
+# a C file): the # and everything after it on that line is dropped before
+# prompt processing (styles, wildcards, token counting, model encoding),
+# but the RAW prompt -- comments included -- is what gets recorded in
+# the image metadata.
 
 
 def strip_prompt_comments(text: str) -> str:
-    """Remove comment lines from a prompt.
-
-    Every other line is kept verbatim (blank lines and line endings
-    included), so this only changes a prompt by deleting whole lines."""
-    return "\n".join(
-        line for line in text.split("\n")
-        if not _PROMPT_COMMENT_RE.match(line)
-    )
+    """Remove comments from a prompt: on every line, the first # and
+    everything after it are dropped (the remainder's trailing whitespace
+    is trimmed), and a line left empty by this is dropped entirely.
+    Lines without a # are kept verbatim."""
+    out = []
+    for line in text.split("\n"):
+        if "#" in line:
+            line = line.split("#", 1)[0].rstrip()
+            if not line:
+                continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def _extract_style_text(style_text: str, prompt: str) -> tuple[bool, str]:
