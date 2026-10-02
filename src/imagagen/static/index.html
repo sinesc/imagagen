@@ -93,8 +93,8 @@
         <button id="sag-cfg" class="mini icon" title="self attention guidance options">⚙</button>
       </div>
       <div class="row actions">
-        <button id="btn-generate" class="primary">Generate</button>
-        <button id="btn-save">Save</button>
+        <button id="btn-generate" class="primary" title="Generate image (Ctrl+G)">Generate</button>
+        <button id="btn-save" title="Save current canvas image (Ctrl+S)">Save</button>
       </div>
       <div id="progress-wrap">
         <div id="progress-bar"><div id="progress-fill"></div></div>
@@ -112,7 +112,7 @@
             <span>Prompt</span>
             <span id="prompt-tokens" class="muted" title="CLIP tokens of the prompt with selected styles applied (75 per window); a prompt longer than one window is split across several"></span>
           </span>
-          <textarea id="prompt" placeholder="a photo of a frog"></textarea>
+          <textarea id="prompt" placeholder="Enter a prompt or drag a previously generated image here."></textarea>
         </label>
         <textarea id="negative" placeholder="Negative prompt"></textarea>
       </div>
