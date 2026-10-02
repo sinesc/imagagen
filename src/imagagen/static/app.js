@@ -1479,6 +1479,7 @@ function wheelBrushSize(factor) {
   st.size = s;
   Tools.save();
   syncToolbar();
+  viewRedraw(); // cursor outline changes footprint
 }
 function wheelBrushOpacity(factor) {
   const st = Tools.get();
@@ -1497,6 +1498,7 @@ function switchTool(t) {
   Tools.switch(t);
   syncToolbar();
   syncUndoButtons();
+  viewRedraw(); // the cursor preview depends on the active tool
 }
 
 // ---------------- undo / redo (per-image draw + per-image mask) ---------
@@ -1716,6 +1718,7 @@ function wireToolbar() {
   $("brush").onchange = (e) => {
     Tools.get().brush = e.target.value;
     Tools.save();
+    viewRedraw(); // cursor outline changes shape
   };
   $("brush-color").oninput = (e) => {
     Tools.state.brush.color = e.target.value;
@@ -1726,6 +1729,7 @@ function wireToolbar() {
     Tools.get().size = Math.round(sizeFromSlider(parseFloat(e.target.value)));
     Tools.save();
     syncToolbar();
+    viewRedraw(); // cursor outline changes footprint
   };
   $("brush-screen").onchange = (e) => {
     Tools.get().screen = e.target.checked;
