@@ -441,10 +441,10 @@ function loraRow(name, weight, onChange, enabled = true, withToggle = true) {
   setEnabled(enabled);
   return row;
 }
-function loraAddButton(listEl, onChange) {
+function loraAddButton(listEl, onChange, withToggle = true) {
   const add = el("button", { type: "button", class: "mini", title: "add a LoRA" }, "+ LoRA");
   add.onclick = () => {
-    const row = loraRow("", 0.8, onChange);
+    const row = loraRow("", 0.8, onChange, true, withToggle);
     listEl.append(row);
     row.querySelector(".lora-name").open();
     onChange && onChange();
@@ -1053,7 +1053,7 @@ function modeFieldset(title, section) {
     el("div", { class: "row" },
       el("label", { title: "steps override; empty = built-in default" }, "steps", steps),
       el("label", { title: "CFG override; empty = model default" }, "CFG", cfg)),
-    el("div", { class: "loras" }, loraList, loraAddButton(loraList)),
+    el("div", { class: "loras" }, loraList, loraAddButton(loraList, null, false)),
   );
   return fs;
 }
@@ -1260,7 +1260,7 @@ function presetValueInput(kind, value, emptyLabel = "—") {
       list.append(loraRow(x[0], x[1], undefined, true, false)));
     // same structure as the sidebar/config dialog: rows first, the "+ LoRA"
     // button after the list (added rows append to the list, above the button)
-    return el("div", { class: "loras" }, list, loraAddButton(list));
+    return el("div", { class: "loras" }, list, loraAddButton(list, null, false));
   }
   if (kind === "select") {
     const input = el("select", { class: "preset-val" });
