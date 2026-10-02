@@ -752,7 +752,7 @@ function renderThumbs() {
     const image = document.createElement("img");
     image.src = t.url;
     image.title = t.source
-      ? "source image (click to restore)"
+      ? `source image${typeof t.seed === "number" ? ` (seed ${t.seed})` : ""} (click to restore)`
       : t.crop
         ? "crop (click to restore)"
         : `#${i} seed ${t.seed}`;
@@ -788,7 +788,8 @@ function clearThumbs() {
 function restoreQueueThumbs(q) {
   for (const j of [...((q && q.jobs) || [])].reverse()) {  // newest job first
     if (j.source) state.thumbs.push({ source: true, url: j.source.url,
-                                      image_id: j.source.image_id });
+                                      image_id: j.source.image_id,
+                                      seed: j.source.seed }); // null: no seed in its metadata
     for (const r of j.results) {
       state.thumbs.push({ job: j.id, index: r.index, url: r.url, seed: r.seed,
                           image_id: r.image_id });
@@ -2180,7 +2181,8 @@ function connectWS() {
         // canvas snapshot at submit time (inpaint, or generate on a
         // non-empty canvas), shown before any result arrives; the id lets
         // it be restored as a live canvas entity
-        state.thumbs.unshift({ source: true, url: msg.url, image_id: msg.image_id });
+        state.thumbs.unshift({ source: true, url: msg.url, image_id: msg.image_id,
+                            seed: msg.seed }); // null: no seed in its metadata
         renderThumbs();
         break;
       case "image":
@@ -2410,7 +2412,8 @@ document.addEventListener(
 $("prompt").addEventListener("input", schedulePromptTokens);
 $("seed-from-image").onclick = () => {
   const t = state.thumbs[state.currentThumb];
-  // no image selected, or a source image (restored from the canvas, no seed)
+  // no image selected, or the selected image has no known seed
+  // (e.g. a plain upload without parameters metadata)
   if (!t || typeof t.seed !== "number") return;
   $("seed").value = String(t.seed);
   onUserFieldChange("seed");

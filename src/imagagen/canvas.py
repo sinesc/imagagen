@@ -394,6 +394,13 @@ class Canvas:
             ent = self._images.get(id)
             return None if ent is None else ent.png
 
+    def entity_info(self, id: str) -> dict | None:
+        """The PNG text chunks (metadata) of any known entity, as a copy,
+        or None when it no longer exists."""
+        with self._lock:
+            ent = self._images.get(id)
+            return None if ent is None else dict(ent.info)
+
     # --- (de)serialization ---
     def to_png_bytes(self) -> bytes | None:
         with self._lock:

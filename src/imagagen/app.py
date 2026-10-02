@@ -662,7 +662,8 @@ def create_app(
                 "id": job.id,
                 "source": (
                     {"url": f"/api/thumb/{job.id}/source.png",
-                     "image_id": job.source_image_id}
+                     "image_id": job.source_image_id,
+                     "seed": job.source_seed}
                     if job.source_png is not None else None
                 ),
                 "results": [

@@ -157,6 +157,40 @@ def test_generate_retains_nonempty_canvas_as_source_thumbnail():
     assert src[0]["image_id"] == canvas.current_id()
 
 
+def test_source_event_carries_seed_of_generated_source():
+    # a second generation on a canvas showing an earlier result: the
+    # source thumbnail is that result entity, whose parameters chunk
+    # records the seed -> the seed-from-image button can use it
+    backend = MockBackend()
+    events = []
+    q, canvas = _queue(backend, events)
+    j1 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=12345), 1)
+    _wait_done(q, j1.id)
+    assert canvas.current_id() == f"job:{j1.id}:0"  # first result auto-set
+    events.clear()
+    j2 = q.submit("m", GenerateRequest(prompt="y", width=8, height=8, steps=1, seed=1), 1)
+    _wait_done(q, j2.id)
+    src = [e for e in events if e["type"] == "source_image"]
+    assert len(src) == 1
+    assert src[0]["image_id"] == f"job:{j1.id}:0"
+    assert src[0]["seed"] == 12345
+    assert j2.source_seed == 12345
+
+
+def test_source_event_seed_null_for_plain_upload():
+    # an imported image without a parameters chunk has no seed: the
+    # seed-from-image button stays inert for it
+    backend = MockBackend()
+    events = []
+    q, canvas = _queue(backend, events)
+    canvas.import_image(_png(np.full((8, 8, 3), 5, dtype=np.uint8)))
+    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 1)
+    _wait_done(q, job.id)
+    src = [e for e in events if e["type"] == "source_image"]
+    assert len(src) == 1
+    assert src[0]["seed"] is None
+
+
 def test_inpaint_retains_canvas_until_thumb_selected():
     # inpaint jobs do not auto-set either: the canvas keeps the displayed
     # image (published as the source thumbnail) until the user selects a

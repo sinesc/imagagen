@@ -57,6 +57,7 @@ class Job:
     plan: InpaintPlan | None = None  # inpaint modes: maps output to canvas state
     source_png: bytes | None = None  # source canvas snapshot (strip thumbnail)
     source_image_id: str | None = None  # entity id of the source canvas image
+    source_seed: int | None = None  # seed recorded in the source image's metadata
     interrupted: bool = False
     results: dict[int, bytes] = field(default_factory=dict)  # index -> PNG bytes
     finished: set[int] = field(default_factory=set)  # indices settled (ok or error)
@@ -196,6 +197,7 @@ class GenerationQueue:
                   meta_styles=meta_styles,
                   meta_disabled_loras=meta_disabled_loras)
         job.source_image_id = self.canvas.current_id()
+        job.source_seed = self._source_seed(job.source_image_id)
         if job.source_image_id is not None:
             if plan is not None:
                 # the inpaint source image, for the UI's source thumbnail
@@ -249,8 +251,26 @@ class GenerationQueue:
             # generate job has none, so the first result auto-sets.
             self.emit({"type": "source_image", "job": job.id,
                        "image_id": job.source_image_id,
+                       "seed": job.source_seed,
                        "url": f"/api/thumb/{job.id}/source.png"})
         return job
+
+    def _source_seed(self, image_id: str | None) -> int | None:
+        """The seed recorded in a canvas entity's ``parameters`` chunk, if
+        any: a generated image (or an import carrying A1111-style metadata)
+        has one, a plain upload does not."""
+        if image_id is None:
+            return None
+        info = self.canvas.entity_info(image_id)
+        params = info.get("parameters") if info else None
+        if not params:
+            return None
+        from . import metadata
+        try:
+            seed = metadata.parse_parameters(params).get("seed")
+        except Exception:
+            return None
+        return seed if isinstance(seed, int) else None
 
     def interrupt(self, job_id: int) -> None:
         job = self.job(job_id)

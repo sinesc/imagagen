@@ -165,6 +165,14 @@ def test_queue_restores_last_finished_job(client, tmp_path):
         _wait_for(client, ws, "done")
     body = client.get("/api/queue").json()
     assert [j["id"] for j in body["jobs"]] == [job_id2]
+    # the second job ran on the canvas showing job 1's result: its source
+    # thumbnail is that entity and carries its recorded seed (so the
+    # seed-from-image button works for source thumbnails too)
+    assert body["jobs"][0]["source"] == {
+        "url": f"/api/thumb/{job_id2}/source.png",
+        "image_id": f"job:{job_id}:0",
+        "seed": 7,
+    }
 
 
 def test_generate_missing_wildcard_rejected(client, tmp_path):
