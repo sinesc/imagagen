@@ -437,6 +437,17 @@ class SdxlBackend(ModelBackend):
                 self.pipe.vae = AutoencoderKL.from_single_file(
                     str(vae_path), config=str(vae_cfg), torch_dtype=torch.float16
                 )
+                # The SDXL UNet was trained on 0.13025-scaled latents; the
+                # decode/encode factors below read vae.config.scaling_factor.
+                # A config lacking the key silently falls back to the SD 1.5
+                # default (0.18215) and flattens contrast ~40% (see
+                # vae-scaling-bug.md) -- fail loudly if that ever recurs.
+                if self.pipe.vae.config.scaling_factor != 0.13025:
+                    log.warning(
+                        "improved-VAE config has scaling_factor %s, expected "
+                        "0.13025 (SDXL); decode/encode will be off",
+                        self.pipe.vae.config.scaling_factor,
+                    )
             # move the whole pipeline to the GPU INSIDE the lock: the .to()
             # re-registers every parameter via nn.Module.register_parameter,
             # which a concurrent model load on another GPU may have globally
