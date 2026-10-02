@@ -399,10 +399,13 @@ function dialogError(text) {
 // ui-state); config/preset dialogs pass false (their LoRAs are always on)
 function loraRow(name, weight, onChange, enabled = true, withToggle = true) {
   const root = el("span", { class: "lora-name" });
-  const names = state.loras.slice();
-  if (name && !names.includes(name)) names.push(name);
-  makeCombobox(root, pathGroupOptions(
-    names.map((n) => ({ value: n, text: n }))
+  // options as a function so the dropdown always shows the *current*
+  // family's LoRAs (state.loras changes on model switch); a row's selected
+  // name is kept in the list even if it's no longer in state.loras (its text
+  // then falls back to the raw value)
+  makeCombobox(root, () => pathGroupOptions(
+    state.loras.concat(name && !state.loras.includes(name) ? [name] : [])
+      .map((n) => ({ value: n, text: n }))
   ), { initial: name || "" });
   const wt = el("input", {
     class: "lora-weight", type: "number", min: "-10", max: "10", step: "0.05",
