@@ -1,6 +1,7 @@
 """Unit tests for styles (styles.csv store, {prompt} application, metadata)."""
 
 import csv
+import json
 from pathlib import Path
 
 import pytest
@@ -284,13 +285,8 @@ def test_metadata_styles_roundtrip():
         steps=25, sampler="dpmpp_2m", scheduler="karras", cfg=7.0, seed=1,
         width=1024, height=1024, model_name="m", model_hash="h", styles=styles,
     )
-    # the parameters text still records the RAW prompt
-    assert text.splitlines()[0] == "raw user prompt"
-    # Styles line is AFTER the meta line (A1111/Forge ignore it)
-    lines = text.splitlines()
-    meta_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Steps:"))
-    styles_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Styles:"))
-    assert styles_idx > meta_idx
+    # the document still records the RAW prompt
+    assert json.loads(text)["prompt"] == "raw user prompt"
 
     out = metadata.parse_parameters(text)
     assert out["prompt"] == "raw user prompt"
@@ -304,7 +300,7 @@ def test_metadata_no_styles_unchanged():
         prompt="p", negative_prompt="n", steps=3, sampler="s", scheduler="sc",
         cfg=1.0, seed=0, width=64, height=64, model_name="m", model_hash="h",
     )
-    assert "Styles:" not in text
+    assert "styles" not in json.loads(text)
     assert "styles" not in metadata.parse_parameters(text)
 
 

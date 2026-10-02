@@ -53,9 +53,9 @@ def test_generate_with_sag_roundtrips_metadata(tmp_path):
             assert thumb.status_code == 200
             meta = c.post("/api/png-meta", content=thumb.content).json()["meta"]
         assert meta["sag_enabled"] == "True"
-        assert meta["sag_scale"] == "0.75"
-        assert meta["sag_blur_sigma"] == "3"
-        assert meta["sag_threshold"] == "1.5"
+        assert meta["sag_scale"] == 0.75
+        assert meta["sag_blur_sigma"] == 3.0
+        assert meta["sag_threshold"] == 1.5
 
 
 def test_generate_with_sag_disabled_writes_flag_false(tmp_path):
@@ -72,10 +72,10 @@ def test_generate_with_sag_disabled_writes_flag_false(tmp_path):
             meta = c.post("/api/png-meta",
                           content=c.get("/api/thumb/1/0.png").content).json()["meta"]
         assert meta["sag_enabled"] == "False"
-        assert meta["sag_scale"] == "1.25"
+        assert meta["sag_scale"] == 1.25
         # values still default to the Forge sliders
-        assert meta["sag_blur_sigma"] == "2"
-        assert meta["sag_threshold"] == "1"
+        assert meta["sag_blur_sigma"] == 2.0
+        assert meta["sag_threshold"] == 1.0
 
 
 def test_generate_without_sag_has_no_sag_metadata(tmp_path):
@@ -116,9 +116,9 @@ def test_generate_rejects_bad_sag_values(tmp_path):
             _wait_done(ws, r.json()["job_id"])
             meta = c.post("/api/png-meta",
                           content=c.get("/api/thumb/1/0.png").content).json()["meta"]
-            assert meta["sag_scale"] == "0.25"
-            assert meta["sag_blur_sigma"] == "2"
-            assert meta["sag_threshold"] == "1"
+            assert meta["sag_scale"] == 0.25
+            assert meta["sag_blur_sigma"] == 2.0
+            assert meta["sag_threshold"] == 1.0
 
 
 def test_ui_state_persists_sag_fields(tmp_path):

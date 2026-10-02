@@ -1,15 +1,17 @@
-"""PNG metadata in the A1111/Forge "parameters" text-chunk format.
+"""PNG generation metadata.
 
-Generated images carry a `parameters` chunk (plus the individual standard
-fields Forge also reads) so Forge can import them and so "Import" in imagagen
-can round-trip settings.
+Generated images carry their settings in a `parameters` text chunk as a
+JSON document (imagagen format, keyed exactly like the legacy A1111/Forge
+text parse result, so both formats normalize to the same dict on read).
 
-imagagen extension: styles travel on a dedicated `Styles: [json]` line
-AFTER the comma-separated meta line (each entry carries the style's name
-plus its actual prompt / negative-prompt contents). The `parameters` text
-then records the user's raw prompt, not the style-applied one -- re-import
-re-applies the styles exactly like a new generation would. A1111/Forge
-ignore the extra trailing line.
+The raw (unapplied) prompt and negative prompt are recorded, not the
+style-applied ones -- the style LIST travels in the document as well, so
+re-import re-applies the styles exactly like a new generation would.
+
+Reading is lenient: A1111/Forge images (and pre-JSON imagagen PNGs) store
+the classic "parameters" TEXT format and are still importable -- the legacy
+text parser in :func:`parse_parameters` covers those, including the
+Forge-specific bits (LoRAs baked into the prompt text, `Lora hashes`).
 """
 
 from __future__ import annotations
@@ -25,20 +27,8 @@ from PIL import Image, PngImagePlugin
 from .sag import SelfAttentionGuidance
 from .soft_inpaint import SoftInpainting
 
-_VERSION = "v0.1.0"
-
-# fields that travel both inside "parameters" and as standalone chunks
-_FIELDS = (
-    "Negative prompt",
-    "Steps",
-    "Sampler",
-    "Scheduler",
-    "CFG scale",
-    "Seed",
-    "Size",
-    "Model",
-    "Model hash",
-)
+_FORMAT = "imagagen"
+_VERSION = "v0.2.0"
 
 # A1111/Forge embed LoRAs in the prompt text as ``<lora:NAME:WEIGHT>`` (unlike
 # imagagen, which records them on dedicated ``Lora:`` meta lines). The name is
@@ -105,93 +95,53 @@ def build_parameters(
     sag: SelfAttentionGuidance | None = None,
     distilled: bool | None = None,
 ) -> str:
-    """Format the `parameters` text chunk exactly like A1111/Forge does.
+    """Serialize the `parameters` text chunk as a JSON document.
 
-    ``styles`` (imagagen extension): entries with "name", "prompt" and
-    "negative_prompt"; serialized as JSON on a trailing `Styles:` line.
+    The document carries exactly the keys (and compatible value shapes) the
+    legacy A1111/Forge text parser in :func:`parse_parameters` used to
+    return, so old and new PNGs normalize to identical dicts on read:
 
-    ``soft_inpainting``: when set, the enabled flag and the six option
-    values travel on the meta line under Forge's exact extra-parameter
-    labels, so Forge (or this file's parser) can read them back.
-
-    ``sag``: when set, the enabled flag and the three option values travel
-    on the meta line under the Forge SAG extension's exact extra-parameter
-    keys (raw snake_case: ``sag_enabled`` & co.), so Forge can read them
-    back.
-
-    ``distilled``: Flux only (None = not a Flux model, line omitted). Written
-    in BOTH states (like the SAG flags) so the mode the image was generated
-    with is recorded next to the CFG value it was interpreted as.
-
-    ``disabled_loras``: LoRAs the user toggled off in the UI. They are NOT in
-    ``loras`` (not applied) but travel on a dedicated ``Disabled LoRAs:``
-    line (``name@weight`` pairs, like the ``Lora:`` meta entries) AFTER the
-    meta line, so an import restores them as disabled rows. Foreign parsers
-    (A1111/Forge) ignore the trailing line, and since the entries are not on
-    the ``Lora:`` lines they will not apply the disabled LoRAs.
+    * ``prompt`` / ``negative_prompt`` are the RAW texts -- newlines and
+      comments included (the line-based legacy format could not store a
+      multi-line negative prompt at all).
+    * ``loras`` / ``disabled_loras``: ``name@weight`` strings, like the
+      legacy ``Lora:`` / ``Disabled LoRAs:`` entries.
+    * ``styles``: entries with "name", "prompt", "negative_prompt" and
+      "enabled" -- the raw (unapplied) prompt is recorded, not the
+      style-applied one, so re-import re-applies the styles exactly like a
+      new generation would.
+    * ``soft_inpainting`` / ``sag``: the enabled flag plus the option values
+      under the legacy meta keys (``Soft inpainting enabled`` & co.,
+      ``sag_enabled`` & co.). The enabled flags are written unconditionally
+      (like the Forge extension) so a dropped image can restore the
+      checkbox in BOTH states; absent = the option group was not used.
+    * ``distilled``: Flux only (None = not a Flux model, key omitted);
+      written in BOTH states like the SAG flags.
     """
-    lines = [prompt]
-    if negative_prompt:
-        lines.append(f"Negative prompt: {negative_prompt}")
-    tail = [
-        f"Steps: {steps}",
-        f"Sampler: {sampler}",
-        f"Scheduler: {scheduler}",
-        f"CFG scale: {cfg:g}",
-        f"Seed: {seed}",
-        f"Size: {width}x{height}",
-    ]
+    doc: dict[str, Any] = {
+        "format": _FORMAT,
+        "version": _VERSION,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "steps": steps,
+        "sampler": sampler,
+        "scheduler": scheduler,
+        "cfg": cfg,
+        "seed": seed,
+        "width": width,
+        "height": height,
+        "model": model_name,
+        "model_hash": model_hash,
+    }
     if denoise is not None:
         # A1111/Forge's inpaint strength: importing restores the slider
-        tail.append(f"Denoising strength: {denoise:g}")
-    tail += [
-        f"Model: {model_name}",
-        f"Model hash: {model_hash}",
-    ]
-    for name, weight in loras or []:
-        tail.append(f"Lora: {name}@{weight:g}")
-    if soft_inpainting is not None:
-        # written unconditionally (like the Forge extension), so a dropped
-        # image can restore the checkbox in BOTH states
-        tail.append(f"Soft inpainting enabled: {soft_inpainting.enabled}")
-        tail.append(
-            f"Soft inpainting schedule bias: {soft_inpainting.mask_blend_power:g}"
-        )
-        tail.append(
-            "Soft inpainting preservation strength: "
-            f"{soft_inpainting.mask_blend_scale:g}"
-        )
-        tail.append(
-            "Soft inpainting transition contrast boost: "
-            f"{soft_inpainting.inpaint_detail_preservation:g}"
-        )
-        tail.append(
-            "Soft inpainting mask influence: "
-            f"{soft_inpainting.composite_mask_influence:g}"
-        )
-        tail.append(
-            "Soft inpainting difference threshold: "
-            f"{soft_inpainting.composite_difference_threshold:g}"
-        )
-        tail.append(
-            "Soft inpainting difference contrast: "
-            f"{soft_inpainting.composite_difference_contrast:g}"
-        )
-    if distilled is not None:
-        # written unconditionally (like the Forge extension), so a dropped
-        # image records the mode in BOTH states
-        tail.append(f"Distilled: {distilled}")
-    if sag is not None:
-        # written unconditionally (like the Forge extension), so a dropped
-        # image can restore the checkbox in BOTH states
-        tail.append(f"sag_enabled: {sag.enabled}")
-        tail.append(f"sag_scale: {sag.scale:g}")
-        tail.append(f"sag_blur_sigma: {sag.blur_sigma:g}")
-        tail.append(f"sag_threshold: {sag.threshold:g}")
-    tail.append(f"Version: {_VERSION}")
-    lines.append(", ".join(tail))
+        doc["denoise"] = denoise
+    if loras:
+        doc["loras"] = [f"{n}@{w:g}" for n, w in loras]
+    if disabled_loras:
+        doc["disabled_loras"] = [f"{n}@{w:g}" for n, w in disabled_loras]
     if styles:
-        entries = [
+        doc["styles"] = [
             {
                 "name": s.get("name", ""),
                 "prompt": s.get("prompt", ""),
@@ -200,20 +150,55 @@ def build_parameters(
             }
             for s in styles
         ]
-        # no newlines in the JSON (prompts keep theirs as \n escapes)
-        lines.append("Styles: " + json.dumps(entries, ensure_ascii=False))
-    if disabled_loras:
-        # kept off the meta line on purpose: the value contains ", "
-        lines.append("Disabled LoRAs: "
-                     + ", ".join(f"{n}@{w:g}" for n, w in disabled_loras))
-    return "\n".join(lines)
+    if soft_inpainting is not None:
+        # written unconditionally, so a dropped image can restore the
+        # checkbox in BOTH states
+        s = soft_inpainting
+        doc["Soft inpainting enabled"] = _bool_str(s.enabled)
+        doc["Soft inpainting schedule bias"] = s.mask_blend_power
+        doc["Soft inpainting preservation strength"] = s.mask_blend_scale
+        doc["Soft inpainting transition contrast boost"] = s.inpaint_detail_preservation
+        doc["Soft inpainting mask influence"] = s.composite_mask_influence
+        doc["Soft inpainting difference threshold"] = s.composite_difference_threshold
+        doc["Soft inpainting difference contrast"] = s.composite_difference_contrast
+    if distilled is not None:
+        # written unconditionally, so a dropped image records the mode in
+        # BOTH states
+        doc["Distilled"] = _bool_str(distilled)
+    if sag is not None:
+        # written unconditionally, so a dropped image can restore the
+        # checkbox in BOTH states
+        doc["sag_enabled"] = _bool_str(sag.enabled)
+        doc["sag_scale"] = sag.scale
+        doc["sag_blur_sigma"] = sag.blur_sigma
+        doc["sag_threshold"] = sag.threshold
+    return json.dumps(doc, ensure_ascii=False, separators=(",", ": "))
+
+
+def _bool_str(b: bool) -> str:
+    # "True"/"False" (str(bool)): matches what the legacy text parser used to
+    # return for the enabled flags and what the UI compares against
+    return str(bool(b))
 
 
 def parse_parameters(text: str) -> dict[str, Any]:
-    """Parse an A1111/Forge `parameters` chunk back into settings.
+    """Parse a `parameters` chunk back into settings.
 
-    Lenient: unknown keys are kept verbatim, missing ones are omitted.
+    Accepts both the imagagen JSON format and the legacy A1111/Forge text
+    format (needed to import foreign images and pre-JSON imagagen PNGs).
+    Both normalize to the same dict shape. Lenient: unknown keys are kept
+    verbatim, missing ones are omitted.
     """
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            doc = json.loads(stripped)
+        except json.JSONDecodeError:
+            doc = None
+        # a genuine imagagen document, not just text that happens to be
+        # valid JSON (e.g. a single-number prompt)
+        if isinstance(doc, dict) and doc.get("format") == _FORMAT and "prompt" in doc:
+            return doc
     out: dict[str, Any] = {}
     lines = text.splitlines()
     prompt_lines: list[str] = []
@@ -347,28 +332,14 @@ def attach_metadata(
     image: Image.Image, parameters_text: str
 ) -> tuple[Image.Image, PngImagePlugin.PngInfo]:
     """Return (image, pnginfo). The caller must pass `pnginfo=pnginfo` to
-    `Image.save(...)` for the text chunks to be written."""
+    `Image.save(...)` for the text chunk to be written.
+
+    The JSON document is the single source of truth (Pillow writes it as an
+    iTXt chunk when it contains non-ASCII text; :func:`read_metadata`
+    handles both).
+    """
     info = PngImagePlugin.PngInfo()
     info.add_text("parameters", parameters_text)
-    parsed = parse_parameters(parameters_text)
-    for field in _FIELDS:
-        key = {
-            "Negative prompt": "negative_prompt",
-            "Steps": "steps",
-            "Sampler": "sampler",
-            "Scheduler": "scheduler",
-            "CFG scale": "cfg",
-            "Seed": "seed",
-            "Size": "width",
-        }.get(field)
-        if key is None or key not in parsed:
-            continue
-        if field == "Size":
-            info.add_text("Size", f"{parsed['width']}x{parsed['height']}")
-        else:
-            info.add_text(field, str(parsed[key]))
-    info.add_text("Model", parsed.get("model", ""))
-    info.add_text("Model hash", parsed.get("model_hash", ""))
     return image, info
 
 

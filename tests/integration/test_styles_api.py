@@ -141,12 +141,12 @@ def test_generate_applies_styles_and_metadata(client):
     prompt, negative = client.backend.requests[-1]
     assert prompt == "cinematic film still a frog . moody"
     assert negative == "ugly, digital art, cartoon"
-    # the PNG metadata carries the RAW prompt + the style contents
+    # the PNG metadata (JSON document) carries the RAW prompt + styles
     png = Image.open(io.BytesIO(client.get("/api/thumb/1/0.png").content))
-    meta = png.info
-    assert meta["parameters"].splitlines()[0] == "a frog"
-    assert meta["Negative prompt"] == "ugly"
-    styles = json.loads(meta["parameters"].splitlines()[-1].removeprefix("Styles:"))
+    doc = json.loads(png.info["parameters"])
+    assert doc["prompt"] == "a frog"
+    assert doc["negative_prompt"] == "ugly"
+    styles = doc["styles"]
     assert styles == [
         {"name": "Cinematic", "prompt": "cinematic film still {prompt} . moody",
          "negative_prompt": "", "enabled": True},
@@ -181,15 +181,43 @@ def test_generate_ignores_comment_lines(client):
     prompt, negative = client.backend.requests[-1]
     assert prompt == "a frog\nb"
     assert negative == "ugly"
-    # the PNG metadata carries the RAW prompt, comments included
+    # the PNG metadata (JSON document) carries the RAW prompt, comments
+    # and newlines included
     png = Image.open(io.BytesIO(client.get("/api/thumb/1/0.png").content))
-    assert png.info["parameters"].startswith("# top note\n")
-    assert "# mid note" in png.info["parameters"]
-    assert png.info["Negative prompt"] == "ugly"  # processed value
-    # import round-trips the raw prompt (comments included, normalized to
-    # comma-joined form by /api/png-meta)
+    doc = json.loads(png.info["parameters"])
+    assert doc["prompt"] == raw
+    assert doc["negative_prompt"] == raw_negative
+    # import round-trips the raw prompt VERBATIM (comments and newlines
+    # included -- no more comma-joining normalization for our own images)
     r = client.post("/api/png-meta", content=client.get("/api/thumb/1/0.png").content)
-    assert r.json()["meta"]["prompt"] == "# top note, a frog, # mid note, # indented, b"
+    assert r.json()["meta"]["prompt"] == raw
+
+
+def test_generate_multiline_prompt_roundtrip(client):
+    """Regression: the legacy text format lost newlines (multi-line
+    negative prompt truncated, and the displaced meta line swallowed the
+    other fields); the JSON document must keep them and every field."""
+    raw = "line one\nline two"
+    raw_negative = "bad one\nbad two"
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": raw, "negative_prompt": raw_negative,
+            "width": 64, "height": 64, "steps": 2, "seed": 7,
+        })
+        assert r.status_code == 200
+        _wait_thumb(client, ws)
+    png = Image.open(io.BytesIO(client.get("/api/thumb/1/0.png").content))
+    doc = json.loads(png.info["parameters"])
+    assert doc["prompt"] == raw
+    assert doc["negative_prompt"] == raw_negative
+    assert doc["steps"] == 2
+    assert doc["seed"] == 7
+    assert (doc["width"], doc["height"]) == (64, 64)
+    # import restores the newlines verbatim (no ", "-joining)
+    out = client.post("/api/png-meta", content=client.get("/api/thumb/1/0.png").content).json()["meta"]
+    assert out["prompt"] == raw
+    assert out["negative_prompt"] == raw_negative
+    assert out["steps"] == 2
 
 
 def test_generate_skips_deleted_style(client):
@@ -208,17 +236,22 @@ def test_generate_skips_deleted_style(client):
 
 
 def _forge_png(client, prompt, negative, w=16, h=12) -> bytes:
-    """A Forge/A1111 PNG: the fully EXPANDED prompt as the meta prompt, no
-    dedicated style list (that is what Forge writes)."""
+    """A Forge/A1111 PNG: the legacy TEXT parameters format with the fully
+    EXPANDED prompt as the meta prompt and no dedicated style list (that is
+    what Forge writes)."""
     from imagagen import metadata
 
+    lines = [prompt]
+    if negative:
+        lines.append(f"Negative prompt: {negative}")
+    lines.append(
+        f"Steps: 24, Sampler: DPM++ 2M SDE, Scheduler: Polyexponential, "
+        f"CFG scale: 7.5, Seed: 1261832509, Size: {w}x{h}, "
+        "Model: some_model, Model hash: abc123, Version: f2.0.1"
+    )
     buf = io.BytesIO()
     img, info = metadata.attach_metadata(
-        Image.new("RGB", (w, h), (5, 5, 5)),
-        metadata.build_parameters(
-            prompt, negative, 24, "DPM++ 2M SDE", "Polyexponential", 7.5,
-            1261832509, w, h, "some_model", "abc123"),
-    )
+        Image.new("RGB", (w, h), (5, 5, 5)), "\n".join(lines))
     img.save(buf, format="PNG", pnginfo=info)
     return buf.getvalue()
 
@@ -268,7 +301,7 @@ def test_png_meta_forge_unknown_styles_untouched(client):
     assert m["negative_prompt"] == "some negative"
 
 
-def test_generate_no_styles_keeps_old_metadata(client):
+def test_generate_no_styles_has_no_styles_key(client):
     with client.websocket_connect("/api/ws") as ws:
         r = client.post("/api/generate", json={
             "prompt": "plain", "negative_prompt": "n",
@@ -277,7 +310,7 @@ def test_generate_no_styles_keeps_old_metadata(client):
         assert r.status_code == 200
         _wait_thumb(client, ws)
     png = Image.open(io.BytesIO(client.get("/api/thumb/1/0.png").content))
-    assert "Styles:" not in png.info["parameters"]
+    assert "styles" not in json.loads(png.info["parameters"])
 
 
 def test_png_meta_resolves_lora_names_to_subfolders(client):
@@ -337,8 +370,7 @@ def test_generate_records_disabled_styles(client):
     assert prompt == "cinematic film still a frog . moody"
     assert negative == "ugly"
     png = Image.open(io.BytesIO(client.get("/api/thumb/1/0.png").content))
-    styles = json.loads(
-        png.info["parameters"].splitlines()[-1].removeprefix("Styles:"))
+    styles = json.loads(png.info["parameters"])["styles"]
     assert styles == [
         {"name": "Cinematic", "prompt": "cinematic film still {prompt} . moody",
          "negative_prompt": "", "enabled": True},

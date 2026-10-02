@@ -1,9 +1,25 @@
 import io
+import json
 
 import numpy as np
 from PIL import Image
 
 from imagagen import metadata
+
+
+def test_non_ascii_prompt_survives_png_write(tmp_path):
+    # non-ASCII text makes Pillow write the chunk as iTXt; the reader must
+    # handle that
+    img = Image.new("RGB", (4, 4), "red")
+    params = metadata.build_parameters(
+        prompt="eine Eule \u00fcber dem Fluss", negative_prompt="", steps=10,
+        sampler="Euler a", scheduler="Karras", cfg=7.0, seed=1, width=4,
+        height=4, model_name="m", model_hash="h",
+    )
+    img, info = metadata.attach_metadata(img, params)
+    img.save(tmp_path / "x.png", format="PNG", pnginfo=info)
+    out = metadata.read_metadata((tmp_path / "x.png").read_bytes())
+    assert out["prompt"] == "eine Eule \u00fcber dem Fluss"
 
 
 def test_roundtrip_full():
@@ -22,6 +38,7 @@ def test_roundtrip_full():
         loras=[("sdxl/dmd2", 0.8)],
     )
     parsed = metadata.parse_parameters(params)
+    assert parsed["format"] == "imagagen"
     assert parsed["prompt"] == "a red fox"
     assert parsed["negative_prompt"] == "blurry"
     assert parsed["steps"] == 25
@@ -41,7 +58,6 @@ def test_denoise_roundtrip():
         scheduler="Polyexponential", cfg=1.5, seed=1, width=1280,
         height=1440, model_name="m", model_hash="h", denoise=0.55,
     )
-    assert "Denoising strength: 0.55" in params
     assert metadata.parse_parameters(params)["denoise"] == 0.55
     # absent for generate-mode images (no denoise passed)
     params = metadata.build_parameters(
@@ -49,7 +65,6 @@ def test_denoise_roundtrip():
         scheduler="Polyexponential", cfg=1.5, seed=1, width=64,
         height=64, model_name="m", model_hash="h",
     )
-    assert "Denoising strength" not in params
     assert "denoise" not in metadata.parse_parameters(params)
 
 
@@ -62,27 +77,46 @@ def test_distilled_roundtrip():
             scheduler="Flow", cfg=3.5, seed=1, width=1024, height=1024,
             model_name="flux", model_hash="h", distilled=value,
         )
-        assert f"Distilled: {value}" in params
         assert metadata.parse_parameters(params)["Distilled"] == str(value)
     params = metadata.build_parameters(
         prompt="p", negative_prompt="", steps=20, sampler="Euler a",
         scheduler="Karras", cfg=7.0, seed=1, width=512, height=512,
         model_name="sdxl", model_hash="h",
     )
-    assert "Distilled" not in params
+    assert "Distilled" not in metadata.parse_parameters(params)
 
 
-def test_parameters_format_like_forge():
+def test_parameters_is_json_document():
     params = metadata.build_parameters(
         prompt="hello", negative_prompt="", steps=10, sampler="Euler a",
         scheduler="Karras", cfg=7.0, seed=1, width=64, height=64,
         model_name="m", model_hash="h",
     )
-    lines = params.splitlines()
-    assert lines[0] == "hello"
-    assert lines[1].startswith("Steps: 10, Sampler: Euler a, Scheduler: Karras, CFG scale: 7, ")
-    assert "Size: 64x64" in lines[1]
-    assert "Version: " in lines[1]
+    doc = json.loads(params)
+    assert doc["format"] == "imagagen"
+    assert doc["prompt"] == "hello"
+    assert doc["steps"] == 10
+    assert doc["sampler"] == "Euler a"
+    assert doc["cfg"] == 7.0
+    assert (doc["width"], doc["height"]) == (64, 64)
+    assert doc["version"] == metadata._VERSION
+
+
+def test_multiline_prompt_and_negative_roundtrip():
+    # the legacy text format lost a multi-line negative prompt (and shifted
+    # the meta line); the JSON document must keep both verbatim
+    params = metadata.build_parameters(
+        prompt="line one\nline two", negative_prompt="bad one\nbad two",
+        steps=10, sampler="Euler a", scheduler="Karras", cfg=7.0, seed=1,
+        width=64, height=64, model_name="m", model_hash="h",
+    )
+    parsed = metadata.parse_parameters(params)
+    assert parsed["prompt"] == "line one\nline two"
+    assert parsed["negative_prompt"] == "bad one\nbad two"
+    # the other fields must survive too (no displaced meta line any more)
+    assert parsed["steps"] == 10
+    assert parsed["seed"] == 1
+    assert parsed["model"] == "m"
 
 
 def test_attach_and_read_png_metadata():
@@ -251,10 +285,7 @@ def test_disabled_loras_roundtrip():
         loras=[("Foo", 0.8)],
         disabled_loras=[("Bar", -0.3), ("Qux/Deep", 1.0)],
     )
-    # applied LoRAs stay on the meta line; disabled ones travel on a
-    # dedicated trailing line in the same name@weight shape
-    assert "Lora: Foo@0.8" in params
-    assert "Disabled LoRAs: Bar@-0.3, Qux/Deep@1" in params
+    # both lists travel as name@weight strings, applied vs disabled
     parsed = metadata.parse_parameters(params)
     assert parsed["loras"] == ["Foo@0.8"]
     assert parsed["disabled_loras"] == ["Bar@-0.3", "Qux/Deep@1"]
@@ -266,5 +297,4 @@ def test_disabled_loras_absent_by_default():
         scheduler="Polyexponential", cfg=1.5, seed=1, width=64,
         height=64, model_name="m", model_hash="h", loras=[("Foo", 0.8)],
     )
-    assert "Disabled LoRAs" not in params
     assert "disabled_loras" not in metadata.parse_parameters(params)

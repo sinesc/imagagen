@@ -86,12 +86,12 @@ def test_generate_with_soft_inpainting_roundtrips_metadata(tmp_path):
             assert thumb.status_code == 200
             meta = c.post("/api/png-meta", content=thumb.content).json()["meta"]
             assert meta["Soft inpainting enabled"] == "True"
-            assert meta["Soft inpainting schedule bias"] == "2"
-            assert meta["Soft inpainting preservation strength"] == "0.25"
-            assert meta["Soft inpainting transition contrast boost"] == "8"
-            assert meta["Soft inpainting mask influence"] == "0.5"
-            assert meta["Soft inpainting difference threshold"] == "0.75"
-            assert meta["Soft inpainting difference contrast"] == "4"
+            assert meta["Soft inpainting schedule bias"] == 2.0
+            assert meta["Soft inpainting preservation strength"] == 0.25
+            assert meta["Soft inpainting transition contrast boost"] == 8.0
+            assert meta["Soft inpainting mask influence"] == 0.5
+            assert meta["Soft inpainting difference threshold"] == 0.75
+            assert meta["Soft inpainting difference contrast"] == 4.0
 
 
 def test_generate_with_soft_disabled_writes_flag_false(tmp_path):
@@ -110,7 +110,7 @@ def test_generate_with_soft_disabled_writes_flag_false(tmp_path):
             meta = c.post("/api/png-meta",
                           content=c.get("/api/thumb/1/0.png").content).json()["meta"]
             assert meta["Soft inpainting enabled"] == "False"
-            assert meta["Soft inpainting schedule bias"] == "3"
+            assert meta["Soft inpainting schedule bias"] == 3.0
 
 
 def test_generate_without_soft_has_no_soft_metadata(tmp_path):
@@ -151,8 +151,8 @@ def test_generate_rejects_bad_soft_values(tmp_path):
             _wait_done(ws, r.json()["job_id"])
             meta = c.post("/api/png-meta",
                           content=c.get("/api/thumb/1/0.png").content).json()["meta"]
-            assert meta["Soft inpainting schedule bias"] == "2"
-            assert meta["Soft inpainting preservation strength"] == "0.5"
+            assert meta["Soft inpainting schedule bias"] == 2.0
+            assert meta["Soft inpainting preservation strength"] == 0.5
 
 
 def test_ui_state_persists_soft_fields(tmp_path):

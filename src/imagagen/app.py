@@ -812,10 +812,12 @@ def create_app(
         # A1111/Forge images store the fully expanded prompt and no style
         # list, so the selected styles are resolved out of the expanded
         # prompt the same way Forge does (StyleStore.extract_styles). imagagen
-        # writes an explicit style list, so this only runs for foreign
-        # metadata: it selects the recovered styles and shows the original
-        # (unapplied) prompts. Meta-data save logic is untouched.
-        if meta is not None and "styles" not in meta and meta.get("prompt"):
+        # images (JSON metadata, "format" key) carry an explicit style list
+        # -- or none -- and their RAW prompts must be shown verbatim
+        # (extract_styles would normalize/rewrite them), so this only runs
+        # for foreign legacy-text metadata. Meta-data save logic is untouched.
+        if (meta is not None and "styles" not in meta and meta.get("prompt")
+                and "format" not in meta):
             # A1111/Forge bake LoRAs into the prompt text (not meta lines); pull
             # them out and hand them to the normal LoRA selection logic, then
             # resolve the styles out of the remainder the same way Forge does

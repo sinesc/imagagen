@@ -271,12 +271,12 @@ def test_metadata_soft_inpainting_roundtrip():
     )
     parsed = parse_parameters(text)
     assert parsed["Soft inpainting enabled"] == "True"
-    assert parsed["Soft inpainting schedule bias"] == "2.5"
-    assert parsed["Soft inpainting preservation strength"] == "0.5"
-    assert parsed["Soft inpainting transition contrast boost"] == "4"
-    assert parsed["Soft inpainting mask influence"] == "0"
-    assert parsed["Soft inpainting difference threshold"] == "0.5"
-    assert parsed["Soft inpainting difference contrast"] == "3"
+    assert parsed["Soft inpainting schedule bias"] == 2.5
+    assert parsed["Soft inpainting preservation strength"] == 0.5
+    assert parsed["Soft inpainting transition contrast boost"] == 4.0
+    assert parsed["Soft inpainting mask influence"] == 0.0
+    assert parsed["Soft inpainting difference threshold"] == 0.5
+    assert parsed["Soft inpainting difference contrast"] == 3.0
     # other fields survive
     assert parsed["prompt"] == "a bird"
     assert parsed["steps"] == 20
