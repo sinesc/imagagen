@@ -160,6 +160,37 @@ def test_generate_applies_styles_and_metadata(client):
     assert out["styles"][0]["name"] == "Cinematic"
 
 
+def test_generate_ignores_comment_lines(client):
+    """Lines starting with # (tabs/spaces allowed) are ignored during
+    processing but stay in the raw prompt recorded in the metadata."""
+    raw = "# top note\na frog\n# mid note\n\t# indented\nb"
+    raw_negative = "ugly\n# no"
+    # the token counter agrees with the comment-free equivalent
+    assert client.post("/api/prompt-tokens", json={"prompt": raw}).json() == \
+        client.post("/api/prompt-tokens", json={"prompt": "a frog\nb"}).json()
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": raw,
+            "negative_prompt": raw_negative,
+            "width": 64, "height": 64, "steps": 2, "seed": 7,
+        })
+        assert r.status_code == 200
+        _wait_thumb(client, ws)
+    # the backend saw the comment-free prompt
+    prompt, negative = client.backend.requests[-1]
+    assert prompt == "a frog\nb"
+    assert negative == "ugly"
+    # the PNG metadata carries the RAW prompt, comments included
+    png = Image.open(io.BytesIO(client.get("/api/thumb/1/0.png").content))
+    assert png.info["parameters"].startswith("# top note\n")
+    assert "# mid note" in png.info["parameters"]
+    assert png.info["Negative prompt"] == "ugly"  # processed value
+    # import round-trips the raw prompt (comments included, normalized to
+    # comma-joined form by /api/png-meta)
+    r = client.post("/api/png-meta", content=client.get("/api/thumb/1/0.png").content)
+    assert r.json()["meta"]["prompt"] == "# top note, a frog, # mid note, # indented, b"
+
+
 def test_generate_skips_deleted_style(client):
     _seed_csv(client)
     client.post("/api/styles/delete", json={"name": "Cinematic"})

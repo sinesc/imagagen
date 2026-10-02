@@ -230,6 +230,19 @@ def test_normalize_prompt_collapses_terms():
     assert normalize_prompt(",,  ,") == ""
 
 
+def test_strip_prompt_comments():
+    from imagagen.styles import strip_prompt_comments
+
+    assert strip_prompt_comments("a\n# comment\nb") == "a\nb"
+    assert strip_prompt_comments("  # indented comment\n\t# tab-indented\nb") == "b"
+    # mid-line # is NOT a comment (line must START with it)
+    assert strip_prompt_comments("a #1\n#x") == "a #1"
+    assert strip_prompt_comments("#") == ""
+    assert strip_prompt_comments("a\r\n# c\r\nb") == "a\r\nb"
+    # blank lines and other content are kept verbatim
+    assert strip_prompt_comments("a\n\n# c\nb") == "a\n\nb"
+
+
 def test_extract_styles_tolerant_of_whitespace_and_commas(tmp_path):
     store = StyleStore(tmp_path / "s.csv")
     store.save(Style(name="Film",

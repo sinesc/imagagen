@@ -37,7 +37,7 @@ from .queue import GenerationQueue
 from .sag import SelfAttentionGuidance
 from .segmentation import SegmentationError, SegmentationService
 from .soft_inpaint import SoftInpainting
-from .styles import Style, StyleStore, apply_styles
+from .styles import Style, StyleStore, apply_styles, strip_prompt_comments
 from .uistate import UiState, UiStateStore
 
 log = logging.getLogger(__name__)
@@ -381,9 +381,10 @@ def create_app(
     def prompt_tokens(body: dict) -> dict:
         """Live CLIP token count of the prompt field (UI counter).
 
-        The selected styles are applied first, exactly as ``/api/generate``
-        does, so the count reflects the full prompt the model will actually
-        see (a style can push a short raw prompt past one CLIP window).
+        The selected styles are applied first (after comment lines are
+        dropped), exactly as ``/api/generate`` does, so the count reflects
+        the full prompt the model will actually see (a style can push a
+        short raw prompt past one CLIP window).
 
         ``tokens`` is None when the tokenizer could not be loaded; the UI then
         hides the counter. ``windows`` is how many 75-token CLIP windows the
@@ -392,7 +393,7 @@ def create_app(
         from .tokenize import count_prompt_tokens, prompt_windows
 
         prompt, _ = apply_styles(
-            body.get("prompt", ""),
+            strip_prompt_comments(body.get("prompt", "")),
             "",
             body.get("styles", []),
             app.state.style_store.get,
@@ -552,8 +553,13 @@ def create_app(
         # The raw (unapplied) prompt and the style *contents* are kept for
         # the image metadata: the PNG must round-trip as "same prompt +
         # same style list", not as the pre-applied text.
+        # comment lines (leading "#", tabs/spaces allowed) are ignored
+        # during processing; meta_prompt/meta_negative below keep the raw
+        # text so they remain in the stored metadata
         prompt, negative_prompt = apply_styles(
-            body.prompt, body.negative_prompt, body.styles,
+            strip_prompt_comments(body.prompt),
+            strip_prompt_comments(body.negative_prompt),
+            body.styles,
             app.state.style_store.get,
         )
         # Wildcards are validated up front (seed-independent structural
