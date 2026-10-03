@@ -2304,8 +2304,8 @@ document.addEventListener("keydown", (e) => {
 // D / S / C / M / P switch tools, N / K / R act on the mask, F fits the
 // image, CTRL+S saves, CTRL+G generates, CTRL+Z / CTRL+Y undo / redo
 // (all when not typing in a field);
-// CTRL (clone tool, a source set) makes the source follow the cursor until
-// it is released
+// SHIFT (clone tool, a source set) makes the source follow the cursor
+// until it is released
 document.addEventListener("keydown", (e) => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
   if (typing) return;
@@ -2340,10 +2340,10 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "f" || e.key === "F") viewFit();
   // Esc while dragging the crop rectangle aborts the selection
   else if (e.key === "Escape" && view.crop) abortCrop();
-  else if (e.key === "Control") cloneGestureStart();
+  else if (e.key === "Shift") cloneGestureStart();
 });
 document.addEventListener("keyup", (e) => {
-  if (e.key === "Control") cloneGestureEnd();
+  if (e.key === "Shift") cloneGestureEnd();
 });
 
 // -------- sidebar resize: drag the border between the sidebar and stage --------

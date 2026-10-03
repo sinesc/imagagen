@@ -27,7 +27,7 @@ const view = {
   dpr: 1,
   stroke: null, // {tool, points: [[x,y]...], erase, cloneOffset, smudgeStamps}
   cloneSource: null, // [x,y] canvas px: clone tool's picked source S
-  cloneGesture: null, // [ox,oy] canvas px: CTRL held -> the source follows
+  cloneGesture: null, // [ox,oy] canvas px: SHIFT held -> the source follows
   // the cursor at this relative offset (a temporary move of the picked S)
   crop: null, // {sx, sy, ex, ey} raw canvas px of the crop tool's drag; the
   // region used is its clamped intersection with the image (cropRect)
@@ -673,15 +673,15 @@ function pickBrushColor(p) {
   setStatus(`picked colour ${hex}`);
 }
 
-// CTRL gesture (clone tool, a source S is set): the source moves 1:1 with
-// the cursor, at the relative offset frozen when CTRL went down. Strokes
-// pressed during the gesture use the moved source; releasing CTRL reverts
+// SHIFT gesture (clone tool, a source S is set): the source moves 1:1 with
+// the cursor, at the relative offset frozen when SHIFT went down. Strokes
+// pressed during the gesture use the moved source; releasing SHIFT reverts
 // the source to S (only after the current stroke, if one is in flight).
-let cloneCtrl = false;
+let cloneShift = false;
 
 function cloneGestureStart() {
-  if (cloneCtrl) return; // first press freezes the offset
-  cloneCtrl = true;
+  if (cloneShift) return; // first press freezes the offset
+  cloneShift = true;
   if (view.cloneGesture || Tools.current !== "clone" || !view.cloneSource) return;
   const p = cursorCanvas();
   if (!p) return;
@@ -691,8 +691,8 @@ function cloneGestureStart() {
 }
 
 function cloneGestureEnd() {
-  if (!cloneCtrl) return;
-  cloneCtrl = false;
+  if (!cloneShift) return;
+  cloneShift = false;
   if (!view.cloneGesture) return;
   if (view.stroke) return; // only takes effect after the stroke ends
   view.cloneGesture = null;
@@ -706,7 +706,7 @@ function cursorCanvas() {
           (view.cursor[1] - view.oy) / view.scale];
 }
 
-// the clone source as it currently is: the picked S, or (while the CTRL
+// the clone source as it currently is: the picked S, or (while the SHIFT
 // gesture is active) the moved source following the cursor
 function cloneSourcePoint() {
   if (view.cloneGesture) {
@@ -1368,11 +1368,11 @@ function setupCanvasInput() {
       return;
     }
     if (tool === "clone") {
-      if (e.shiftKey) {
+      if (e.ctrlKey) {
         // pick/move the clone source S; not a stroke (no pointer capture,
         // so the following pointerup has nothing to commit)
         view.cloneSource = [p[0], p[1]];
-        // re-anchor an active CTRL gesture: the moved source lands on S
+        // re-anchor an active SHIFT gesture: the moved source lands on S
         // (the cursor is on S, so the relative offset is zero)
         if (view.cloneGesture) view.cloneGesture = [0, 0];
         viewRedraw();
@@ -1380,7 +1380,7 @@ function setupCanvasInput() {
       }
       const src = cloneSourcePoint();
       if (!src) {
-        setStatus("clone: shift-click to pick a source point first");
+        setStatus("clone: ctrl-click to pick a source point first");
         return;
       }
       view.stroke = {
@@ -1483,8 +1483,8 @@ function setupCanvasInput() {
     const s = view.stroke;
     view.stroke = null;
     const st = Tools.get();
-    // CTRL released during the stroke: the source reverts only now
-    if (view.cloneGesture && !cloneCtrl) view.cloneGesture = null;
+    // SHIFT released during the stroke: the source reverts only now
+    if (view.cloneGesture && !cloneShift) view.cloneGesture = null;
     if (s.tool === "smudge" && s.points.length < 2) {
       // a single smudge click smears nothing: no commit, no history step
       clearBrushStamps();
