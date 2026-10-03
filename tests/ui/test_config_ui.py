@@ -317,6 +317,36 @@ def test_preset_dialog_sampler_use_model_default(page, server):
     assert page.input_value("#sampler") == "Euler a"
 
 
+def test_preset_manage_filter_survives_edit(page, server):
+    base, _ = server
+    with httpx.Client(base_url=base, timeout=10) as c:
+        for name in ("Alpha One", "Beta Two"):
+            r = c.post("/api/presets", json={
+                "name": name, "width": 512, "controls": {"width": True}})
+            assert r.status_code == 200, r.text
+    _open(page, base, "state.presets.length >= 2")
+
+    page.click("#preset-manage")
+    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
+    assert page.locator(".preset-manage-row").count() == 2
+
+    # filter the list down to one preset (the filter is debounced)
+    page.locator("#dialog-filter input").fill("alpha")
+    wait_until(lambda: page.locator(".preset-manage-row").count() == 1)
+
+    # edit that preset and save it unchanged: the management list reopens
+    page.locator(".preset-manage-row .mini").first.click()
+    wait_until(lambda: page.locator("#dialog-title").inner_text() == "Edit preset")
+    page.click("#dialog-ok")
+    wait_until(lambda: page.locator("#dialog-title").inner_text() == "Setting presets")
+
+    # the previous filter is restored: list still filtered, text in the box
+    assert page.locator(".preset-manage-row").count() == 1
+    assert page.locator("#dialog-filter input").input_value() == "alpha"
+
+    page.click("#dialog-ok")
+
+
 def test_preset_soft_inpaint_sag_checkbox_rows(page, server):
     # the dialog gains two rows, each with the usual controls checkbox
     # PLUS a second checkbox that is the enable/disable value itself;

@@ -327,10 +327,11 @@ let dialogClose = null;
 // quick-filter widget for the dialog title row. `onFilter` gets the trimmed,
 // lowercased query (debounced); the x clears it, Escape in the input does too
 // (without closing the dialog).
-function makeFilterInput(onFilter) {
+function makeFilterInput(onFilter, initial = "") {
   const input = el("input", { type: "text", placeholder: "filter", title: "filter the list" });
+  input.value = initial;
   const clear = el("button", { type: "button", class: "dialog-filter-clear", title: "clear filter" }, "×");
-  clear.hidden = true;
+  clear.hidden = !input.value;
   let t = null;
   const apply = () => {
     clear.hidden = !input.value;
@@ -356,12 +357,12 @@ function makeFilterInput(onFilter) {
   });
   return el("div", { class: "dialog-filter" }, input, clear);
 }
-function openDialog(title, body, onOk, okText = "Save", onClose = null, onFilter = null) {
+function openDialog(title, body, onOk, okText = "Save", onClose = null, onFilter = null, initialFilter = "") {
   $("dialog-title").textContent = title;
   const f = $("dialog-filter");
   f.innerHTML = "";
   f.hidden = !onFilter;
-  if (onFilter) f.append(makeFilterInput(onFilter));
+  if (onFilter) f.append(makeFilterInput(onFilter, initialFilter));
   const b = $("dialog-body");
   b.innerHTML = "";
   b.append(body);
@@ -602,10 +603,11 @@ function openStyleDialog(existing, onClose = null) {
   }, "Save", onClose);
 }
 
+let styleManageFilter = ""; // survives dialog round-trips (edit/new returns here)
 function openStyleManage() {
   const list = el("div", { class: "preset-manage" });
   const newBtn = el("button", { class: "mini", type: "button" }, "+ New style");
-  let filter = "";
+  let filter = styleManageFilter;
   const render = () => {
     list.querySelectorAll(".preset-manage-row, .muted").forEach((r) => r.remove());
     const shown = state.styles.filter((s) =>
@@ -641,7 +643,7 @@ function openStyleManage() {
   render();
   newBtn.onclick = () => { closeDialog(); openStyleDialog(null, openStyleManage); };
   openDialog("Style configuration", el("div", { class: "preset-manage-wrap" }, list), null, "Close",
-    null, (q) => { filter = q; render(); });
+    null, (q) => { filter = styleManageFilter = q; render(); }, styleManageFilter);
 }
 
 // ---------------- LoRA settings (the .json next to each .safetensors) --------
@@ -688,9 +690,10 @@ function openLoraDialog(name, onClose = null) {
   }, "Save", onClose);
 }
 
+let loraManageFilter = ""; // survives dialog round-trips (edit returns here)
 function openLoraManage() {
   const list = el("div", { class: "preset-manage" });
-  let filter = "";
+  let filter = loraManageFilter;
   const render = () => {
     list.querySelectorAll(".preset-manage-row, .muted").forEach((r) => r.remove());
     const shown = state.loras.filter((n) => !filter || n.toLowerCase().includes(filter));
@@ -705,7 +708,7 @@ function openLoraManage() {
   };
   render();
   openDialog("LoRA configuration", el("div", { class: "preset-manage-wrap" }, list), null, "Close",
-    null, (q) => { filter = q; render(); });
+    null, (q) => { filter = loraManageFilter = q; render(); }, loraManageFilter);
 }
 
 // ---------------- thumbnails ----------------
@@ -1375,10 +1378,11 @@ function openPresetDialog(existing, onClose = null) {
   }, "Save", onClose);
 }
 
+let presetManageFilter = ""; // survives dialog round-trips (edit/new returns here)
 function openPresetManage() {
   const list = el("div", { class: "preset-manage" });
   const newBtn = el("button", { class: "mini", type: "button" }, "+ New preset");
-  let filter = "";
+  let filter = presetManageFilter;
   const render = () => {
     list.querySelectorAll(".preset-manage-row, .muted").forEach((r) => r.remove());
     const shown = state.presets.filter((p) => !filter || p.name.toLowerCase().includes(filter));
@@ -1413,7 +1417,7 @@ function openPresetManage() {
   render();
   newBtn.onclick = () => { closeDialog(); openPresetDialog(null, openPresetManage); };
   openDialog("Setting presets", el("div", { class: "preset-manage-wrap" }, list), null, "Close",
-    null, (q) => { filter = q; render(); });
+    null, (q) => { filter = presetManageFilter = q; render(); }, presetManageFilter);
 }
 
 // ---------------- toolbar: tools, brushes, mask ops, zoom ----------------
