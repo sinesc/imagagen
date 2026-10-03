@@ -1049,8 +1049,9 @@ class SdxlBackend(ModelBackend):
                 samples = sampler_fn(model_wrap, noise, sigma_sched,
                                      extra_args={"seed": request.seed})
             finally:
-                for h in sag_handles:
-                    h.remove()
+                # NB: don't shadow `h` (the image height) with the loop var
+                for handle in sag_handles:
+                    handle.remove()
             if init_latent is not None and mask_t is not None and soft is None:
                 # final lock: the protected region is exactly the init latent
                 # (skipped with soft inpainting: the protected content is
