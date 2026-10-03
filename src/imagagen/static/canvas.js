@@ -218,12 +218,10 @@ function computeMaskBbox() {
   if (x1 >= x0) view.maskBbox = { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
 }
 
-// faint outline rect for the current mask: the mask bbox grown by the
-// "Mask pad" value on each side (capped at the mask's largest extent,
-// like the server's inpaint box) and clamped to the canvas; null when the
-// mask is empty. An in-flight mask stroke is not committed yet, so the
-// live stroke footprint is united in as well.
-function maskOutlineBox() {
+// live mask extent in image-space px: the committed mask bbox united with
+// the in-flight mask stroke's footprint (r = s.size/2), so it updates
+// continuously while drawing; null when there is neither.
+function maskBboxLive() {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   const b = view.maskBbox;
   if (b) {
@@ -240,13 +238,25 @@ function maskOutlineBox() {
     }
   }
   if (x1 <= x0 || y1 <= y0) return null; // empty mask, no live stroke
+  const ix0 = Math.floor(x0), iy0 = Math.floor(y0);
+  const ix1 = Math.ceil(x1), iy1 = Math.ceil(y1);
+  return { x: ix0, y: iy0, w: ix1 - ix0, h: iy1 - iy0 };
+}
+
+// faint outline rect for the current mask: the live mask extent grown by
+// the "Mask pad" value on each side (capped at the mask's largest extent,
+// like the server's inpaint box) and clamped to the canvas; null when the
+// mask is empty.
+function maskOutlineBox() {
+  const b = maskBboxLive();
+  if (!b) return null;
   let pad = parseInt(
     document.getElementById("mask-padding").value, 10) || 0;
-  pad = Math.max(0, Math.min(pad, Math.max(x1 - x0, y1 - y0)));
-  const ox0 = Math.max(0, Math.floor(x0 - pad));
-  const oy0 = Math.max(0, Math.floor(y0 - pad));
-  const ox1 = Math.min(view.w, Math.ceil(x1 + pad));
-  const oy1 = Math.min(view.h, Math.ceil(y1 + pad));
+  pad = Math.max(0, Math.min(pad, Math.max(b.w, b.h)));
+  const ox0 = Math.max(0, b.x - pad);
+  const oy0 = Math.max(0, b.y - pad);
+  const ox1 = Math.min(view.w, b.x + b.w + pad);
+  const oy1 = Math.min(view.h, b.y + b.h + pad);
   if (ox1 <= ox0 || oy1 <= oy0) return null;
   return { x: ox0, y: oy0, w: ox1 - ox0, h: oy1 - oy0 };
 }
@@ -258,9 +268,10 @@ function drawMaskOutline(ctx) {
   ctx.lineWidth = 1 / view.scale; // 1 screen px, faint grey
   ctx.strokeStyle = "rgba(128,128,128,0.6)";
   ctx.strokeRect(r.x, r.y, r.w, r.h);
-  // mask size in image-space px, tucked inside the box's bottom-right
-  // corner (the drawn box is padded, the number is the raw mask bbox)
-  const b = view.maskBbox;
+  // live mask extent in image-space px (includes the in-flight stroke,
+  // so it updates while drawing), tucked inside the box's bottom-right
+  // corner (the drawn box is padded, the number is the raw mask extent)
+  const b = maskBboxLive();
   if (b) {
     const fs = 12 / view.scale; // ~12 screen px
     ctx.font = `${fs}px system-ui, sans-serif`;
