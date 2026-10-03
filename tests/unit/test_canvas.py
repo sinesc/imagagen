@@ -318,6 +318,38 @@ def test_crop_pins_pre_crop_and_result_against_eviction():
     assert eid in c._images  # still current
 
 
+def test_user_pin_survives_eviction_and_release_pins():
+    """The UI's "Pin thumbnail" checkbox: user pins must survive both
+    stale eviction and the crop-pin release a new generation performs
+    (unlike crop pins), until explicitly unpinned."""
+    c = blank_canvas()
+    prev_id, crop_id = c.crop(0, 0, 32, 24)  # crop pins both entities
+    c.set_current(prev_id)  # crop_id is no longer the current image
+    c.user_pin(crop_id)  # keep the crop via the UI pin as well
+    c.anchor(set())
+    c.release_pins()  # new generation starts: crop pins go away
+    assert prev_id in c._images  # still the current image
+    assert crop_id in c._images  # saved by the user pin, not the crop pin
+    assert c.user_pinned() == {crop_id}
+    # unpinning lets the entity be evicted again
+    c.user_unpin(crop_id)
+    c.evict_stale()
+    assert crop_id not in c._images
+
+
+def test_user_pin_rejects_unknown_and_is_idempotent():
+    c = blank_canvas()
+    with pytest.raises(ValueError):
+        c.user_pin("nope")
+    eid = c.current_id()
+    c.user_pin(eid)
+    c.user_pin(eid)  # pinning twice is a no-op
+    assert c.user_pinned() == {eid}
+    c.user_unpin("nope")  # unknown ids are ignored
+    c.user_unpin(eid)
+    assert c.user_pinned() == set()
+
+
 def test_crop_keeps_png_metadata():
     c = Canvas()
     c.import_image(_png_with_info(b"seed: 7"))

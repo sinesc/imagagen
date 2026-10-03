@@ -751,11 +751,48 @@ function thumbPreviewHide() {
   thumbPreviewHideTimer = setTimeout(() => (pv.hidden = true), 250);
 }
 
+// the pin checkbox of a thumbnail: checked thumbnails (and, server-side,
+// their canvas entities) survive new generations until unchecked
+function pinToggle(t, index) {
+  return el("input", {
+    type: "checkbox",
+    class: "thumb-pin",
+    title: "Pin thumbnail",
+    "aria-label": "Pin thumbnail",
+    onchange: async () => {
+      const on = !t.pinned;
+      try {
+        if (on) {
+          await api("/api/canvas/pin", { id: t.image_id, pin: true });
+          t.pinned = true;
+        } else {
+          // the entity pin only goes away when no other thumbnail shows the
+          // same image (e.g. a crop that reused an existing thumbnail)
+          const stillShown = state.thumbs.some(
+            (o) => o !== t && o.image_id === t.image_id);
+          if (!stillShown)
+            await api("/api/canvas/pin", { id: t.image_id, pin: false });
+          t.pinned = false;
+          state.thumbs = state.thumbs.filter((o) => o !== t);
+          if (state.currentThumb === index) state.currentThumb = -1;
+          else if (state.currentThumb > index) state.currentThumb -= 1;
+        }
+      } catch (e) {
+        setStatus(e.message, true);
+        renderThumbs(); // re-sync the checkbox with t.pinned
+        return;
+      }
+      renderThumbs();
+    },
+  });
+}
+
 function renderThumbs() {
   const strip = $("thumbs");
   strip.hidden = state.thumbs.length === 0;
   strip.innerHTML = "";
   state.thumbs.forEach((t, i) => {
+    const item = el("div", { class: "thumb-item" });
     const image = document.createElement("img");
     image.src = t.url;
     image.title = t.source
@@ -778,14 +815,15 @@ function renderThumbs() {
       renderThumbs();
       viewRefresh();
     };
-    strip.appendChild(image);
+    const pin = pinToggle(t, i);
+    pin.checked = !!t.pinned;
+    // the checkbox overlaps the image's corner: keep the hover preview
+    // stable across it
+    pin.onmouseenter = () => thumbPreviewShow(t.url);
+    pin.onmouseleave = () => thumbPreviewHide();
+    item.append(image, pin);
+    strip.appendChild(item);
   });
-}
-
-function clearThumbs() {
-  state.thumbs = [];
-  state.currentThumb = -1;
-  renderThumbs();
 }
 
 // page load: rebuild the strip from the server's jobs. The strip normally
@@ -793,14 +831,26 @@ function clearThumbs() {
 // a reload. The server only retains in-flight jobs plus the last finished
 // one (older jobs are dropped on submit), so only those are restorable.
 function restoreQueueThumbs(q) {
+  const pinned = new Set(q && q.pinned);  // user pins outlive their jobs
   for (const j of [...((q && q.jobs) || [])].reverse()) {  // newest job first
     if (j.source) state.thumbs.push({ source: true, url: j.source.url,
                                       image_id: j.source.image_id,
-                                      seed: j.source.seed }); // null: no seed in its metadata
+                                      seed: j.source.seed, // null: no seed in its metadata
+                                      pinned: pinned.has(j.source.image_id) });
     for (const r of j.results) {
       state.thumbs.push({ job: j.id, index: r.index, url: r.url, seed: r.seed,
-                          image_id: r.image_id });
+                          image_id: r.image_id,
+                          pinned: pinned.has(r.image_id) });
     }
+  }
+  // pinned images whose job was dropped before the reload: still live canvas
+  // entities, shown at the end of the strip (oldest material last)
+  const shown = new Set(state.thumbs.map((t) => t.image_id));
+  for (const id of pinned) {
+    if (shown.has(id)) continue;
+    state.thumbs.push({ image_id: id,
+                        url: `/api/canvas/image.png?id=${encodeURIComponent(id)}`,
+                        pinned: true });
   }
   // highlight the entity currently on the canvas, if it is a thumbnail
   if (q && q.current) {
@@ -887,7 +937,18 @@ async function generate() {
     soft_inpainting: softInpaintBody(), // null = off
     sag: sagBody(), // null = off
   };
-  clearThumbs();
+  // pinned thumbnails are retained across the generation (their images
+  // stay pinned server-side): their jobs get dropped, so source snapshots
+  // switch to the entity's PNG (result thumbnails keep their URLs — the
+  // server falls back to the pinned entity for dropped jobs)
+  state.thumbs = state.thumbs.filter((t) => {
+    if (!t.pinned) return false;
+    if (t.source && t.image_id)
+      t.url = `/api/canvas/image.png?id=${encodeURIComponent(t.image_id)}`;
+    return true;
+  });
+  state.currentThumb = -1;
+  renderThumbs();
   setStatus("queued…");
   saveUiState(); // persist the settings actually about to be used
   try {

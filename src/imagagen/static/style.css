@@ -266,6 +266,17 @@ button.mini.icon {
 #thumbs img.selected { border-color: #4da3ff; }
 #thumbs img.source { border-color: #444; } /* source image (canvas snapshot) */
 #thumbs img.source.selected { border-color: #2ecc71; } /* green while selected */
+/* each thumbnail is wrapped so the pin checkbox can overlay its corner */
+#thumbs .thumb-item { position: relative; }
+#thumbs .thumb-pin {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+}
 
 /* prompt box: top of the stage, full width, ~3:1 positive:negative.
    Top padding matches #controls so the "Prompt" label lines up with

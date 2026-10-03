@@ -228,6 +228,11 @@ class SelectBody(BaseModel):
     id: str
 
 
+class PinBody(BaseModel):
+    id: str
+    pin: bool
+
+
 class CropBody(BaseModel):
     # the crop rect in canvas px; the server clamps it to the image bounds
     # (a drag that runs past the edge still crops the intersection)
@@ -683,8 +688,9 @@ def create_app(
         # after a browser reload: the 'source_image'/'image' WS events
         # emitted before the reload are lost. The server only retains
         # in-flight jobs plus the last finished one (older jobs are
-        # dropped on submit, queue.py), so those are the only restorable
-        # thumbnails.
+        # dropped on submit, queue.py), so those are the only job-based
+        # thumbnails; user-pinned images ("Pin thumbnail") outlive their
+        # jobs and are listed separately in `pinned`.
         jobs = []
         for jid in sorted(queue.jobs()):
             job = queue.job(jid)
@@ -703,7 +709,8 @@ def create_app(
                     for idx in sorted(job.results)
                 ],
             })
-        return {"jobs": jobs, "current": canvas.current_id()}
+        return {"jobs": jobs, "current": canvas.current_id(),
+                "pinned": sorted(canvas.user_pinned())}
 
     @app.get("/api/thumb/{job_id}/source.png")
     def thumb_source(job_id: int) -> Response:
@@ -720,6 +727,11 @@ def create_app(
     def thumb(job_id: int, index: int) -> Response:
         job = queue.job(job_id)
         data = job.results.get(index) if job else None
+        if data is None:
+            # dropped job: a user-pinned result is still a canvas entity,
+            # so serve its cold PNG (pinned thumbnails keep their original
+            # URLs and stay alive across generations)
+            data = canvas.entity_png(f"job:{job_id}:{index}")
         if data is None:
             return Response(status_code=404)
         return Response(content=data, media_type="image/png")
@@ -893,6 +905,21 @@ def create_app(
             canvas.set_current(body.id)
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
+        return {"ok": True}
+
+    @app.post("/api/canvas/pin")
+    def canvas_pin(body: PinBody) -> dict:
+        """The UI's per-thumbnail "Pin thumbnail" checkbox: pinned entities
+        survive the job drops that every new generation performs, so the
+        thumbnail (and its image, restorable via /api/canvas/select) stays
+        until it is unchecked."""
+        if body.pin:
+            try:
+                canvas.user_pin(body.id)
+            except ValueError as e:
+                return JSONResponse({"error": str(e)}, status_code=400)
+        else:
+            canvas.user_unpin(body.id)
         return {"ok": True}
 
     @app.post("/api/canvas/crop")

@@ -195,6 +195,63 @@ def test_queue_restores_last_finished_job(client, tmp_path):
     }
 
 
+def test_pinned_thumbnail_survives_new_generation(client, tmp_path):
+    """The UI's "Pin thumbnail" checkbox: a pinned result (and its
+    thumbnail URL) survives the job drop a new generation performs, until
+    it is unpinned."""
+    import io
+
+    from PIL import Image
+
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": "p1", "width": 64, "height": 64, "steps": 2, "seed": 11,
+        })
+        job_id = r.json()["job_id"]
+        _wait_for(client, ws, "done")
+    eid = f"job:{job_id}:0"
+    assert client.post("/api/canvas/pin",
+                       json={"id": eid, "pin": True}).json()["ok"]
+    # pinned ids ride on /api/queue (page reload restores the strip)
+    assert client.get("/api/queue").json()["pinned"] == [eid]
+    # a new generation drops the earlier job: the pinned thumbnail and
+    # image both stay alive
+    with client.websocket_connect("/api/ws") as ws:
+        r2 = client.post("/api/generate", json={
+            "prompt": "p2", "width": 64, "height": 64, "steps": 2,
+        })
+        job_id2 = r2.json()["job_id"]
+        _wait_for(client, ws, "done")
+    assert client.get(f"/api/thumb/{job_id}/0.png").status_code == 200
+    body = client.get("/api/queue").json()
+    assert [j["id"] for j in body["jobs"]] == [job_id2]
+    assert body["pinned"] == [eid]
+    # the pinned image is still restorable onto the canvas
+    assert client.post("/api/canvas/select", json={"id": eid}).json()["ok"]
+    # unpin: once the image also leaves the canvas, the entity is
+    # evictable and the thumbnail URL dies with the dropped job
+    assert client.post("/api/canvas/pin",
+                       json={"id": eid, "pin": False}).json()["ok"]
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), (1, 2, 3)).save(buf, format="PNG")
+    client.post("/api/canvas/upload", content=buf.getvalue())
+    with client.websocket_connect("/api/ws") as ws:
+        client.post("/api/generate", json={
+            "prompt": "p3", "width": 64, "height": 64, "steps": 2,
+        })
+        _wait_for(client, ws, "done")
+    assert client.get(f"/api/thumb/{job_id}/0.png").status_code == 404
+    assert client.get("/api/queue").json()["pinned"] == []
+
+
+def test_pin_unknown_entity_400(client):
+    r = client.post("/api/canvas/pin", json={"id": "nope", "pin": True})
+    assert r.status_code == 400
+    # unpinning an unknown (already evicted) entity is a no-op
+    assert client.post("/api/canvas/pin",
+                       json={"id": "nope", "pin": False}).json()["ok"]
+
+
 def test_generate_missing_wildcard_rejected(client, tmp_path):
     # an unresolved wildcard is a submit-time error: a 400 with a message
     # (terminal + UI status line), and no job is queued

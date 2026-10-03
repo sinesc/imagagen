@@ -108,6 +108,10 @@ class Canvas:
         self._current: str | None = None
         self._anchored: set[str] = set()  # entity ids referenced by a live job
         self._pinned: set[str] = set()  # entity ids kept as crop thumbnails
+        # entity ids the UI's "Pin thumbnail" checkbox keeps alive across
+        # generations (until unchecked) — unlike crop pins, these are not
+        # dropped when a new generation starts
+        self._user_pinned: set[str] = set()
         self._upload_counter = 0
         self._crop_counter = 0
         # brush PNG lookup: the provided defaults (res/brushes/) are
@@ -261,7 +265,9 @@ class Canvas:
     def release_pins(self) -> None:
         """Drop every crop pin and evict what is no longer referenced. Called
         when a new generation starts (the client clears its crop thumbnails
-        at that point, so the pinned entities are no longer reachable)."""
+        at that point, so the pinned entities are no longer reachable).
+        User pins ("Pin thumbnail") are left alone: those thumbnails and
+        their images survive the generation by design."""
         with self._lock:
             self._pinned.clear()
             self._evict_stale_locked()
@@ -270,6 +276,25 @@ class Canvas:
         if id in self._images:
             self._pinned.add(id)
 
+    def user_pin(self, id: str) -> None:
+        """Keep entity ``id`` alive across generations (the UI's
+        "Pin thumbnail" checkbox). Raises ValueError when unknown."""
+        with self._lock:
+            if id not in self._images:
+                raise ValueError(f"unknown canvas image: {id!r}")
+            self._user_pinned.add(id)
+
+    def user_unpin(self, id: str) -> None:
+        """Drop the user pin on entity ``id``; it may be evicted on the next
+        pass. Unknown ids are ignored (idempotent)."""
+        with self._lock:
+            self._user_pinned.discard(id)
+
+    def user_pinned(self) -> set[str]:
+        """A copy of the user-pinned entity ids (for /api/queue)."""
+        with self._lock:
+            return set(self._user_pinned)
+
     def evict_stale(self) -> None:
         with self._lock:
             self._evict_stale_locked()
@@ -277,7 +302,8 @@ class Canvas:
     def _evict_stale_locked(self) -> None:
         for eid in list(self._images.keys()):
             if (eid != self._current and eid not in self._anchored
-                    and eid not in self._pinned):
+                    and eid not in self._pinned
+                    and eid not in self._user_pinned):
                 del self._images[eid]
 
     def set_mask(self, mask: np.ndarray) -> bool:
