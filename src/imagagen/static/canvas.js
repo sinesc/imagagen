@@ -258,6 +258,18 @@ function drawMaskOutline(ctx) {
   ctx.lineWidth = 1 / view.scale; // 1 screen px, faint grey
   ctx.strokeStyle = "rgba(128,128,128,0.6)";
   ctx.strokeRect(r.x, r.y, r.w, r.h);
+  // mask size in image-space px, tucked inside the box's bottom-right
+  // corner (the drawn box is padded, the number is the raw mask bbox)
+  const b = view.maskBbox;
+  if (b) {
+    const fs = 12 / view.scale; // ~12 screen px
+    ctx.font = `${fs}px system-ui, sans-serif`;
+    ctx.fillStyle = "rgba(128,128,128,0.9)";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "bottom";
+    const inset = 2 / view.scale;
+    ctx.fillText(`${b.w}x${b.h}`, r.x + r.w - inset, r.y + r.h - inset);
+  }
   ctx.restore();
 }
 
