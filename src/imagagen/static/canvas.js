@@ -1561,7 +1561,6 @@ function setupCanvasInput() {
     },
     { passive: false }
   );
-  c.addEventListener("dblclick", () => viewFit());
   c.addEventListener("auxclick", (e) => {
     if (e.button === 1) e.preventDefault();
   });
