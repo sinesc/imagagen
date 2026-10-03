@@ -16,6 +16,9 @@ from imagagen.generation import (
     masked_bbox,
     paste_centered,
     resize_shift_mask,
+    rotation_size,
+    rotate_canvas,
+    unrotate,
     with_inpaint,
 )
 
@@ -185,8 +188,8 @@ def test_inpaint_masked_mask_is_at_image_size():
     req = GenerateRequest(prompt="x", width=64, height=64)
     plan = with_inpaint(req, "inpaint_masked", c, 0.8, padding=0)
     assert isinstance(plan, InpaintPlan)
-    # the plan's base mask is the mask itself (image size)
-    assert plan.base_mask.shape == (48, 64)
+    # the plan's working mask is the mask itself (image size)
+    assert plan.work_mask.shape == (48, 64)
     # the bbox crop is fully inside the mask blob
     assert req.init_mask is not None
     assert req.init_mask.shape == (64, 64) and req.init_mask.max() == 255
@@ -293,8 +296,8 @@ def test_inpaint_not_masked_populates_request():
     req = GenerateRequest(prompt="x", width=64, height=48)
     plan = with_inpaint(req, "inpaint_not_masked", c, 0.75)
     # same size: no scale, no border
-    assert plan.new_mask.shape == (48, 64)
-    np.testing.assert_array_equal(plan.new_mask, m)
+    assert plan.work_mask.shape == (48, 64)
+    np.testing.assert_array_equal(plan.work_mask, m)
     assert req.init_image.shape == (48, 64, 3)
     # init mask is inverted: protect where the user masked
     np.testing.assert_array_equal(req.init_mask, 255 - m)
@@ -310,16 +313,146 @@ def test_inpaint_not_masked_outpaint_geometry():
     np.testing.assert_array_equal(req.init_image[:, 32:96], 100)
     assert (req.init_image[:, :32] == 100).all()
     assert (req.init_image[:, 96:] == 100).all()
-    assert plan.new_mask.shape == (48, 128)
-    assert not plan.new_mask.any()
+    assert plan.work_mask.shape == (48, 128)
+    assert not plan.work_mask.any()
 
 
 def test_inpaint_not_masked_postprocess_resizes_rounded_output():
     # the SDXL backend rounds generation sizes to multiples of 8; the canvas
     # must still come out exactly at the requested size
     c = _canvas(100, 100)
-    plan = InpaintPlan("inpaint_not_masked", c.image, None,
-                       new_mask=np.zeros((100, 100), dtype=np.uint8))
+    plan = InpaintPlan("inpaint_not_masked", requested_size=(100, 100),
+                       work_mask=np.zeros((100, 100), dtype=np.uint8))
     gen = np.full((96, 96, 3), 42, dtype=np.uint8)
     out = plan.postprocess(gen)
     assert out.shape == (100, 100, 3)
+
+
+# ----------------------------------------------------------------- rotation --
+
+
+def test_rotation_size():
+    assert rotation_size(100, 100, 0) == (100, 100)
+    assert rotation_size(100, 100, 180) == (100, 100)
+    assert rotation_size(100, 60, 90) == (60, 100)
+    assert rotation_size(100, 60, -90) == (60, 100)
+    # ceil((100+60)/sqrt(2)) == 114
+    assert rotation_size(100, 60, 45) == (114, 114)
+    assert rotation_size(100, 60, -45) == (114, 114)
+    assert rotation_size(100, 60, 135) == (114, 114)
+    assert rotation_size(100, 60, -135) == (114, 114)
+
+
+def _marker_image():
+    # 10 rows x 20 cols, unique marker (R channel) at the top-left pixel
+    img = np.zeros((10, 20, 3), dtype=np.uint8)
+    img[0, 0, 0] = 255
+    return img
+
+
+def test_rotate_canvas_quarter_turns_are_exact():
+    a = _marker_image()
+    r90 = rotate_canvas(a, 90)
+    assert r90.shape == (20, 10, 3)
+    # clockwise: top-left -> top-right
+    assert r90[0, 9, 0] == 255
+    assert int(r90.sum()) == 255
+    rm90 = rotate_canvas(a, -90)
+    assert rm90.shape == (20, 10, 3)
+    # top-left -> bottom-left
+    assert rm90[19, 0, 0] == 255
+    assert int(rm90.sum()) == 255
+    r180 = rotate_canvas(a, 180)
+    assert r180.shape == (10, 20, 3)
+    assert r180[9, 19, 0] == 255
+    assert int(r180.sum()) == 255
+    # rotate/unrotate round-trips are exact for the exact-permutation angles
+    for ang in (90, -90, 180):
+        np.testing.assert_array_equal(
+            unrotate(rotate_canvas(a, ang), ang, 20, 10), a)
+
+
+def test_rotate_canvas_45_fills_corners_and_roundtrips():
+    # edge-replicated corners: a uniform image stays uniform
+    img = np.full((24, 36, 3), 200, dtype=np.uint8)
+    r = rotate_canvas(img, 45)
+    assert (r == 200).all()
+    # a mask never invents coverage: the bounding-box corners are 0
+    m = np.zeros((24, 36), dtype=np.uint8)
+    m[6:18, 12:24] = 255
+    rm = rotate_canvas(m, 45)
+    assert rm.max() == 255
+    assert rm[0, 0] == 0 and rm[0, -1] == 0 and rm[-1, 0] == 0 and rm[-1, -1] == 0
+    # the ±45/±135 round trip is bicubic: <= 3 in the interior
+    back = unrotate(r, 45, 36, 24)
+    assert back.shape == (24, 36, 3)
+    interior = img[2:-2, 2:-2].astype(int) - back[2:-2, 2:-2].astype(int)
+    assert np.abs(interior).max() <= 3
+
+
+def test_with_inpaint_generate_rotation_extends_size():
+    req = GenerateRequest(prompt="x", width=64, height=48)
+    plan = with_inpaint(req, "generate", _canvas(), 1.0, rotation=90)
+    assert plan is not None and plan.rotation == 90
+    # the request (generation) is swapped, the plan keeps the requested size
+    assert (req.width, req.height) == (48, 64)
+    assert plan.requested_size == (64, 48)
+    out = plan.postprocess(np.full((64, 48, 3), 7, dtype=np.uint8))
+    assert out.shape == (48, 64, 3)
+
+    # ±45 extend both dimensions: 100x100 -> ceil(100*sqrt(2)) == 142
+    req2 = GenerateRequest(prompt="x", width=100, height=100)
+    plan2 = with_inpaint(req2, "generate", _canvas(), 1.0, rotation=45)
+    assert (req2.width, req2.height) == (142, 142)
+    assert plan2.postprocess(
+        np.full((142, 142, 3), 7, dtype=np.uint8)).shape == (100, 100, 3)
+
+    # rotation 0 stays a plain generate (no plan)
+    req3 = GenerateRequest(prompt="x", width=64, height=48)
+    assert with_inpaint(req3, "generate", _canvas(), 1.0) is None
+
+
+def test_with_inpaint_inpaint_masked_rotation_box_on_rotated_mask():
+    c = _canvas(64, 64)  # fill 100
+    m = np.zeros((64, 64), dtype=np.uint8)
+    m[12:36, 20:44] = 255  # 24x24 blob
+    c.set_mask(m)
+    req = GenerateRequest(prompt="x", width=64, height=64)
+    plan = with_inpaint(req, "inpaint_masked", c, 1.0, rotation=90, padding=0)
+    # the box is on the *rotated* mask (rows 20:44, cols 28:52 there); on
+    # the unrotated mask it would be (20, 12, 24, 24)
+    assert plan.bbox == (28, 20, 24, 24)
+    assert req.init_image.shape == (64, 64, 3)
+    assert req.init_mask.shape == (64, 64)
+    # rotation and counter-rotation cancel: the blend box lands back on the
+    # original mask box
+    out = plan.postprocess(np.full((64, 64, 3), 250, dtype=np.uint8))
+    assert out.shape == (64, 64, 3)
+    assert (out[12:36, 20:44] == 250).all()
+    rest = np.delete(np.delete(out, list(range(12, 36)), axis=0),
+                     list(range(20, 44)), axis=1)
+    assert (rest == 100).all()
+
+
+def test_with_inpaint_inpaint_not_masked_rotation_extends_size():
+    c = _canvas()  # 64x48
+    req = GenerateRequest(prompt="x", width=64, height=48)
+    plan = with_inpaint(req, "inpaint_not_masked", c, 1.0, rotation=90)
+    assert (req.width, req.height) == (48, 64)
+    assert req.init_image.shape == (64, 48, 3)
+    assert plan.requested_size == (64, 48)
+    assert plan.postprocess(
+        np.full((64, 48, 3), 7, dtype=np.uint8)).shape == (48, 64, 3)
+
+    req2 = GenerateRequest(prompt="x", width=100, height=100)
+    plan2 = with_inpaint(req2, "inpaint_not_masked", c, 1.0, rotation=45)
+    assert (req2.width, req2.height) == (142, 142)
+    assert req2.init_image.shape == (142, 142, 3)
+    assert plan2.postprocess(
+        np.full((142, 142, 3), 7, dtype=np.uint8)).shape == (100, 100, 3)
+
+
+def test_with_inpaint_invalid_rotation_raises():
+    with pytest.raises(GenerationError):
+        with_inpaint(GenerateRequest(prompt="x", width=32, height=32),
+                     "generate", _canvas(), 1.0, rotation=30)

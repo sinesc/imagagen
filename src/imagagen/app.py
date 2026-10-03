@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from . import metadata, wildcards
 from .backends import GenerateRequest, ModelBackend
@@ -197,6 +197,17 @@ class GenerateBody(BaseModel):
     # context padding around the masked area (canvas px per side);
     # "inpaint_masked" only, capped at the mask's largest extent
     mask_padding: int = Field(default=INPAINT_PADDING, ge=0, le=2048)
+    # rotate the source by this many degrees before generating and
+    # counter-rotate the result (positive = clockwise); 0 = no rotation.
+    # ±45/±135 extend the generate/outpaint generation size
+    rotation: int = Field(default=0, ge=-180, le=180)
+
+    @field_validator("rotation")
+    @classmethod
+    def _rotation_multiple_of_45(cls, v: int) -> int:
+        if v % 45:
+            raise ValueError("rotation must be a multiple of 45")
+        return v
 
 
 class ThumbBody(BaseModel):
@@ -637,6 +648,7 @@ def create_app(
             # inpaint modes snapshot the canvas and populate init image/mask;
             # "generate" leaves the request untouched
             plan = with_inpaint(req, body.mode, canvas, body.denoise,
+                                rotation=body.rotation,
                                 padding=body.mask_padding)
         except GenerationError as e:
             return JSONResponse({"error": str(e)}, status_code=400)

@@ -202,7 +202,8 @@ def test_inpaint_retains_canvas_until_thumb_selected():
     canvas.import_image(_png(base))
     mask = np.zeros((8, 8), dtype=np.uint8)
     mask[3:5, 3:5] = 255
-    plan = InpaintPlan("inpaint_masked", base, mask, bbox=(0, 0, 8, 8))
+    plan = InpaintPlan("inpaint_masked", requested_size=(8, 8),
+                       bbox=(0, 0, 8, 8), work_image=base, work_mask=mask)
     job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 1, plan=plan)
     _wait_done(q, job.id)
     # canvas untouched, no auto-set

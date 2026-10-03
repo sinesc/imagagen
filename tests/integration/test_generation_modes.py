@@ -152,6 +152,145 @@ def test_generate_mode_default(client):
     assert _img(client).shape == (24, 32, 3)
 
 
+# ------------------------------------------------------------- rotation --
+# The mock's R channel is a horizontal ramp over the REQUEST (generation)
+# size; counter-rotating it back to the canvas turns the ramp's axis (and
+# a 180° job mirrors it). The blend box in the final canvas lands back on
+# the original mask box (rotation and counter-rotation cancel).
+
+
+# (the API rejects sizes below 64, so the "64x48" sizes of the unit tests
+# become 96x64 here)
+
+def test_generate_rotation_90_swaps_ramp_axes(client):
+    _set_canvas(client, 96, 64, 5)
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, mode="generate", width=96, height=64,
+                        rotation=90)
+    r = client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    img = _img(client)
+    assert img.shape == (64, 96, 3)
+    # the R ramp ran along the generation's width (64) and is now rotated
+    # to run along the rows: a column slice is wide-spread, a row slice flat
+    col = img[:, 48, 0]
+    assert int(col.max()) - int(col.min()) > 150
+    row = img[30, :, 0]
+    # mock noise only (96 samples of sigma-12 noise: well under the
+    # 255-wide ramp a wrong axis would show)
+    assert int(row.max()) - int(row.min()) <= 100
+
+
+def test_generate_rotation_45_fits_and_extends(client):
+    # generation ran at 114x114 (ceil((96+64)/sqrt(2))); the canvas is
+    # exactly the requested size
+    _set_canvas(client, 96, 64, 5)
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, mode="generate", width=96, height=64,
+                        rotation=45)
+    r = client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    assert _img(client).shape == (64, 96, 3)
+
+
+def test_generate_rotation_180_flips(client):
+    _set_canvas(client, 96, 64, 5)
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, mode="generate", width=96, height=64,
+                        rotation=180)
+    r = client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    img = _img(client)
+    # the R ramp is mirrored vs a rotation-0 result (increasing-x ramp for
+    # rotation 0, so the inequality is reversed here)
+    assert int(img[32, 8, 0]) > int(img[32, 87, 0])
+
+
+def test_inpaint_masked_rotation_90_replaces_upright(client):
+    _set_canvas(client, 64, 64, 99)
+    _mask_dot(client, 32, 24, size=24)  # rows 12:36, cols 20:44
+    m0 = _mask(client)
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, mode="inpaint_masked", width=64,
+                        height=64, rotation=90, mask_padding=0)
+    r = client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    img = _img(client)
+    assert img.shape == (64, 64, 3)
+    # inside the mask box the R ramp runs along the ROWS (the mock's
+    # horizontal ramp was counter-rotated to vertical)
+    col = img[13:35, 32, 0]
+    assert int(col.max()) - int(col.min()) > 40
+    row = img[24, 21:43, 0]
+    assert int(row.max()) - int(row.min()) <= 60  # mock noise only
+    # the mask content outside the box (with a safety margin) is untouched
+    box = np.ones(img.shape[:2], bool)
+    box[8:40, 16:48] = False
+    assert (img[box] == 99).all()
+    # the mask is retained, unchanged
+    np.testing.assert_array_equal(_mask(client), m0)
+
+
+def test_inpaint_masked_rotation_180_flips_content(client):
+    _set_canvas(client, 64, 64, 99)
+    _mask_dot(client, 32, 24, size=24)
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, mode="inpaint_masked", width=64,
+                        height=64, rotation=180, mask_padding=0)
+    r = client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    img = _img(client)
+    # the R ramp inside the mask box is mirrored (an increasing-x ramp for
+    # rotation 0) — ~81 signal vs ~17 per-pixel noise
+    assert int(img[24, 22, 0]) > int(img[24, 42, 0])
+    box = np.ones(img.shape[:2], bool)
+    box[8:40, 16:48] = False
+    assert (img[box] == 99).all()
+
+
+def test_inpaint_not_masked_rotation_90_outpaints_upright(client):
+    _set_canvas(client, 32, 24, 5)
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, mode="inpaint_not_masked", width=96,
+                        height=64, rotation=90)
+    r = client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    img = _img(client)
+    assert img.shape == (64, 96, 3)
+    # the whole canvas is freshly generated, and the R ramp (which ran
+    # along the generation's width of 64) now runs along the rows
+    col = img[:, 48, 0]
+    assert int(col.max()) - int(col.min()) > 150
+
+
+def test_rotation_rejected(client):
+    assert client.post("/api/generate",
+                       json={"prompt": "x", "rotation": 30}).status_code == 422
+    assert client.post("/api/generate",
+                       json={"prompt": "x", "rotation": 185}).status_code == 422
+
+
+def test_rotation_metadata_round_trips(client):
+    _set_canvas(client, 96, 64, 5)
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, mode="generate", width=96, height=64,
+                        rotation=90)
+    r = client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    meta = _canvas_meta(client)
+    # the user's requested size, not the 64x96 generation size
+    assert meta["width"] == 96 and meta["height"] == 64
+    assert meta["rotation"] == 90
+    # a rotation-0 job records no rotation key at all
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, mode="generate", width=96, height=64,
+                        rotation=0)
+    r = client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    meta = _canvas_meta(client)
+    assert "rotation" not in meta
+
+
 # ---------------------------------------------------------- inpaint masked --
 
 

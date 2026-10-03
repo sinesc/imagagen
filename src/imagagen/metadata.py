@@ -88,6 +88,7 @@ def build_parameters(
     model_name: str,
     model_hash: str,
     denoise: float | None = None,
+    rotation: int | None = None,
     loras: list[tuple[str, float]] | None = None,
     disabled_loras: list[tuple[str, float]] | None = None,
     styles: list[dict] | None = None,
@@ -136,6 +137,9 @@ def build_parameters(
     if denoise is not None:
         # A1111/Forge's inpaint strength: importing restores the slider
         doc["denoise"] = denoise
+    if rotation:
+        # source rotation: importing restores the (extended) generation size
+        doc["rotation"] = rotation
     if loras:
         doc["loras"] = [f"{n}@{w:g}" for n, w in loras]
     if disabled_loras:

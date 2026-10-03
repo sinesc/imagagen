@@ -61,6 +61,17 @@ def test_restore_on_new_server(tmp_path):
     assert state["seed"] == 777
 
 
+def test_rotation_persists_and_is_validated(tmp_path):
+    with _client(tmp_path) as c:
+        assert c.post("/api/ui-state", json={"rotation": 90}).status_code == 200
+        assert c.get("/api/ui-state").json()["state"]["rotation"] == 90
+        # only multiples of 45 are accepted
+        assert c.post("/api/ui-state", json={"rotation": 30}).status_code == 422
+        assert c.post("/api/ui-state", json={"rotation": 185}).status_code == 422
+        assert c.post("/api/ui-state", json={"rotation": 0}).status_code == 200
+        assert c.get("/api/ui-state").json()["state"]["rotation"] == 0
+
+
 def test_invalid_values_rejected(tmp_path):
     with _client(tmp_path) as c:
         assert c.post("/api/ui-state", json={"steps": "abc"}).status_code == 422

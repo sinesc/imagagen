@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 
 class UiState(BaseModel):
@@ -44,6 +44,15 @@ class UiState(BaseModel):
     # context padding around the masked area (canvas px per side),
     # "inpaint masked" only; same limits as the HTML input
     mask_padding: int = Field(default=256, ge=0, le=2048)
+    # rotate the source before generating (UI dropdown; 0 = default)
+    rotation: int = Field(default=0, ge=-180, le=180)
+
+    @field_validator("rotation")
+    @classmethod
+    def _rotation_multiple_of_45(cls, v: int) -> int:
+        if v % 45:
+            raise ValueError("rotation must be a multiple of 45")
+        return v
     # soft inpainting (Forge builtin extension): enabled flag + the six
     # options; same ranges/defaults as the Forge sliders
     soft_inpainting: bool = False

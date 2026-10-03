@@ -54,7 +54,9 @@ class Job:
     request: GenerateRequest
     batch_size: int
     base_seed: int
-    plan: InpaintPlan | None = None  # inpaint modes: maps output to canvas state
+    plan: InpaintPlan | None = None  # maps output to canvas state; present
+                                     # for inpaint modes and rotated generate
+                                     # jobs
     source_png: bytes | None = None  # source canvas snapshot (strip thumbnail)
     source_image_id: str | None = None  # entity id of the source canvas image
     source_seed: int | None = None  # seed recorded in the source image's metadata
@@ -199,15 +201,10 @@ class GenerationQueue:
         job.source_image_id = self.canvas.current_id()
         job.source_seed = self._source_seed(job.source_image_id)
         if job.source_image_id is not None:
-            if plan is not None:
-                # the inpaint source image, for the UI's source thumbnail
-                # (green border): lets the user go back to it when none of
-                # the results turn out good
-                job.source_png = _plain_png(plan.base_image)
-            else:
-                # generate: the image currently displayed on the canvas, kept
-                # as a source thumbnail (green border) the same way
-                job.source_png = _plain_png(self.canvas.image)
+            # the image currently displayed on the canvas (unrotated), kept
+            # as the source thumbnail (green border) so the user can go back
+            # to it when none of the results turn out good
+            job.source_png = _plain_png(self.canvas.image)
         with self._job_lock:
             # finished jobs are no longer referenced: drop them so their
             # result entities can be evicted (in-flight jobs stay)
@@ -629,12 +626,14 @@ def _result_to_png(
 
     from . import metadata
 
-    # width/height are the requested generation size, like A1111/Forge
-    # (their inpaint PNGs carry the inpaint box size, not the final canvas
-    # size), so importing the PNG restores the generation settings. The
-    # prompt/negative prompt default to the user's raw ones (styles are
-    # recorded separately, not pre-applied); the per-task overrides carry
-    # the fully wildcard-resolved text instead.
+    # width/height are the USER'S REQUESTED size — the generation size except
+    # for rotated generate/outpaint jobs, where it is the final canvas size
+    # (the generation ran at the extended rotated size), so importing the
+    # PNG restores the generation settings. rotation rides along so an import
+    # regenerates the same extended generation. The prompt/negative prompt
+    # default to the user's raw ones (styles are recorded separately, not
+    # pre-applied); the per-task overrides carry the fully wildcard-resolved
+    # text instead.
     if meta_prompt is None:
         meta_prompt = job.meta_prompt if (job and job.meta_prompt is not None) else req.prompt
     if meta_negative is None:
@@ -642,6 +641,7 @@ def _result_to_png(
             job.meta_negative if (job and job.meta_negative is not None)
             else req.negative_prompt
         )
+    p = job.plan if job is not None else None
     params = metadata.build_parameters(
         prompt=meta_prompt,
         negative_prompt=meta_negative,
@@ -650,10 +650,13 @@ def _result_to_png(
         scheduler=req.scheduler or backend.default_scheduler,
         cfg=result.cfg if result.cfg is not None else req.cfg,
         seed=result.seed,
-        width=req.width,
-        height=req.height,
+        width=p.requested_size[0] if p is not None else req.width,
+        height=p.requested_size[1] if p is not None else req.height,
         # A1111/Forge write the strength only for inpaint/img2img jobs
-        denoise=req.denoise if job is not None and job.plan is not None else None,
+        denoise=req.denoise if (p is not None and p.mode != "generate") else None,
+        # the source rotation (0/None = absent; a rotated generate job's PNG
+        # must carry it so an import regenerates the same extended size)
+        rotation=p.rotation or None if p is not None else None,
         model_name=backend.name,
         model_hash=backend.model_hash,
         loras=req.loras if backend.supports_loras else [],

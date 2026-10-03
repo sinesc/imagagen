@@ -160,6 +160,23 @@ def test_save_same_name_no_old_name(tmp_path):
     assert s.get("a").width == 128
 
 
+def test_rotation_roundtrip(tmp_path):
+    s = PresetStore(tmp_path / "presets")
+    p = Preset(name="Rot", rotation=90, controls={"rotation": True})
+    s.save(p)
+    on_disk = json.loads((tmp_path / "presets" / "rot.json").read_text())
+    assert on_disk["rotation"] == 90
+    assert on_disk["controls"]["rotation"] is True
+    assert s.get("rot").controlled() == {"rotation": 90}
+    # a preset file with rotation 45 validates; 30 does not
+    (tmp_path / "presets" / "rot45.json").write_text(
+        json.dumps({"name": "Rot45", "rotation": 45}))
+    assert s.get("rot45").rotation == 45
+    with pytest.raises(ValueError):
+        Preset(name="x", rotation=30)
+    assert "rotation" in PRESET_FIELDS
+
+
 def test_unknown_keys_ignored_on_save(tmp_path): 
     s = PresetStore(tmp_path / "presets")
     p = Preset.model_validate({"name": "p", "width": 64,

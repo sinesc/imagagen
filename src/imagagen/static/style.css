@@ -85,6 +85,10 @@ body.resizing-sidebar, body.resizing-sidebar * {
    the width input's left edge and the height input's right edge stay put
    and batch (flex: 1) keeps its old width */
 .row > label.dims { flex: 0 0 68px; }
+/* width/height/rotate row: rotate is a fixed slot next to the width/height
+   slots (same width); batch (flex: 1) absorbs the remainder, so the new
+   field takes its space from the batch slot */
+.row > label.rotate { flex: 0 0 72px; }
 /* flex-end (not center): the row's height includes the Width/Height label
    captions, so bottom align is what puts the button in line with the inputs */
 #swap-dims, #seed-from-image { align-self: flex-end; }

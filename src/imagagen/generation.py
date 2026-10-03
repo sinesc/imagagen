@@ -26,10 +26,17 @@ The backend always generates at the request's width x height with
 ``init_mask`` marking the *inpaint region* (255 = regenerate, the standard
 SD/A1111 convention). "inpaint not masked" therefore passes the *inverted*
 mask. The plan maps the backend output back into canvas space afterwards.
+
+A job may additionally carry a source rotation (``with_inpaint``,
+``rotation``): the source is rotated into an upright *working frame* before
+generation and the output is counter-rotated back to the requested size
+afterwards. A "generate" job with a non-zero rotation therefore carries a
+plan too; all plan geometry of rotated jobs is in the working frame.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -51,6 +58,75 @@ class GenerationError(Exception):
 #: ``with_inpaint`` caps it at the mask's largest extent so tiny masks on
 #: small canvases do not get a degenerate box several times the canvas.
 INPAINT_PADDING = 256
+
+#: the UI's rotation dropdown values (user degrees, positive = clockwise)
+ROTATIONS = (-180, -135, -90, -45, 0, 45, 90, 135, 180)
+
+
+def rotation_size(w: int, h: int, angle: int) -> tuple[int, int]:
+    """Bounding-box (width, height) of a w\u00d7h rectangle rotated by `angle`
+    (user degrees, positive = clockwise). 0/180: (w, h); ±90: (h, w);
+    ±45/±135: both dimensions (w+h)/√2 (rounded up)."""
+    a = abs(angle) % 180
+    c, s = abs(math.cos(math.radians(a))), abs(math.sin(math.radians(a)))
+    # round before ceil: cos(90°) is ~6e-17, which would otherwise push an
+    # exact half-turn up by 1 px
+    return max(1, math.ceil(round(w * c + h * s, 9))), \
+        max(1, math.ceil(round(w * s + h * c, 9)))
+
+
+def rotate_canvas(arr: np.ndarray, angle: int) -> np.ndarray:
+    """Rotate an HxW[x3] uint8 array by `angle` (user degrees, positive =
+    clockwise), expanding to the rotated rectangle's bounding box.
+
+    0/±90/180 are exact pixel permutations; ±45/±135 are bicubic-resampled and
+    the uncovered corners (which only exist for ±45/±135) are filled by
+    replicating the nearest edge pixel of `arr` (images) or zeroed (masks), so
+    image and mask share the same pixel grid while the mask never invents
+    coverage outside the original canvas."""
+    angle = angle % 360
+    if angle == 0:
+        return arr.copy()
+    if angle == 180:
+        return np.flip(arr, axis=(0, 1))
+    if angle in (90, 270):
+        return np.rot90(arr, k=-1 if angle == 90 else 1)
+    h, w = arr.shape[:2]
+    cw, ch = rotation_size(w, h, angle)
+    th = math.radians(angle)
+    c, s = math.cos(th), math.sin(th)
+    # The corners of the rotated rectangle reach past the original edges by at
+    # most max(w, h)·|sin 2θ|/2 (= max(w,h)/2 at 45°). Rotate an edge-padded
+    # oversize copy so every output pixel samples (edge-replicated) source.
+    pad = int(math.ceil(max(w, h) * abs(math.sin(2 * th)) / 2)) + 2
+    base = np.pad(
+        arr, ((pad, pad), (pad, pad)) + ((0, 0),) * (arr.ndim - 2),
+        mode="constant" if arr.ndim == 2 else "edge")
+    bh, bw = base.shape[:2]
+    cx, cy = (cw - 1) / 2.0, (ch - 1) / 2.0
+    # Output pixel (x, y) -> source pixel: the working frame is the source
+    # rotated by `angle` clockwise, so the inverse mapping rotates back by
+    # -angle around the shared center.
+    m = (
+        c, s, -c * cx - s * cy + (bw - 1) / 2.0,
+        -s, c, s * cx - c * cy + (bh - 1) / 2.0,
+    )
+    return np.asarray(Image.fromarray(base).transform(
+        (cw, ch), Image.AFFINE, m, resample=Image.BICUBIC, fillcolor=0))
+
+
+def unrotate(img: np.ndarray, angle: int, w: int, h: int) -> np.ndarray:
+    """Inverse of :func:`rotate_canvas` for a known final size: counter-rotate
+    by -`angle` and center-crop to (w, h). (A ±1 px centring error is possible
+    for the ±45/±135 family — the crop is centred on the rotation centre.)"""
+    if angle % 360 == 0:
+        if img.shape[:2] != (h, w):
+            return resize_image(img, w, h)
+        return img
+    out = rotate_canvas(img, -angle)
+    oh, ow = out.shape[:2]
+    x0, y0 = (ow - w) // 2, (oh - h) // 2
+    return out[y0 : y0 + h, x0 : x0 + w].copy()
 
 
 def masked_bbox(
@@ -153,28 +229,35 @@ def paste_centered(scaled: np.ndarray, W: int, H: int) -> np.ndarray:
 @dataclass
 class InpaintPlan:
     """Captured at job submit time; maps the backend's width x height output
-    back to canvas state. The base canvas/mask are snapshotted because the
-    canvas stays editable during generation -- per spec the generation
-    overwrites in-flight edits (restorable via undo), so it must composite
-    against the state it actually saw, not the latest one."""
+    back to canvas state. For a non-zero rotation all geometry (bbox, masks)
+    is in the *rotated working frame*: the source canvas is rotated by
+    `rotation` before generation and the output is counter-rotated back to
+    `requested_size`. (The rest is unchanged: the canvas stays editable
+    during generation — the generation overwrites in-flight edits, restorable
+    via undo.)"""
 
-    mode: str  # "inpaint_masked" | "inpaint_not_masked"
-    base_image: np.ndarray  # canvas RGB at submit time
-    base_mask: np.ndarray | None
-    bbox: tuple[int, int, int, int] | None = None  # inpaint_masked
-    new_mask: np.ndarray | None = None  # inpaint_not_masked
+    mode: str  # "generate" | "inpaint_masked" | "inpaint_not_masked"
+    requested_size: tuple[int, int]  # the user's W×H (final canvas size)
+    rotation: int = 0  # user angle, degrees, positive = clockwise
+    # inpaint_masked, working frame
+    bbox: tuple[int, int, int, int] | None = None
+    work_image: np.ndarray | None = None  # rotated canvas (the blend target)
+    # inpaint_masked: rotated mask (blend alpha); inpaint_not_masked:
+    # rotated target mask (resize reference)
+    work_mask: np.ndarray | None = None
 
     def postprocess(self, gen: np.ndarray) -> np.ndarray:
         """Backend output -> canvas image (the inpaint_masked blend, or the
-        resized whole-canvas result). The canvas mask is owned by the result
-        entity (inherited from the source image)."""
+        resized whole-canvas result), counter-rotated to the requested size
+        for rotated jobs. The canvas mask is owned by the result entity
+        (inherited from the source image)."""
         if self.mode == "inpaint_masked":
-            assert self.bbox is not None
+            assert self.bbox is not None and self.work_image is not None
             x0, y0, w, h = self.bbox
-            H, W = self.base_image.shape[:2]
             resized = resize_image(gen, w, h)
-            out = self.base_image.copy()
-            a = self.base_mask.astype(np.float32) / 255.0
+            out = self.work_image.copy()
+            H, W = out.shape[:2]
+            a = self.work_mask.astype(np.float32) / 255.0
             dx0, dy0 = max(x0, 0), max(y0, 0)
             dx1, dy1 = min(x0 + w, W), min(y0 + h, H)
             if dx1 > dx0 and dy1 > dy0:
@@ -182,17 +265,21 @@ class InpaintPlan:
                 aa = a[dy0:dy1, dx0:dx1][..., None]
                 reg = out[dy0:dy1, dx0:dx1].astype(np.float32)
                 out[dy0:dy1, dx0:dx1] = np.clip(
-                    reg * (1 - aa) + patch * aa, 0, 255
-                ).astype(np.uint8)
-            # mask is retained (possibly user-edited in the meantime)
-            return out
-        # inpaint_not_masked: the generation is the whole new canvas
-        assert self.new_mask is not None
-        if gen.shape[:2] != self.new_mask.shape[:2]:
-            # the backend may round the generation size (SDXL: multiples of
-            # 8); the canvas must come out exactly at the requested size
-            gen = resize_image(gen, self.new_mask.shape[1], self.new_mask.shape[0])
-        return gen
+                    reg * (1 - aa) + patch * aa, 0, 255).astype(np.uint8)
+        elif self.mode == "inpaint_not_masked":
+            assert self.work_mask is not None
+            if gen.shape[:2] != self.work_mask.shape[:2]:
+                # the backend may round the generation size (SDXL: multiples
+                # of 8); the canvas must come out exactly at the requested size
+                gen = resize_image(gen, self.work_mask.shape[1],
+                                   self.work_mask.shape[0])
+            out = gen
+        else:  # "generate": the raw output is the (possibly rotated) result
+            out = gen
+        if self.rotation:
+            fw, fh = self.requested_size
+            out = unrotate(out, self.rotation, fw, fh)
+        return out
 
 
 def with_inpaint(
@@ -200,19 +287,34 @@ def with_inpaint(
     mode: str,
     canvas,
     denoise: float,
+    rotation: int = 0,
     padding: int = INPAINT_PADDING,
 ) -> InpaintPlan | None:
-    """Populate ``request.init_image``/``init_mask``/``denoise`` for an
-    inpaint mode and return the post-processing plan (None for "generate").
+    """Populate ``request.init_image``/``init_mask``/``denoise`` and return
+    the post-processing plan (None only for a rotation-0 "generate").
 
     The mask passed to the backend marks the *inpaint region* (255 =
     regenerate): "inpaint masked" passes the user's mask, "inpaint not
     masked" passes the inverted one (mask content is protected).
 
+    ``rotation`` (degrees, positive = clockwise, one of ``ROTATIONS``) rotates
+    the source into an upright working frame before generation; the output is
+    counter-rotated back to the requested size afterwards. For generate and
+    inpaint_not_masked the generation size is extended so the rotated image
+    fits (``rotation_size``); inpaint_masked keeps the requested size (the box
+    on the rotated mask already covers the rotated content).
+
     ``padding`` is the context ring around the mask box for "inpaint
     masked" (see ``INPAINT_PADDING``), capped at the mask's largest extent."""
+    if rotation not in ROTATIONS:
+        raise GenerationError(f"invalid rotation {rotation!r}")
     if mode == "generate":
-        return None
+        if rotation == 0:
+            return None
+        fw, fh = request.width, request.height
+        request.width, request.height = rotation_size(fw, fh, rotation)
+        return InpaintPlan("generate", requested_size=(fw, fh),
+                           rotation=rotation)
     if mode not in ("inpaint_masked", "inpaint_not_masked"):
         raise GenerationError(f"unknown mode {mode!r}")
     request.denoise = denoise
@@ -221,35 +323,49 @@ def with_inpaint(
         raise GenerationError("canvas is empty")
     # the displayed image's own mask (at the canvas image's size)
     mask = canvas.mask
+    work_image = rotate_canvas(image, rotation) if rotation else image
+    work_mask = rotate_canvas(mask, rotation) if rotation else mask
 
     if mode == "inpaint_masked":
-        if not (mask > 0).any():
+        if not (work_mask > 0).any():
             raise GenerationError("mask is empty")
-        # context ring, capped so a tiny mask never gets a huge box
-        rows = np.where((mask > 0).any(axis=1))[0]
-        cols = np.where((mask > 0).any(axis=0))[0]
+        # context ring, capped at the rotated mask's largest extent
+        rows = np.where((work_mask > 0).any(axis=1))[0]
+        cols = np.where((work_mask > 0).any(axis=0))[0]
         extent = int(max(cols[-1] - cols[0] + 1, rows[-1] - rows[0] + 1))
-        x0, y0, w, h = masked_bbox(
-            mask, request.width, request.height,
-            padding=min(padding, extent),
-        )
+        x0, y0, w, h = masked_bbox(work_mask, request.width, request.height,
+                                   padding=min(padding, extent))
         request.init_image = resize_image(
-            crop_padded(image, x0, y0, w, h), request.width, request.height
-        )
+            crop_padded(work_image, x0, y0, w, h), request.width,
+            request.height)
         request.init_mask = resize_image(
-            crop_mask(mask, x0, y0, w, h), request.width, request.height
-        )
-        return InpaintPlan("inpaint_masked", image, mask, bbox=(x0, y0, w, h))
+            crop_mask(work_mask, x0, y0, w, h), request.width, request.height)
+        return InpaintPlan("inpaint_masked",
+                           requested_size=(request.width, request.height),
+                           rotation=rotation, bbox=(x0, y0, w, h),
+                           work_image=work_image, work_mask=work_mask)
 
     # inpaint_not_masked
     ch, cw = image.shape[:2]
     sw, sh, ox, oy = fit_ar(cw, ch, request.width, request.height)
-    target = paste_centered(resize_image(image, sw, sh), request.width, request.height)
+    target = paste_centered(
+        resize_image(image, sw, sh), request.width, request.height)
     new_mask = (
         resize_shift_mask(mask, sw, sh, ox, oy, request.width, request.height)
         if mask.any()
         else np.zeros((request.height, request.width), dtype=np.uint8)
     )
-    request.init_image = target
-    request.init_mask = np.uint8(255) - new_mask  # protect the mask region
-    return InpaintPlan("inpaint_not_masked", image, mask, new_mask=new_mask)
+    fw, fh = request.width, request.height
+    if rotation:
+        # rotate the *whole target* (source + borders), so the source content
+        # is upright in the working frame while the outpaint borders and the
+        # discarded 45° corners stay edge-replicated
+        request.width, request.height = rotation_size(fw, fh, rotation)
+        request.init_image = rotate_canvas(target, rotation)
+        work_mask = rotate_canvas(new_mask, rotation)
+    else:
+        request.init_image = target
+        work_mask = new_mask
+    request.init_mask = np.uint8(255) - work_mask  # protect the mask region
+    return InpaintPlan("inpaint_not_masked", requested_size=(fw, fh),
+                       rotation=rotation, work_mask=work_mask)

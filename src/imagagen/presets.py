@@ -31,6 +31,7 @@ from .paths import sanitize_prompt
 PRESET_FIELDS = (
     "width",
     "height",
+    "rotation",
     "steps",
     "cfg",
     "seed",
@@ -57,6 +58,8 @@ class Preset(BaseModel):
     group: str | None = Field(default=None, max_length=120)
     width: int | None = Field(default=None, ge=64, le=4096)
     height: int | None = Field(default=None, ge=64, le=4096)
+    # source rotation (degrees, positive = clockwise; None = leave as-is)
+    rotation: int | None = Field(default=None, ge=-180, le=180)
     # steps/cfg: -1 = the "use model default" sentinel (same as the form)
     steps: int | None = Field(default=None, ge=-1, le=150)
     cfg: float | None = Field(default=None, ge=-1.0)
@@ -80,6 +83,13 @@ class Preset(BaseModel):
         """The UI sends null for an empty group; be lenient about ""."""
         if v is not None and str(v).strip() == "":
             return None
+        return v
+
+    @field_validator("rotation")
+    @classmethod
+    def _rotation_multiple_of_45(cls, v: int | None) -> int | None:
+        if v is not None and v % 45:
+            raise ValueError("rotation must be a multiple of 45")
         return v
 
     def to_dict(self) -> dict:

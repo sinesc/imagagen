@@ -865,6 +865,7 @@ async function generate() {
     negative_prompt: $("negative").value,
     width: parseInt($("width").value, 10),
     height: parseInt($("height").value, 10),
+    rotation: parseInt($("rotation").value, 10),
     steps: parseInt($("steps").value, 10),
     cfg: parseFloat($("cfg").value), // -1 = "use model default"
     seed: parseInt($("seed").value, 10),
@@ -1175,7 +1176,7 @@ async function deleteConfig() {
 }
 
 // ---------------- presets (Phase 4) ----------------
-const PRESET_KEYS = ["width", "height", "steps", "cfg", "seed", "batch",
+const PRESET_KEYS = ["width", "height", "rotation", "steps", "cfg", "seed", "batch",
   "sampler", "scheduler", "mode", "denoise", "mask_padding", "loras",
   "soft_inpaint", "sag"]; // enable/disable of the sidebar checkboxes
 
@@ -1303,6 +1304,7 @@ function openPresetDialog(existing, onClose = null) {
   const defs = [
     ["width", "width", "number", p.width],
     ["height", "height", "number", p.height],
+    ["rotation", "rotation", "select", p.rotation],
     ["steps", "steps", "number", p.steps],
     ["cfg", "CFG", "number", p.cfg],
     ["seed", "seed", "number", p.seed],
@@ -1334,6 +1336,7 @@ function openPresetDialog(existing, onClose = null) {
         ["inpaint_masked", "Inpaint"],
         ["inpaint_not_masked", "Outpaint"],
       ].forEach(([v, t]) => input.append(opt(v, t)));
+      if (key === "rotation") [-180, -135, -90, -45, 0, 45, 90, 135, 180].forEach((d) => input.append(opt(d, d + "°")));
       input.value = value || "";
     }
     input.dataset.presetKey = key;
@@ -1359,6 +1362,8 @@ function openPresetDialog(existing, onClose = null) {
       if (input.dataset.presetKind === "loras")
         body[key] = readLoraList(input).map(([n, w]) => [n, w]);
       else if (input.dataset.presetKind === "bool") body[key] = input.checked;
+      else if (key === "rotation")
+        body[key] = input.value === "" ? null : parseInt(input.value, 10);
       else if (input.dataset.presetKind === "select") {
         // sampler/scheduler: "" is a real value ("Model default", the
         // main UI's empty option); mode has no empty state, so "" -> null
@@ -1773,6 +1778,7 @@ function wireToolbar() {
   $("soft-inpaint-cfg").onclick = openSoftInpaintDialog;
   $("sag").onchange = () => { onUserFieldChange("sag"); scheduleSaveUiState(0); };
   $("sag-cfg").onclick = openSagDialog;
+  $("rotation").onchange = () => { onUserFieldChange("rotation"); scheduleSaveUiState(0); };
   $("zoom-in").onclick = () => zoomCenter(1.25);
   $("zoom-out").onclick = () => zoomCenter(0.8);
   $("zoom-fit").onclick = () => viewFit();
@@ -1849,6 +1855,9 @@ async function applyPngMeta(meta, width, height) {
   for (const id of ["steps", "cfg", "seed", "width", "height", "denoise"]) {
     if (meta[id] !== undefined && meta[id] !== null) $(id).value = meta[id];
   }
+  // the source rotation round-trips through the PNG (absent = leave as-is)
+  if (meta.rotation !== undefined && meta.rotation !== null)
+    $("rotation").value = String(meta.rotation);
   for (const id of ["sampler", "scheduler"]) {
     const sel = $(id);
     if (meta[id] && [...sel.options].some((o) => o.value === meta[id])) sel.value = meta[id];
@@ -2011,6 +2020,7 @@ function readUiState() {
     negative_prompt: $("negative").value,
     width: parseInt($("width").value, 10),
     height: parseInt($("height").value, 10),
+    rotation: parseInt($("rotation").value, 10),
     steps: parseInt($("steps").value, 10),
     cfg: parseFloat($("cfg").value),
     seed: parseInt($("seed").value, 10),
@@ -2055,6 +2065,7 @@ function applyUiState(st) {
     ["cfg", "cfg"],
     ["seed", "seed"],
     ["batch", "batch"],
+    ["rotation", "rotation"],
     ["sampler", "sampler"],
     ["scheduler", "scheduler"],
     ["denoise", "denoise"],
