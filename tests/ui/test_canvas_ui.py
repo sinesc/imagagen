@@ -948,11 +948,12 @@ def test_smudge_single_click_is_noop(page, server):
 
 
 def test_smudge_drag_smears(page, server):
-    # a continuous smear carries the LEFT band along the drag: each stamp
-    # drags what the previous one moved, so the white front (x=100) ends
-    # up past the drag endpoint (x=140). A smear in the WRONG direction
-    # (sampling ahead of the motion) would show RIGHT where LEFT is
-    # expected. The preview is live: asserted BEFORE mouse.up commits.
+    # a continuous smear carries the LEFT band along the drag: the stamps
+    # blend each footprint toward where the brush came from, so the
+    # boundary (x=100) is dragged toward the endpoint (x=140), lagging
+    # behind the brush. A smear in the WRONG direction (sampling ahead of
+    # the motion) would leave (105, 75) pure RIGHT. The preview is live:
+    # asserted BEFORE mouse.up commits.
     base, _ = server
     _open(page, base)
     _two_band(base)
@@ -964,14 +965,46 @@ def test_smudge_drag_smears(page, server):
     page.mouse.down()
     page.mouse.move(*screen_pos(page, 100, 75), steps=5)
     page.mouse.move(*screen_pos(page, 140, 75), steps=5)
-    assert _screen_px(page, 130, 75) == list(LEFT), \
-        f"live preview under cursor: {_screen_px(page, 130, 75)}"
+    # just past the original boundary: the smear crossed it and leans
+    # toward the LEFT band it was dragged from
+    assert _screen_px(page, 105, 75)[0] > 40, \
+        f"live preview past boundary: {_screen_px(page, 105, 75)}"
     page.mouse.up()
-    assert wait_until(lambda: canvas_px(base, 130, 75) == LEFT), \
-        f"smudge trail: {canvas_px(base, 130, 75)}"
+    assert wait_until(lambda: canvas_px(base, 105, 75)[0] > 40), \
+        f"smudge trail: {canvas_px(base, 105, 75)}"
+    # the drag moved RIGHT: the smear still decreases toward the right
+    assert canvas_px(base, 95, 75)[0] > canvas_px(base, 105, 75)[0]
     assert canvas_px(base, 10, 10) == LEFT  # left band untouched
     assert canvas_px(base, 148, 75) == RIGHT  # ahead of the trail: untouched
     assert canvas_px(base, 190, 140) == RIGHT  # right band corner untouched
+
+
+def test_smudge_scrub_back_and_forth_does_not_erode(page, server):
+    # regression: the old rigid-copy stamp had a one-way valve -- a
+    # forward drag parked a boundary 1px past the brush tip, out of reach
+    # of the return leg, so scrubbing back and forth monotonically ate
+    # one side ("everything ends up dark"). Scrubbing must now converge
+    # to a blurred band centred on the original boundary, keeping both
+    # sides: (90, 75) stays bright-ish, (110, 75) dark-ish.
+    base, _ = server
+    _open(page, base)
+    _two_band(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    page.keyboard.press("s")
+
+    for _ in range(10):
+        page.mouse.move(*screen_pos(page, 80, 75))
+        page.mouse.down()
+        page.mouse.move(*screen_pos(page, 120, 75), steps=8)
+        page.mouse.move(*screen_pos(page, 80, 75), steps=8)
+        page.mouse.up()
+    assert wait_until(lambda: canvas_px(base, 110, 75)[0] < 70), \
+        f"right of boundary should stay dark-ish: {canvas_px(base, 110, 75)}"
+    assert canvas_px(base, 90, 75)[0] > 80, \
+        f"left of boundary should stay bright-ish: {canvas_px(base, 90, 75)}"
+    assert canvas_px(base, 75, 75)[0] > 110  # left band far side untouched
+    assert canvas_px(base, 125, 75)[0] < 45  # right band far side untouched
 
 
 # ---------------- state persistence ----------------

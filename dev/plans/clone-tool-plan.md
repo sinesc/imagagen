@@ -185,13 +185,18 @@ the clone design. Two points for the future implementer:
   recomputed from scratch each frame like `drawPreview` does today (this is
   also how a real smudge works). The server commit is the same sequential
   accumulation over a working copy.
-- Keep **one shared algorithm spec** in both JS (preview) and numpy (commit):
-  for each consecutive pair of stamps, copy the brush-shaped region at the
-  previous centre to the current centre (integer displacement, same size so
-  no resampling) and alpha-blend by opacity, accumulating on a copy of the
-  pre-stroke image. Integer displacement + same-size copy makes the canvas
-  `drawImage` and the numpy slice agree tightly (only brush-edge antialiasing
-  differs), so the no-flicker hand-off stays invisible.
+- The algorithm (as implemented in `smudgeAccumulate`, preview and commit
+  share it): for each consecutive pair of stamps, BLEND the brush-shaped
+  footprint at the current centre toward the pixels it came from (the
+  previous centre's positions), weighted by the brush shape and a per-stamp
+  strength capped at half the opacity, accumulating on a copy of the
+  pre-stroke image. The blend must stay PARTIAL: a rigid copy overwrites
+  the pixel ahead of the brush (destination's leading edge is 1px past the
+  copied region) and leaves a one-way valve, so a back-and-forth scrub
+  could only push a boundary in the direction of the first leg (one side
+  eats the other -- reported as "everything ends up dark"). A mirror blend
+  on the footprint's leading edge closes the valve; scrubbing then
+  converges to a blurred band centred on the original boundary.
 
 Deliberately **not** moving to client-authoritative editing (client computes
 pixels, uploads the result) to make previews exact: it would break the

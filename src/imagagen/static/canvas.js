@@ -811,7 +811,6 @@ const stampLayer = {
   h: 0,
 };
 let stampCoverage = null; // the stamp-coverage canvas (layer-sized)
-let smudgeTemp = null; // smudge: stamp-sized buffer for the shape-masked copy
 
 // a scratch layer at (w, h) + its context
 function layerCtx(L, w, h) {
@@ -882,11 +881,32 @@ function strokeMaxCoverage(s, pts, raw) {
 
 // the smudge's sequential stamp accumulation, shared by the live preview
 // and the local commit (the commit finishes any stamps the preview has not
-// drawn yet) -- each stamp drags the brush-shaped region at the previous
-// centre to the current one (integer displacement, same size, no
-// resampling) and alpha-blends it by the brush shape x the opacity
+// drawn yet). Each stamp blends the brush-shaped footprint at the current
+// centre TOWARD the pixels it came from (the previous centre's positions),
+// weighted by the brush shape x the per-stamp strength. The blend is
+// PARTIAL (capped at half), never a full copy: a rigid copy overwrites the
+// pixel ahead of the brush (its destination's leading edge lies 1px past
+// the copied region, so content is destroyed there) and leaves a one-way
+// valve -- a back-and-forth scrub could then only push a boundary in the
+// direction of the first leg, one side eating the other. The partial blend
+// advects the content with the drag AND diffuses it, so scrubbing back and
+// forth converges to a blurred band around the original boundary. The
+// footprint's leading edge (the 1px the return pass cannot reach) gets a
+// mirror blend toward the pixel ahead of the brush, closing the valve.
 function smudgeAccumulate(s, st, pts, raw, r) {
-  const wctx = s.work.canvas.getContext("2d");
+  const canvas = s.work.canvas;
+  const wctx =
+    s.workCtx ||
+    (s.workCtx = canvas.getContext("2d", { willReadFrequently: true }));
+  const W = canvas.width, H = canvas.height;
+  // per-stamp strength: capped at half of the opacity so even a 100%
+  // smudge stays a blend (the erosion-free regime), not a rigid copy
+  const t = 0.5 * st.opacity;
+  const tm = t; // the leading-edge mirror: equal strength closes the valve
+  const fw = raw ? raw.width : Math.ceil(2 * r + 1);
+  const fh = raw ? raw.height : Math.ceil(2 * r + 1);
+  const ad = raw ? raw.alphaData.data : null;
+  const r2 = r * r;
   while (s.smudgeStamps < pts.length) {
     const i = s.smudgeStamps++; // new centre; i-1 is its predecessor
     const [ox, oy] = pts[i - 1];
@@ -894,42 +914,70 @@ function smudgeAccumulate(s, st, pts, raw, r) {
     const dx = Math.round(cx - ox);
     const dy = Math.round(cy - oy);
     if (!dx && !dy) continue;
-    if (!raw) {
-      // fallback: clip to the stamp's disc (brush image not loaded yet)
-      wctx.save();
-      wctx.beginPath();
-      wctx.arc(cx, cy, r, 0, Math.PI * 2);
-      wctx.clip();
-      wctx.globalAlpha = st.opacity;
-      wctx.drawImage(s.work.canvas, dx, dy);
-      wctx.restore();
-      continue;
+    const x0 = Math.round(cx - fw / 2);
+    const y0 = Math.round(cy - fh / 2);
+    // the stamp's footprint, clipped to the image
+    const x1 = Math.max(0, x0), y1 = Math.max(0, y0);
+    const x2 = Math.min(W, x0 + fw), y2 = Math.min(H, y0 + fh);
+    if (x2 <= x1 || y2 <= y1) continue;
+    // read the footprint, its source (shifted back by the displacement),
+    // and the leading-edge mirror neighbours (1px ahead) in one go; the
+    // walk then blends in place from PRE-STAMP values -- it runs against
+    // the motion, so a pixel's source is never read after this stamp has
+    // modified it
+    const sx0 = x0 - dx, sy0 = y0 - dy;
+    const ux0 = Math.max(0, Math.min(x0, sx0) - (dx < 0 ? 1 : 0));
+    const uy0 = Math.max(0, Math.min(y0, sy0) - (dy < 0 ? 1 : 0));
+    const ux1 = Math.min(W, Math.max(x2, sx0 + fw) + (dx > 0 ? 1 : 0));
+    const uy1 = Math.min(H, Math.max(y2, sy0 + fh) + (dy > 0 ? 1 : 0));
+    const img = wctx.getImageData(ux0, uy0, ux1 - ux0, uy1 - uy0);
+    const d = img.data;
+    const uw = ux1 - ux0;
+    const id4 = (x, y) => ((y - uy0) * uw + (x - ux0)) * 4;
+    const shape = (x, y) => {
+      if (raw) return ad[((y - y0) * fw + (x - x0)) * 4 + 3] / 255;
+      const qx = x - cx, qy = y - cy;
+      return qx * qx + qy * qy <= r2 ? 1 : 0; // disc fallback
+    };
+    // against the motion: d>0 -> the source lies at smaller coords, so
+    // visit the larger ones first; d<0 -> the other way round
+    const xStart = dx >= 0 ? x2 - 1 : x1, xStep = dx >= 0 ? -1 : 1;
+    const yStart = dy >= 0 ? y2 - 1 : y1, yStep = dy >= 0 ? -1 : 1;
+    for (let y = yStart; dy >= 0 ? y >= y1 : y < y2; y += yStep) {
+      for (let x = xStart; dx >= 0 ? x >= x1 : x < x2; x += xStep) {
+        const a = shape(x, y);
+        if (!a) continue;
+        const px = x - dx, py = y - dy; // where this pixel came from
+        if (px < 0 || py < 0 || px >= W || py >= H) continue;
+        const j = id4(x, y), k = id4(px, py);
+        const f = t * a;
+        d[j] += f * (d[k] - d[j]);
+        d[j + 1] += f * (d[k + 1] - d[j + 1]);
+        d[j + 2] += f * (d[k + 2] - d[j + 2]);
+      }
     }
-    const x0 = Math.round(cx - raw.width / 2);
-    const y0 = Math.round(cy - raw.height / 2);
-    if (
-      !smudgeTemp ||
-      smudgeTemp.width !== raw.width ||
-      smudgeTemp.height !== raw.height
-    ) {
-      smudgeTemp = document.createElement("canvas");
-      smudgeTemp.width = raw.width;
-      smudgeTemp.height = raw.height;
+    // the leading edge: the footprint's outer row/column in the motion
+    // direction. Its mirror blend reads the pixel just AHEAD of the brush
+    // (out of reach of the return pass without it), so scrubbing back
+    // reaches the boundary the forward pass pushed out there
+    const mirror = (x, y, nx, ny) => {
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) return;
+      const j = id4(x, y), k = id4(nx, ny);
+      const f = tm * shape(x, y);
+      if (!f) return;
+      d[j] += f * (d[k] - d[j]);
+      d[j + 1] += f * (d[k + 1] - d[j + 1]);
+      d[j + 2] += f * (d[k + 2] - d[j + 2]);
+    };
+    if (dx) {
+      const x = dx > 0 ? x2 - 1 : x1;
+      for (let y = y1; y < y2; y++) mirror(x, y, x + Math.sign(dx), y);
     }
-    const tctx = smudgeTemp.getContext("2d");
-    // temp[q] = work[q + (x0, y0) - (dx, dy)]: the pixels the PREVIOUS
-    // stamp just moved (off-image source leaves dest as-is) -- the same
-    // read the sequential smear does over its working copy
-    tctx.clearRect(0, 0, raw.width, raw.height);
-    tctx.drawImage(s.work.canvas, dx - x0, dy - y0);
-    // mask the copy by the brush shape, then blend it by the opacity
-    tctx.globalCompositeOperation = "destination-in";
-    tctx.globalAlpha = 1;
-    tctx.drawImage(raw, 0, 0);
-    tctx.globalCompositeOperation = "source-over";
-    wctx.globalAlpha = st.opacity;
-    wctx.drawImage(smudgeTemp, x0, y0);
-    wctx.globalAlpha = 1;
+    if (dy) {
+      const y = dy > 0 ? y2 - 1 : y1;
+      for (let x = x1; x < x2; x++) mirror(x, y, x, y + Math.sign(dy));
+    }
+    wctx.putImageData(img, ux0, uy0);
   }
 }
 
