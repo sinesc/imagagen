@@ -850,6 +850,7 @@ function setGenerating(on) {
     $("progress-fill").style.width = "0%";
     $("progress-label").textContent = "";
   }
+  syncGenerateEnabled();
 }
 
 async function generate() {
@@ -1599,6 +1600,18 @@ function syncMode() {
   $("denoise").disabled = $("mode").value === "generate";
   $("mask-padding").disabled = $("mode").value !== "inpaint_masked";
   $("soft-inpaint").disabled = $("mode").value === "generate";
+  syncGenerateEnabled();
+}
+
+// Inpaint with an empty mask is a server-side no-op (rejected with
+// "mask is empty"), so keep the button off until a mask exists. view.maskBbox
+// is null exactly when the mask is empty; it is recomputed by canvas.js in
+// buildMaskOverlay() on every mask change, which calls back here.
+function syncGenerateEnabled() {
+  $("btn-generate").disabled =
+    !state.generating &&
+    $("mode").value === "inpaint_masked" &&
+    !view.maskBbox;
 }
 
 // ---------------- soft inpainting (Forge builtin extension) ----------------

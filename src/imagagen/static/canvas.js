@@ -192,6 +192,7 @@ function buildMaskOverlay() {
   ctx.drawImage(view.maskValues, 0, 0);
   view.mask = o;
   computeMaskBbox();
+  syncGenerateEnabled(); // app.js: the Generate button tracks mask emptiness
 }
 
 // bounding box of the current mask (alpha > 0) in canvas px, or null when
@@ -291,6 +292,7 @@ async function viewRefresh() {
     view.w = view.h = 0;
     clearBrushStamps();
     viewRedraw();
+    syncGenerateEnabled(); // app.js: no image -> empty mask
     return;
   }
   const img = new Image();
