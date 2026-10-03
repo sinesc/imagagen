@@ -306,6 +306,12 @@ def create_app(
             "pool": pool,
         }
 
+    @app.get("/api/ui-config")
+    def ui_config() -> dict:
+        """Client-side knobs read from imagagen.ini, delivered to the UI
+        at boot instead of hardcoding them in the frontend."""
+        return {"mask_overlay_opacity": config.mask_overlay_opacity}
+
     # --- models & model configurations (Phase 4) ---
     # The model selector lists *configurations*, not raw checkpoints:
     # every file config in user/model-configs/ plus one in-memory default per

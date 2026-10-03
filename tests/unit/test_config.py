@@ -125,3 +125,23 @@ def test_bad_save_ui_state_raises(tmp_path):
     ini(tmp_path).write_text("[imagagen]\nsave-ui-state = maybe\n")
     with pytest.raises(ValueError, match="save-ui-state"):
         load_config(tmp_path)
+
+
+def test_mask_overlay_opacity_default(tmp_path):
+    assert load_config(tmp_path).mask_overlay_opacity == 0.9
+
+
+def test_mask_overlay_opacity_explicit(tmp_path):
+    ini(tmp_path).write_text("[imagagen]\nmask-overlay-opacity = 0.5\n")
+    assert load_config(tmp_path).mask_overlay_opacity == 0.5
+    ini(tmp_path).write_text("[imagagen]\nmask-overlay-opacity = 1\n")
+    assert load_config(tmp_path).mask_overlay_opacity == 1.0
+    ini(tmp_path).write_text("[imagagen]\nmask-overlay-opacity = 0\n")
+    assert load_config(tmp_path).mask_overlay_opacity == 0.0
+
+
+def test_bad_mask_overlay_opacity_raises(tmp_path):
+    for v in ("abc", "-0.1", "1.5"):
+        ini(tmp_path).write_text(f"[imagagen]\nmask-overlay-opacity = {v}\n")
+        with pytest.raises(ValueError, match="mask-overlay-opacity"):
+            load_config(tmp_path)

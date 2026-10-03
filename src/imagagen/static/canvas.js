@@ -15,7 +15,8 @@
 const view = {
   base: null, // offscreen canvas (W×H canvas px): the committed image
   maskValues: null, // offscreen canvas (W×H): grey 128, alpha = mask value
-  mask: null, // display overlay derived from maskValues (0.9 see-through)
+  mask: null, // display overlay derived from maskValues (maskOverlayOpacity
+  // see-through)
   maskBbox: null, // {x,y,w,h} canvas px of the current mask (alpha > 0);
   // null when the mask is empty; refreshed with the overlay
   has: false,
@@ -141,8 +142,35 @@ function maskValuesFromPng(img) {
   return c;
 }
 
-// display overlay: constant grey with alpha = mask alpha x 0.9, derived
-// GPU-only (destination-in alpha scale -- no per-pixel loop). The grey fill
+// ---------------- mask overlay opacity ----------------
+
+// Alpha multiplier applied to the mask when displaying it (0.9 = the
+// historical default). Ini-configurable (mask-overlay-opacity) and
+// delivered by /api/ui-config at boot; the local default matches the ini
+// default, so a failed/absent fetch is invisible.
+let maskOverlayOpacity = 0.9;
+let overlayConfigPromise = null;
+
+function ensureOverlayConfig() {
+  if (!overlayConfigPromise) {
+    overlayConfigPromise = fetch("/api/ui-config")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((cfg) => {
+        if (cfg && Number.isFinite(cfg.mask_overlay_opacity)) {
+          maskOverlayOpacity = cfg.mask_overlay_opacity;
+          // the boot viewRefresh may already have built the overlay with
+          // the default factor: rebuild so the configured value applies
+          if (view.maskValues) buildMaskOverlay();
+        }
+      })
+      .catch(() => {});
+  }
+  return overlayConfigPromise;
+}
+
+// display overlay: constant grey with alpha = mask alpha x
+// maskOverlayOpacity, derived GPU-only (destination-in alpha scale -- no
+// per-pixel loop). The grey fill
 // is the COLOUR source: maskValues only contributes its alpha. (Tinting
 // from maskValues' own pixels would render black where alpha was 0 -- those
 // pixels are stored premultiplied with RGB 0 even after a morph raises the
@@ -158,8 +186,9 @@ function buildMaskOverlay() {
   const ctx = o.getContext("2d");
   ctx.fillStyle = "rgb(128,128,128)";
   ctx.fillRect(0, 0, o.width, o.height);
-  ctx.globalCompositeOperation = "destination-in"; // alpha = mask x 0.9
-  ctx.globalAlpha = 0.9;
+  ctx.globalCompositeOperation = "destination-in";
+  // alpha = mask x maskOverlayOpacity
+  ctx.globalAlpha = maskOverlayOpacity;
   ctx.drawImage(view.maskValues, 0, 0);
   view.mask = o;
   computeMaskBbox();
@@ -242,6 +271,7 @@ async function viewRefresh() {
   const [ri, rm] = await Promise.all([
     fetch("/api/canvas.png"),
     fetch("/api/mask.png"),
+    ensureOverlayConfig(),
   ]);
   const had = view.has;
   const oldW = view.w;
@@ -978,9 +1008,10 @@ function drawStrokePreview(ctx, s) {
   if (s.tool === "mask" && s.erase) {
     // erasing caps the mask alpha at brush x 255*(1-opacity) (non-
     // stacking: sequential stamps give min(region, cap x max shape)). The
-    // overlay alpha is the mask alpha x 0.9 (buildMaskOverlay), so cap it
-    // at 0.9*255*(1-opacity), approached via the union stamp coverage
-    // (the preview's AA edge / overlap model)
+    // overlay alpha is the mask alpha x maskOverlayOpacity
+    // (buildMaskOverlay), so cap it at 255*maskOverlayOpacity*(1-opacity),
+    // approached via the union stamp coverage (the preview's AA edge /
+    // overlap model)
     if (view.mask) {
       const lctx = layerCtx(stampLayer, view.w, view.h);
       const cctx = coverageCtx(view.w, view.h);
@@ -1018,7 +1049,7 @@ function drawStrokePreview(ctx, s) {
         const bw = bx1 - bx0, bh = by1 - by0;
         const d = lctx.getImageData(bx0, by0, bw, bh);
         const c = cctx.getImageData(bx0, by0, bw, bh);
-        const cap = 229.5 * (1 - st.opacity);
+        const cap = 255 * maskOverlayOpacity * (1 - st.opacity);
         for (let i = 0; i < d.data.length; i += 4) {
           const covA = c.data[i + 3] / 255;
           if (!covA) continue;
@@ -1037,13 +1068,14 @@ function drawStrokePreview(ctx, s) {
   if (s.tool === "mask") {
     // adding is NON-stacking, exactly like the local commit: the mask
     // value is the fixed brush x 255 x opacity where the brush touched
-    // (max over the stamps), and the overlay alpha is 0.9 x that
-    // (buildMaskOverlay) -- so build the overlay as max(base overlay,
-    // 0.9 x 255 x s_max x opacity), pixel-exact to the committed mask
+    // (max over the stamps), and the overlay alpha is
+    // maskOverlayOpacity x that (buildMaskOverlay) -- so build the overlay
+    // as max(base overlay, maskOverlayOpacity x 255 x s_max x opacity),
+    // pixel-exact to the committed mask
     const cov = strokeMaxCoverage(s, pts, raw);
     if (!cov) {
       // fallback: the old stacked discs (brush image not loaded yet)
-      ctx.fillStyle = "rgba(128,128,128,0.9)";
+      ctx.fillStyle = `rgba(128,128,128,${maskOverlayOpacity})`;
       for (const [x, y] of pts) {
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -1075,7 +1107,7 @@ function drawStrokePreview(ctx, s) {
         const bw = bx1 - bx0, bh = by1 - by0;
         const d = lctx.getImageData(bx0, by0, bw, bh);
         const c = cctx.getImageData(bx0, by0, bw, bh);
-        const target = 229.5 * st.opacity;
+        const target = 255 * maskOverlayOpacity * st.opacity;
         // the overlay is always grey 128; alpha-0 pixels read back with
         // undefined RGB (0), so the RGB must be set alongside the alpha
         for (let i = 0; i < d.data.length; i += 4) {
@@ -1089,7 +1121,7 @@ function drawStrokePreview(ctx, s) {
       ctx.drawImage(stampLayer.canvas, 0, 0);
     } else {
       // no base mask: the overlay is just the grey coverage itself
-      ctx.globalAlpha = 0.9 * st.opacity;
+      ctx.globalAlpha = maskOverlayOpacity * st.opacity;
       ctx.drawImage(cov, 0, 0);
     }
     ctx.globalAlpha = 1;

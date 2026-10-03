@@ -57,6 +57,26 @@ def test_index_served(client):
     assert "imagagen" in r.text
 
 
+def test_ui_config_endpoint(client):
+    r = client.get("/api/ui-config")
+    assert r.status_code == 200
+    assert r.json() == {"mask_overlay_opacity": 0.9}
+
+
+def test_ui_config_from_ini(tmp_path):
+    ini = tmp_path / "user" / "imagagen.ini"
+    ini.parent.mkdir(parents=True, exist_ok=True)
+    ini.write_text("[imagagen]\nmask-overlay-opacity = 0.5\n")
+    from imagagen.config import load_config
+
+    backend = MockBackend(steps_delay=0.02)
+    app = create_app(config=load_config(tmp_path), backend=backend)
+    with TestClient(app) as c:
+        assert c.get("/api/ui-config").json() == {
+            "mask_overlay_opacity": 0.5
+        }
+
+
 def test_models_endpoint(client):
     # the model selector lists configurations (Phase 4); with no files in
     # model-configs/ that is just the in-memory default of the mock model

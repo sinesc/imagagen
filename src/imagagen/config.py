@@ -37,6 +37,9 @@ class Config:
     # save (true = default). Disable it to keep the file from being
     # written; an existing file is still loaded on start.
     save_ui_state: bool = True
+    # Mask overlay opacity: the alpha multiplier the UI applies when
+    # rendering the mask over the canvas (0.9 = the historical default).
+    mask_overlay_opacity: float = 0.9
 
     @property
     def user_dir(self) -> Path:
@@ -128,6 +131,7 @@ def load_config(root: Path | str | None = None) -> Config:
         vae_tiling,
         debug,
         save_ui_state,
+        mask_overlay_opacity,
     ) = _parse_ini(root / "user" / "imagagen.ini")
     config = Config(
         root=root,
@@ -138,6 +142,7 @@ def load_config(root: Path | str | None = None) -> Config:
         vae_tiling=vae_tiling,
         debug=debug,
         save_ui_state=save_ui_state,
+        mask_overlay_opacity=mask_overlay_opacity,
     )
     # Must happen before huggingface_hub is imported (it reads these at
     # import time): cache hub files in the project, keep the console quiet.
@@ -190,21 +195,21 @@ def load_config(root: Path | str | None = None) -> Config:
 
 def _parse_ini(
     path: Path,
-) -> tuple[int | None, frozenset[int], str, str, bool, bool, bool]:
+) -> tuple[int | None, frozenset[int], str, str, bool, bool, bool, float]:
     """Parse ``<root>/user/imagagen.ini``: GPU selection, VRAM options, debug.
 
     A missing file yields the defaults
-    (auto, none, off, gpu, False, False, True).
+    (auto, none, off, gpu, False, False, True, 0.9).
     """
     if not path.is_file():
-        return None, frozenset(), "off", "gpu", False, False, True
+        return None, frozenset(), "off", "gpu", False, False, True, 0.9
     cp = configparser.ConfigParser()
     try:
         cp.read(path, encoding="utf-8")
     except configparser.Error as e:
         raise ValueError(f"cannot parse {path.name}: {e}") from e
     if not cp.has_section("imagagen"):
-        return None, frozenset(), "off", "gpu", False, False, True
+        return None, frozenset(), "off", "gpu", False, False, True, 0.9
     sec = cp["imagagen"]
 
     raw = sec.get("primary-gpu", "auto").strip().lower()
@@ -257,6 +262,18 @@ def _parse_ini(
             f"{path.name}: save-ui-state must be true/false, "
             f"got {sec.get('save-ui-state')!r}"
         ) from None
+    try:
+        mask_overlay_opacity = float(sec.get("mask-overlay-opacity", "0.9"))
+    except ValueError:
+        raise ValueError(
+            f"{path.name}: mask-overlay-opacity must be a number, "
+            f"got {sec.get('mask-overlay-opacity')!r}"
+        ) from None
+    if not 0.0 <= mask_overlay_opacity <= 1.0:
+        raise ValueError(
+            f"{path.name}: mask-overlay-opacity must be in [0, 1], "
+            f"got {mask_overlay_opacity!r}"
+        )
     return (
         primary,
         frozenset(ignored),
@@ -265,6 +282,7 @@ def _parse_ini(
         vae_tiling,
         debug,
         save_ui_state,
+        mask_overlay_opacity,
     )
 
 
