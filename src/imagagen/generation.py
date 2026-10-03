@@ -29,9 +29,11 @@ mask. The plan maps the backend output back into canvas space afterwards.
 
 A job may additionally carry a source rotation (``with_inpaint``,
 ``rotation``): the source is rotated into an upright *working frame* before
-generation and the output is counter-rotated back to the requested size
-afterwards. A "generate" job with a non-zero rotation therefore carries a
-plan too; all plan geometry of rotated jobs is in the working frame.
+generation and the output is counter-rotated afterwards — back to the
+source canvas size for "inpaint masked" (the canvas is unchanged in that
+mode) and to the requested size otherwise. A "generate" job with a
+non-zero rotation therefore carries a plan too; all plan geometry of
+rotated jobs is in the working frame.
 """
 
 from __future__ import annotations
@@ -232,9 +234,11 @@ class InpaintPlan:
     back to canvas state. For a non-zero rotation all geometry (bbox, masks)
     is in the *rotated working frame*: the source canvas is rotated by
     `rotation` before generation and the output is counter-rotated back to
-    `requested_size`. (The rest is unchanged: the canvas stays editable
-    during generation — the generation overwrites in-flight edits, restorable
-    via undo.)"""
+    the source canvas size for "inpaint masked" (canvas size is unchanged
+    in that mode — the requested W×H only sizes the generation) and to
+    `requested_size` otherwise. (The rest is unchanged: the canvas stays
+    editable during generation — the generation overwrites in-flight edits,
+    restorable via undo.)"""
 
     mode: str  # "generate" | "inpaint_masked" | "inpaint_not_masked"
     requested_size: tuple[int, int]  # the user's W×H (final canvas size)
@@ -245,6 +249,9 @@ class InpaintPlan:
     # inpaint_masked: rotated mask (blend alpha); inpaint_not_masked:
     # rotated target mask (resize reference)
     work_mask: np.ndarray | None = None
+    # inpaint_masked: the unrotated source canvas (w, h) — the final canvas
+    # size (the requested W×H only sizes the generation in this mode)
+    canvas_size: tuple[int, int] | None = None
 
     def postprocess(self, gen: np.ndarray) -> np.ndarray:
         """Backend output -> canvas image (the inpaint_masked blend, or the
@@ -277,7 +284,13 @@ class InpaintPlan:
         else:  # "generate": the raw output is the (possibly rotated) result
             out = gen
         if self.rotation:
-            fw, fh = self.requested_size
+            if self.mode == "inpaint_masked":
+                # the final canvas is the source canvas (unchanged in this
+                # mode), not the user's W×H — counter-rotating to the
+                # requested size would center-crop a small area of the image
+                fw, fh = self.canvas_size
+            else:
+                fw, fh = self.requested_size
             out = unrotate(out, self.rotation, fw, fh)
         return out
 
@@ -343,7 +356,8 @@ def with_inpaint(
         return InpaintPlan("inpaint_masked",
                            requested_size=(request.width, request.height),
                            rotation=rotation, bbox=(x0, y0, w, h),
-                           work_image=work_image, work_mask=work_mask)
+                           work_image=work_image, work_mask=work_mask,
+                           canvas_size=(image.shape[1], image.shape[0]))
 
     # inpaint_not_masked
     ch, cw = image.shape[:2]

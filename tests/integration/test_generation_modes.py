@@ -248,6 +248,32 @@ def test_inpaint_masked_rotation_180_flips_content(client):
     assert (img[box] == 99).all()
 
 
+def test_inpaint_masked_rotation_mismatched_sizes_keeps_canvas_size(client):
+    # regression: in inpaint_masked the final canvas is the source canvas
+    # size, not the requested W×H; counter-rotating to the requested size
+    # produced an image based on a small area of the source
+    _set_canvas(client, 96, 64, 99)
+    _mask_dot(client, 48, 32, size=24)  # rows 20:44, cols 36:60
+    m0 = _mask(client)
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, mode="inpaint_masked", width=128,
+                        height=96, rotation=90, mask_padding=0)
+    r = client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    img = _img(client)
+    # the canvas keeps its own size (96x64), not the requested 128x96
+    assert img.shape == (64, 96, 3)
+    # inside the mask box the R ramp runs along the ROWS (counter-rotated)
+    col = img[21:43, 48, 0]
+    assert int(col.max()) - int(col.min()) > 40
+    # outside the box (with a safety margin) the fill is untouched
+    box = np.ones(img.shape[:2], bool)
+    box[16:48, 32:64] = False
+    assert (img[box] == 99).all()
+    # the mask is retained, unchanged
+    np.testing.assert_array_equal(_mask(client), m0)
+
+
 def test_inpaint_not_masked_rotation_90_outpaints_upright(client):
     _set_canvas(client, 32, 24, 5)
     with client.websocket_connect("/api/ws") as ws:

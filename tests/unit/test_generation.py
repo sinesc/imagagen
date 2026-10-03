@@ -434,6 +434,29 @@ def test_with_inpaint_inpaint_masked_rotation_box_on_rotated_mask():
     assert (rest == 100).all()
 
 
+def test_with_inpaint_inpaint_masked_rotation_mismatched_request_size():
+    # regression: in "inpaint masked" the final canvas is the SOURCE canvas
+    # size (the requested W×H only sizes the generation); counter-rotating to
+    # the requested size center-cropped a small area of the image
+    c = _canvas(64, 48)  # fill 100
+    m = np.zeros((48, 64), dtype=np.uint8)
+    m[10:30, 16:44] = 255
+    c.set_mask(m)
+    req = GenerateRequest(prompt="x", width=96, height=64)
+    plan = with_inpaint(req, "inpaint_masked", c, 1.0, rotation=90,
+                        padding=0)
+    assert plan.requested_size == (96, 64)
+    out = plan.postprocess(np.full((96, 64, 3), 250, dtype=np.uint8))
+    # the canvas keeps its own size (64x48), not the requested 96x64
+    assert out.shape == (48, 64, 3)
+    # rotation and counter-rotation cancel: the blend box lands back on the
+    # original mask box
+    assert (out[10:30, 16:44] == 250).all()
+    rest = np.delete(np.delete(out, list(range(10, 30)), axis=0),
+                     list(range(16, 44)), axis=1)
+    assert (rest == 100).all()
+
+
 def test_with_inpaint_inpaint_not_masked_rotation_extends_size():
     c = _canvas()  # 64x48
     req = GenerateRequest(prompt="x", width=64, height=48)
