@@ -15,9 +15,63 @@ the INI file is reserved for operator configuration.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
+
+
+# Canvas tools, same list as the TOOLS array in tools.js
+TOOL_NAMES = ("brush", "mask", "clone", "smudge", "crop")
+
+
+class ToolSettings(BaseModel):
+    """What one tool remembers for the next time it is used.
+
+    Same limits as the toolbar UI: brush size clamped to 10-300 px,
+    opacity slider 0.05-1. The colour applies to the brush tool only
+    (mask strokes ignore it; clone/smudge/crop have none).
+    """
+
+    size: int = Field(10, ge=10, le=300)
+    opacity: float = Field(1.0, ge=0.05, le=1.0)
+    brush: str = "circle"  # shape name as listed by /api/brushes
+    screen: bool = False  # size in screen px instead of canvas px
+    color: str | None = None  # "#rrggbb"
+
+    @field_validator("brush")
+    @classmethod
+    def _brush_name(cls, v: str) -> str:
+        # a brush file name, never a path
+        if not v or "/" in v or "\\" in v:
+            raise ValueError("invalid brush name")
+        return v
+
+    @field_validator("color")
+    @classmethod
+    def _color_hex(cls, v: str | None) -> str | None:
+        if v is not None and not re.fullmatch(r"#[0-9a-fA-F]{6}", v):
+            raise ValueError("colour must be #rrggbb")
+        return v
+
+
+class ToolState(BaseModel):
+    """Current canvas tool + the per-tool remembered settings."""
+
+    current: str = "brush"
+    # spec defaults match tools.js (the mask tool starts at 30 px)
+    brush: ToolSettings = Field(default_factory=ToolSettings)
+    mask: ToolSettings = Field(default_factory=lambda: ToolSettings(size=30))
+    clone: ToolSettings = Field(default_factory=ToolSettings)
+    smudge: ToolSettings = Field(default_factory=ToolSettings)
+    crop: ToolSettings = Field(default_factory=ToolSettings)
+
+    @field_validator("current")
+    @classmethod
+    def _current_tool(cls, v: str) -> str:
+        if v not in TOOL_NAMES:
+            raise ValueError(f"unknown tool {v!r}")
+        return v
 
 
 class UiState(BaseModel):
@@ -85,6 +139,10 @@ class UiState(BaseModel):
     # sidebar (control panel) width in px, set by dragging its right border;
     # same clamped range as the UI's drag handler
     sidebar_width: int = Field(default=300, ge=280, le=800)
+    # canvas tools: current tool + per-tool remembered settings (the
+    # toolbar used to keep these in localStorage; they now ride in the
+    # ui-state so a fresh browser on the same server restores them)
+    tools: ToolState = Field(default_factory=ToolState)
 
     # The generation mode and the selected preset are deliberately NOT
     # persisted: the UI always starts in "generate" mode (there is nothing

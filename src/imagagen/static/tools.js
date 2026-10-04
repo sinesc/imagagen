@@ -1,6 +1,7 @@
-/* Tool state: current tool + per-tool remembered brush/opacity.
-   Spec: each tool remembers the last brush and opacity it was used with.
-   Persisted in localStorage so the choice survives a page reload. */
+/* Tool state: current tool + per-tool remembered brush/opacity/etc.
+   Spec: each tool remembers the last settings it was used with.
+   The state is in-memory here; persistence is handled by app.js,
+   which includes it in the ui-state saved to the server. */
 "use strict";
 
 const TOOLS = ["brush", "mask", "clone", "smudge", "crop"];
@@ -19,28 +20,12 @@ const Tools = {
     // crop uses no brush at all; entry kept so Tools.get() never returns undefined
     crop: { size: 10, opacity: 1, brush: "circle", screen: false },
   },
-  load() {
-    try {
-      const raw = localStorage.getItem("imagagen.tools");
-      if (!raw) return;
-      const s = JSON.parse(raw);
-      for (const t of TOOLS) if (s[t]) Object.assign(this.state[t], s[t]);
-      if (TOOLS.includes(s.current)) this.current = s.current;
-    } catch (e) {
-      console.warn("tools load failed:", e);
-    }
-  },
-  save() {
-    try {
-      localStorage.setItem("imagagen.tools", JSON.stringify({ current: this.current, ...this.state }));
-    } catch (e) { /* private mode etc. */ }
-  },
+  // restored from the server's ui-state by applyUiState() in app.js
   get() {
     return this.state[this.current];
   },
   switch(name) {
     if (!TOOLS.includes(name)) return;
     this.current = name;
-    this.save();
   },
 };

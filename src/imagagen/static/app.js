@@ -1531,7 +1531,7 @@ async function loadBrushes() {
   syncToolbar();
 }
 
-// Brush size bounds; keep BRUSH_SIZE_MAX in sync with MAX_BRUSH_SIZE in app.py
+// Brush size bounds; keep in sync with ToolSettings.size in uistate.py
 const BRUSH_SIZE_MIN = 10;
 const BRUSH_SIZE_MAX = 300;
 // log-scale size: slider 0..1 maps to BRUSH_SIZE_MIN..BRUSH_SIZE_MAX px
@@ -1572,7 +1572,7 @@ function wheelBrushSize(factor) {
                  Math.round(st.size * factor)));
   if (s === st.size) return;
   st.size = s;
-  Tools.save();
+  scheduleSaveUiState();
   syncToolbar();
   viewRedraw(); // cursor outline changes footprint
 }
@@ -1582,7 +1582,7 @@ function wheelBrushOpacity(factor) {
   const o = Math.round(Math.min(1, Math.max(0.05, st.opacity * factor)) * 100) / 100;
   if (o === st.opacity) return;
   st.opacity = o;
-  Tools.save();
+  scheduleSaveUiState();
   syncToolbar();
 }
 
@@ -1591,6 +1591,7 @@ function switchTool(t) {
   // (re-arming the crop tool itself, e.g. tapping P mid-drag, does not)
   if (view.crop && Tools.current !== t) abortCrop();
   Tools.switch(t);
+  scheduleSaveUiState();
   syncToolbar();
   syncUndoButtons();
   viewRedraw(); // the cursor preview depends on the active tool
@@ -1824,28 +1825,28 @@ function wireToolbar() {
   $("tool-crop").onclick = () => switchTool("crop");
   $("brush").onchange = (e) => {
     Tools.get().brush = e.target.value;
-    Tools.save();
+    scheduleSaveUiState();
     viewRedraw(); // cursor outline changes shape
   };
   $("brush-color").oninput = (e) => {
     Tools.state.brush.color = e.target.value;
-    Tools.save();
+    scheduleSaveUiState();
   };
   $("brush-size").oninput = (e) => {
     // round to whole px: size is an absolute pixel size
     Tools.get().size = Math.round(sizeFromSlider(parseFloat(e.target.value)));
-    Tools.save();
+    scheduleSaveUiState();
     syncToolbar();
     viewRedraw(); // cursor outline changes footprint
   };
   $("brush-screen").onchange = (e) => {
     Tools.get().screen = e.target.checked;
-    Tools.save();
+    scheduleSaveUiState();
     if (view.has) viewRedraw(); // cursor outline changes footprint
   };
   $("brush-opacity").oninput = (e) => {
     Tools.get().opacity = parseFloat(e.target.value);
-    Tools.save();
+    scheduleSaveUiState();
     syncToolbar();
   };
   $("mode").onchange = () => { onUserFieldChange("mode"); syncMode(); }; // mode is not persisted
@@ -2129,6 +2130,8 @@ function readUiState() {
     // preset is not persisted either: the dropdown always starts at "—"
     seg_model: $("seg-model").value || null,
     seg_classes: state.segClasses,
+    // canvas tools: current tool + per-tool remembered settings
+    tools: { current: Tools.current, ...Tools.state },
     // sidebar (control panel) width set by dragging its right border
     sidebar_width: Math.round($("controls").getBoundingClientRect().width),
   };
@@ -2192,6 +2195,17 @@ function applyUiState(st) {
     ["sag_threshold", "threshold"],
   ]) {
     if (typeof st[key] === "number") state.sag[k] = st[key];
+  }
+  // canvas tools: current tool + per-tool remembered settings
+  if (st.tools) {
+    for (const [t, saved] of Object.entries(st.tools)) {
+      if (Tools.state[t] && saved && typeof saved === "object") {
+        for (const [k, v] of Object.entries(saved))
+          if (k in Tools.state[t]) Tools.state[t][k] = v;
+      }
+    }
+    if (TOOLS.includes(st.tools.current)) Tools.current = st.tools.current;
+    syncToolbar();
   }
 }
 
@@ -2478,7 +2492,6 @@ $("sidebar-resizer").addEventListener("mousedown", (e) => {
 });
 
 // ---------------- boot ----------------
-Tools.load();
 syncToolbar();
 syncUndoButtons();
 wireToolbar();

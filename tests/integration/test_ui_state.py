@@ -113,6 +113,52 @@ def test_invalid_model_falls_back_to_existing(tmp_path):
     assert state["model"] == "my-model"
 
 
+def test_tools_state_round_trips(tmp_path):
+    with _client(tmp_path) as c:
+        r = c.post("/api/ui-state", json={
+            "tools": {
+                "current": "mask",
+                "brush": {
+                    "size": 42, "opacity": 0.5, "brush": "soft24",
+                    "screen": True, "color": "#ff0000",
+                },
+                "mask": {"size": 80},
+            },
+        })
+        assert r.status_code == 200
+        state = c.get("/api/ui-state").json()["state"]
+    assert state["tools"]["current"] == "mask"
+    assert state["tools"]["brush"] == {
+        "size": 42, "opacity": 0.5, "brush": "soft24",
+        "screen": True, "color": "#ff0000",
+    }
+    # unspecified tools/fields keep their defaults
+    assert state["tools"]["mask"] == {
+        "size": 80, "opacity": 1.0, "brush": "circle",
+        "screen": False, "color": None,
+    }
+    assert state["tools"]["clone"]["size"] == 10
+    assert state["tools"]["smudge"]["size"] == 10
+
+
+def test_tools_state_validated(tmp_path):
+    with _client(tmp_path) as c:
+        # unknown current tool
+        assert c.post("/api/ui-state", json={"tools": {"current": "laser"}}).status_code == 422
+        # size outside the toolbar's 10-300 px clamp
+        assert c.post("/api/ui-state", json={"tools": {"brush": {"size": 999}}}).status_code == 422
+        assert c.post("/api/ui-state", json={"tools": {"brush": {"size": 9}}}).status_code == 422
+        # opacity outside the slider range
+        assert c.post("/api/ui-state", json={"tools": {"brush": {"opacity": 0}}}).status_code == 422
+        # colour must be #rrggbb, brush names are file names (no paths)
+        assert c.post("/api/ui-state", json={"tools": {"brush": {"color": "red"}}}).status_code == 422
+        assert c.post("/api/ui-state", json={"tools": {"brush": {"brush": "../../x"}}}).status_code == 422
+        # valid partial state is accepted
+        assert c.post("/api/ui-state", json={"tools": {"smudge": {"size": 200, "screen": True}}}).status_code == 200
+        assert c.get("/api/ui-state").json()["state"]["tools"]["smudge"]["size"] == 200
+        assert c.get("/api/ui-state").json()["state"]["tools"]["current"] == "brush"
+
+
 def test_unknown_keys_ignored(tmp_path):
     (us(tmp_path)).write_text(json.dumps({
         "prompt": "ok", "bogus-key": 42,

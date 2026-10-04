@@ -1010,14 +1010,24 @@ def test_smudge_scrub_back_and_forth_does_not_erode(page, server):
 # ---------------- state persistence ----------------
 
 
+def _saved_tools(root):
+    """The tools section of ui-state.json once the debounced save lands."""
+    p = Path(root) / "user" / "ui-state.json"
+    if not p.exists():
+        return None
+    return json.loads(p.read_text()).get("tools")
+
+
 def test_smudge_state_persists_across_reload(page, server):
-    base, _ = server
+    base, root = server
     _open(page, base)
     _show(page, base)
 
     page.keyboard.press("s")  # smudge tool
     set_input(page, "#brush-size", "0.342")  # 32 px (log scale)
     set_input(page, "#brush-opacity", "0.4")
+    # the ui-state save is debounced: make sure it lands before reloading
+    wait_until(lambda: (_saved_tools(root) or {}).get("smudge", {}).get("size") == 32)
 
     page.reload()
     page.wait_for_function(
@@ -1030,19 +1040,29 @@ def test_smudge_state_persists_across_reload(page, server):
 
 
 def test_tool_state_persists_across_reload(page, server):
-    base, _ = server
+    base, root = server
     _open(page, base)
     _show(page, base)
 
     page.keyboard.press("m")  # mask tool
     set_input(page, "#brush-size", "0.342")  # 32 px (log scale)
     set_input(page, "#brush-opacity", "0.4")
+    set_input(page, "#brush-color", "#00ff00")  # remembered by the brush tool
+    # the ui-state save is debounced: make sure it lands before reloading
+    wait_until(
+        lambda: (_saved_tools(root) or {}).get("mask", {}).get("size") == 32
+        and (_saved_tools(root) or {})
+        .get("brush", {})
+        .get("color")
+        == "#00ff00"
+    )
 
     page.reload()
     page.wait_for_function(
         "document.getElementById('tool-mask').classList.contains('active')")
     assert page.evaluate("Tools.get().size") == 32
     assert page.evaluate("Tools.get().opacity") == pytest.approx(0.4, abs=0.01)
+    assert page.evaluate("Tools.state.brush.color") == "#00ff00"
     # per-tool memory: switching back to brush restores its own settings
     page.keyboard.press("d")
     assert page.evaluate("Tools.get().size") == pytest.approx(10, abs=0.5)

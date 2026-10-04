@@ -723,7 +723,7 @@ function pickBrushColor(p) {
   const hex =
     "#" + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join("");
   Tools.state.brush.color = hex;
-  Tools.save();
+  scheduleSaveUiState(); // app.js
   syncToolbar(); // app.js: update the swatch
   setStatus(`picked colour ${hex}`);
 }
