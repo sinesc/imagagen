@@ -5,7 +5,10 @@ uses the same BPE vocabulary the pipeline's CLIP-L encoder uses (the two SDXL
 tokenizers share identical vocab/merges; only their special/pad token *config*
 differs, which does not affect the content token count). Counts are computed
 without the BOS/EOS framing tokens -- the same content tokens
-``SdxlBackend._encode_prompt_chunked`` splits into 75-token windows.
+``SdxlBackend._encode_prompt_chunked`` splits into 75-token windows. Token
+weights (``(green:1.2)``) are stripped before counting and, when any weight
+is in effect, the prompt is tokenized segment by segment, exactly like the
+backend's weighted encoding path.
 """
 
 from __future__ import annotations
@@ -42,7 +45,12 @@ def _load_tokenizer():
 
 def count_prompt_tokens(prompt: str) -> int | None:
     """Number of content tokens in ``prompt`` (excl. BOS/EOS), or None if the
-    tokenizer could not be loaded (the UI then hides the counter)."""
+    tokenizer could not be loaded (the UI then hides the counter).
+
+    Token weights ``(green:1.2)`` are counted the way the backend feeds
+    them: the annotations are stripped, and when any weight differs from
+    1.0 the prompt is tokenized segment by segment (the backend's weighted
+    path); otherwise the cleaned prompt is tokenized whole."""
     global _tokenizer, _load_failed
     if _tokenizer is None and not _load_failed:
         with _lock:
@@ -53,7 +61,15 @@ def count_prompt_tokens(prompt: str) -> int | None:
                     _load_failed = True
     if _tokenizer is None:
         return None
-    return len(_tokenizer(prompt, add_special_tokens=False).input_ids)
+    from .token_weights import clean_prompt, parse_prompt_weights
+
+    segments = parse_prompt_weights(prompt)
+    if any(w != 1.0 for _, w in segments):
+        return sum(
+            len(_tokenizer(text, add_special_tokens=False).input_ids)
+            for text, _ in segments if text
+        )
+    return len(_tokenizer(clean_prompt(prompt), add_special_tokens=False).input_ids)
 
 
 def prompt_windows(tokens: int) -> int:

@@ -35,6 +35,11 @@ SDXL specifics (matching the k-diffusion / A1111 contract):
   incl. BOS/EOS), encode each, and concatenate the hidden states along the
   sequence dim instead of diffusers' hard 77-token truncation, so long prompts
   (e.g. a style stacked on top of a keyword-heavy prompt) lose no content
+- token weights (Forge/A1111 "emphasis", token_weights.py): (green:1.2)
+  scales the CLIP embeddings of "green"'s tokens by 1.2 (bare (x) = 1.1,
+  [x] = 1/1.1, nesting multiplies); the scaling is plain per-token
+  multiplication of the window hidden states (Forge's "No norm" emphasis),
+  applied to both the prompt and the negative prompt
 
 Precision (matching Forge's kdiff path exactly):
 - the solver state x runs in fp32: Forge's model call casts the UNet output
@@ -503,6 +508,15 @@ class SdxlBackend(ModelBackend):
         accepts the longer sequence, so no prompt content is lost. The pooled
         output is taken from the first window (A1111's `zs[0].pooled`).
 
+        Token weights (Forge/A1111 "emphasis", see token_weights.py): a
+        segment annotated ``(green:1.2)`` has every token it tokenizes to
+        scaled by 1.2 after encoding. When any segment carries a weight
+        other than 1.0, the prompt is tokenized segment by segment (A1111's
+        ``get_mult`` contract -- a word split into several BPE tokens gets
+        all of them weighted); a prompt without effective weights keeps the
+        exact whole-prompt tokenization of the cleaned text, so weightless
+        prompts stay byte-identical to the pre-token-weight path.
+
         Returns ``(prompt_embeds, pooled)``: CLIP-L and CLIP-G window
         embeddings are concatenated along the feature dim (as diffusers does
         with `torch.concat(..., dim=-1)`), and `pooled` is CLIP-G's first
@@ -510,8 +524,13 @@ class SdxlBackend(ModelBackend):
         """
         import torch
 
+        from .token_weights import clean_prompt, parse_prompt_weights
+
         pipe = self.pipe
         chunk_len = 75  # 77 total per window incl. BOS/EOS
+
+        segments = parse_prompt_weights(prompt)
+        weighted = any(w != 1.0 for _, w in segments)
 
         encoders = []
         if pipe.tokenizer is not None:
@@ -523,26 +542,39 @@ class SdxlBackend(ModelBackend):
         pooled = None
         for tokenizer, text_encoder in encoders:
             # content tokens without the framing special tokens
-            content = tokenizer(
-                prompt, add_special_tokens=False, return_tensors="pt"
-            ).input_ids[0].tolist()
+            if weighted:
+                # one segment at a time, so every token knows its weight
+                content, weights = [], []
+                for text, w in segments:
+                    ids = tokenizer(
+                        text, add_special_tokens=False, return_tensors="pt"
+                    ).input_ids[0].tolist()
+                    content.extend(ids)
+                    weights.extend([w] * len(ids))
+            else:
+                content = tokenizer(
+                    clean_prompt(prompt), add_special_tokens=False,
+                    return_tensors="pt",
+                ).input_ids[0].tolist()
+                weights = [1.0] * len(content)
             bos = tokenizer.bos_token_id
             eos = tokenizer.eos_token_id
             pad = tokenizer.pad_token_id
             # empty prompt -> a single empty window ([BOS] + [EOS] + pad),
             # identical to diffusers encoding ""
             windows = (
-                [[]] if not content
-                else [content[i:i + chunk_len] for i in range(0, len(content), chunk_len)]
+                ([], []) if not content
+                else [(content[i:i + chunk_len], weights[i:i + chunk_len])
+                      for i in range(0, len(content), chunk_len)]
             )
             hidden_parts = []
-            for window in windows:
+            for window, window_weights in windows:
                 # each window is framed like diffusers: [BOS] + content + [EOS]
                 # + pad. The pad token differs per encoder (49407 for CLIP-L,
                 # 0 for CLIP-G), so use the tokenizer's real pad_token_id.
                 ids = [bos] + window + [eos]
-                while len(ids) < 77:
-                    ids.append(pad)
+                n_pad = 77 - len(ids)
+                ids += [pad] * n_pad
                 out = text_encoder(
                     torch.tensor([ids], device=device, dtype=torch.long),
                     output_hidden_states=True,
@@ -552,7 +584,15 @@ class SdxlBackend(ModelBackend):
                 if pooled is None and out[0].ndim == 2:
                     pooled = out[0]
                 # clip_skip=None: penultimate transformer layer (diffusers default)
-                hidden_parts.append(out.hidden_states[-2])
+                hidden = out.hidden_states[-2]
+                if weighted:
+                    # Forge's "No norm" emphasis: scale every token embedding
+                    # by its segment's weight (BOS/EOS/pad stay at 1.0)
+                    w = torch.tensor(
+                        [1.0] + window_weights + [1.0] + [1.0] * n_pad,
+                        device=device, dtype=hidden.dtype)
+                    hidden = hidden * w.view(1, -1, 1)
+                hidden_parts.append(hidden)
             window_embeds.append(torch.cat(hidden_parts, dim=1))
 
         prompt_embeds = torch.cat(window_embeds, dim=-1)

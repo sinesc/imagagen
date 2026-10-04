@@ -127,6 +127,16 @@ prompt + style list. Imported images that reference styles missing from
 `user/styles.csv` get those styles added as in-memory temporaries under
 the "Session" optgroup (never written to the CSV).
 
+### Token weights
+
+SDXL prompts support Forge/A1111-style per-token weights: ``(green:1.2)``
+scales the CLIP embeddings of "green" by 1.2 (a bare ``(green)`` uses the
+usual 1.1 emphasis, ``[green]`` 1/1.1, nested groups multiply, and ``\(``
+escapes a literal parenthesis). The weight applies to every token the group
+expands to, in both the prompt and the negative prompt. The raw prompt
+(including the weight syntax) is what gets stored in the PNG metadata and
+restored on import.
+
 ### UI state persistence
 
 The web UI's last-used form inputs (model configuration, prompt, negative
