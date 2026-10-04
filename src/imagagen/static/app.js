@@ -158,6 +158,10 @@ function makeCombobox(root, options, cfg = {}) {
     const o = curOpts().find((x) => x.value === v);
     return o ? o.text : v;
   };
+  const titleFor = (v) => {
+    const o = curOpts().find((x) => x.value === v);
+    return (o && o.title) || "";
+  };
 
   function render(filter = "") {
     const f = filter.trim().toLowerCase();
@@ -174,7 +178,7 @@ function makeCombobox(root, options, cfg = {}) {
         list.append(el("li", { class: "combo-group" }, o.group));
         lastGroup = o.group;
       }
-      const li = el("li", { class: "combo-item", role: "option" }, o.text);
+      const li = el("li", { class: "combo-item", role: "option", title: o.title }, o.text);
       li.dataset.value = o.value;
       // Pick on mousedown (like a native select), not click: the mousedown
       // blurs the input, and the blur handler closes the list after 120 ms.
@@ -211,6 +215,7 @@ function makeCombobox(root, options, cfg = {}) {
   function pick(v, fromMouse = false) {
     value = v;
     input.value = v ? textFor(v) : "";
+    input.title = v ? titleFor(v) : "";
     close();
     root.dispatchEvent(new Event("change"));
     // Standard form behaviour: the combobox keeps focus after a selection.
@@ -276,6 +281,7 @@ function makeCombobox(root, options, cfg = {}) {
     set: (v) => {
       value = v || "";
       input.value = value ? textFor(value) : "";
+      input.title = value ? titleFor(value) : "";
     },
   });
   root.setOptions = (o) => {
@@ -291,6 +297,7 @@ function makeCombobox(root, options, cfg = {}) {
   root.open = (filter = "") => { open(filter); input.focus(); };
 
   input.value = value ? textFor(value) : "";
+  input.title = value ? titleFor(value) : "";
   render();
   return root;
 }
@@ -408,7 +415,10 @@ function loraRow(name, weight, onChange, enabled = true, withToggle = true) {
   // then falls back to the raw value)
   makeCombobox(root, () => pathGroupOptions(
     state.loras.concat(name && !state.loras.includes(name) ? [name] : [])
-      .map((n) => ({ value: n, text: n }))
+      .map((n) => ({
+        value: n, text: n,
+        title: state.loraSettings[n]?.description || undefined,
+      }))
   ), { initial: name || "" });
   const wt = el("input", {
     class: "lora-weight", type: "number", min: "-10", max: "10", step: "0.05",
@@ -654,23 +664,32 @@ function openLoraDialog(name, onClose = null) {
   const nameIn = el("input", { type: "text" });
   nameIn.value = name;
   nameIn.readOnly = true;
-  const descIn = el("textarea", { class: "style-prompt", rows: "4" });
+  const descIn = el("textarea", {
+    class: "style-prompt", rows: "4",
+    placeholder: "Shown in LoRA tooltip",
+  });
   descIn.value = s.description || "";
   const wtIn = el("input", { type: "number", min: "-10", max: "10", step: "0.05" });
   wtIn.value = s["preferred weight"] ?? 0.8;
-  const actIn = el("textarea", { class: "style-prompt", rows: "3" });
+  const actIn = el("textarea", {
+    class: "style-prompt", rows: "3",
+    placeholder: "Will be appended to prompt, or use {prompt} to place prompt in text.",
+  });
   actIn.value = s["activation text"] || "";
-  const negIn = el("textarea", { class: "style-prompt", rows: "3" });
+  const negIn = el("textarea", {
+    class: "style-prompt", rows: "3",
+    placeholder: "Will be appended to negative prompt, or use {prompt} to place negative prompt in text.",
+  });
   negIn.value = s["negative text"] || "";
   const notesIn = el("textarea", { class: "style-prompt", rows: "3" });
   notesIn.value = s.notes || "";
   const box = el("div", { class: "style-dialog" },
-    el("label", {}, "name", nameIn),
-    el("label", {}, "description", descIn),
-    el("label", {}, "preferred weight", wtIn),
-    el("label", {}, "activation text", actIn),
-    el("label", {}, "negative text", negIn),
-    el("label", {}, "notes", notesIn));
+    el("label", {}, "Name", nameIn),
+    el("label", {}, "Description", descIn),
+    el("label", {}, "Preferred weight", wtIn),
+    el("label", {}, "Activation text", actIn),
+    el("label", {}, "Negative text", negIn),
+    el("label", {}, "Notes", notesIn));
   openDialog("Edit LoRA", box, async () => {
     const body = {
       name,
