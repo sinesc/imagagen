@@ -590,10 +590,10 @@ function openStyleDialog(existing, onClose = null) {
   const negIn = el("textarea", { class: "style-prompt", rows: "3" });
   negIn.value = s.negative_prompt || "";
   const box = el("div", { class: "style-dialog" },
-    el("label", {}, "name", nameIn),
-    el("label", { title: "optgroup: groups styles in the UI dropdown (\"Session\" is reserved for imported temporary styles)" }, "group", groupIn),
-    el("label", { title: "{prompt} is replaced with the prompt so far at generation time; without it the text is appended to the prompt" }, "prompt", promptIn),
-    el("label", {}, "negative prompt", negIn));
+    el("label", {}, "Name", nameIn),
+    el("label", { title: "optgroup: groups styles in the UI dropdown (\"Session\" is reserved for imported temporary styles)" }, "Group", groupIn),
+    el("label", { title: "{prompt} is replaced with the prompt so far at generation time; without it the text is appended to the prompt" }, "Prompt", promptIn),
+    el("label", {}, "Negative prompt", negIn));
   openDialog(existing ? "Edit style" : "New style", box, async () => {
     const name = nameIn.value.trim();
     if (!name) { dialogError("name is required"); return false; }
@@ -1141,10 +1141,10 @@ function modeFieldset(title, section) {
     loraList.append(loraRow(l.name, l.weight, undefined, true, false)));
   fs.append(
     el("div", { class: "row" },
-      el("label", {}, "sampler", s),
-      el("label", {}, "scheduler", sc)),
+      el("label", {}, "Sampler", s),
+      el("label", {}, "Scheduler", sc)),
     el("div", { class: "row" },
-      el("label", { title: "steps override; empty = built-in default" }, "steps", steps),
+      el("label", { title: "steps override; empty = built-in default" }, "Steps", steps),
       el("label", { title: "CFG override; empty = model default" }, "CFG", cfg)),
     el("div", { class: "loras" }, loraList, loraAddButton(loraList, null, false)),
   );
@@ -1176,13 +1176,13 @@ function openConfigDialog(entry) {
   const f1 = modeFieldset("text to image", entry.t2i);
   const f2 = modeFieldset("image to image / inpaint", entry.i2i);
   const box = el("div", { class: "cfg-dialog" },
-    el("label", {}, "name", nameIn),
-    el("label", { class: "muted" }, "model", modelIn),
+    el("label", {}, "Name", nameIn),
+    el("label", { class: "muted" }, "Model", modelIn),
     ...(isFlux ? [el("label", { class: "cfg-distilled-row", title: "checked " +
         "(default): the CFG values below are the embedded guidance " +
         "(distilled CFG; one pass per step, the negative prompt is ignored). " +
         "unchecked: classic CFG with the negative prompt (two passes per " +
-        "step, about 2x the time)." }, distilledIn, "distilled model")] : []),
+        "step, about 2x the time)." }, distilledIn, "Distilled model")] : []),
     f1, f2);
   openDialog("Model configuration", box, async () => {
     const name = nameIn.value.trim();
@@ -1220,7 +1220,7 @@ function createConfig() {
   nameIn.value = `${cur.name} (variant)`;
   openDialog("New model configuration", el("div", {},
     el("div", { class: "muted" }, "starts as a copy of the selected configuration"),
-    el("label", {}, "name", nameIn)),
+    el("label", {}, "Name", nameIn)),
     async () => {
       const name = nameIn.value.trim();
       if (!name) { dialogError("name is required"); return false; }
@@ -1382,21 +1382,21 @@ function openPresetDialog(existing, onClose = null) {
     placeholder: "optional — presets in the same group are listed together" });
   groupIn.value = p.group || "";
   const defs = [
-    ["width", "width", "number", p.width],
-    ["height", "height", "number", p.height],
-    ["rotation", "rotation", "select", p.rotation],
-    ["steps", "steps", "number", p.steps],
+    ["width", "Width", "number", p.width],
+    ["height", "Height", "number", p.height],
+    ["rotation", "Rotation", "select", p.rotation],
+    ["steps", "Steps", "number", p.steps],
     ["cfg", "CFG", "number", p.cfg],
-    ["seed", "seed", "number", p.seed],
-    ["batch", "batch size", "number", p.batch],
-    ["sampler", "sampler", "select", p.sampler],
-    ["scheduler", "scheduler", "select", p.scheduler],
-    ["mode", "mode", "select", p.mode],
-    ["denoise", "denoise strength", "number", p.denoise],
-    ["mask_padding", "mask padding", "number", p.mask_padding],
+    ["seed", "Seed", "number", p.seed],
+    ["batch", "Batch size", "number", p.batch],
+    ["sampler", "Sampler", "select", p.sampler],
+    ["scheduler", "Scheduler", "select", p.scheduler],
+    ["mode", "Mode", "select", p.mode],
+    ["denoise", "Denoise strength", "number", p.denoise],
+    ["mask_padding", "Mask padding", "number", p.mask_padding],
     ["loras", "LORAs", "loras", p.loras],
-    ["soft_inpaint", "soft inpainting", "bool", p.soft_inpaint],
-    ["sag", "self attention guidance", "bool", p.sag],
+    ["soft_inpaint", "Soft inpainting", "bool", p.soft_inpaint],
+    ["sag", "Self attention guidance", "bool", p.sag],
   ];
   const rows = el("div", { class: "preset-rows" });
   for (const [key, label, kind, value] of defs) {
@@ -1424,8 +1424,8 @@ function openPresetDialog(existing, onClose = null) {
     rows.append(el("div", { class: "preset-row" }, cb, el("label", { class: "preset-label", for: `preset-cb-${key}` }, label), input));
   }
   const box = el("div", { class: "preset-dialog" },
-    el("label", {}, "name", nameIn),
-    el("label", {}, "group", groupIn),
+    el("label", {}, "Name", nameIn),
+    el("label", {}, "Group", groupIn),
     el("div", { class: "muted" }, "checked settings are applied when the preset is selected"),
     rows);
   openDialog(existing ? "Edit preset" : "New preset", box, async () => {
@@ -1603,8 +1603,8 @@ function switchTool(t) {
 function syncUndoButtons() {
   const mask = Tools.current === "mask";
   const t = mask ? "mask" : "draw";
-  $("btn-undo").textContent = `↩ undo ${t}`;
-  $("btn-redo").textContent = `↪ redo ${t}`;
+  $("btn-undo").textContent = `↩ Undo ${t}`;
+  $("btn-redo").textContent = `↪ Redo ${t}`;
   $("btn-undo").disabled = (mask ? undoMask : undoDraw).length === 0;
   $("btn-redo").disabled = (mask ? redoMask : redoDraw).length === 0;
 }
