@@ -11,11 +11,11 @@ selector as at least one *configuration*:
 
 Each configuration stores, separately for text-to-image ("t2i") and
 image-to-image/inpaint ("i2i"): sampler, scheduler, steps, CFG, a LoRA
-list and the self-attention-guidance (SAG) enable flag. Null means "no
-override" -- the built-in backend default is used. The LoRA list is
-special: it is *always* prepended to the user-selected LoRAs
+list and the self-attention-guidance (SAG) enable flag + options. Null
+means "no override" -- the built-in backend default is used. The LoRA
+list is special: it is *always* prepended to the user-selected LoRAs
 (concept.md), it is not a default-override. SAG is implemented for the
-SDXL UNet only (inert for other families).
+SDXL UNet only (inert for the other families).
 
 File layout (one JSON per configuration, filename = sanitized name):
 
@@ -24,8 +24,10 @@ File layout (one JSON per configuration, filename = sanitized name):
       "model": "whatever",  # model id: path within models/sdxl, no extension
       "distilled": true,  # Flux only: CFG = embedded guidance (see ModelConfig)
       "t2i": {"sampler": null, "scheduler": null, "cfg": null, "sag": false,
+              "sag_scale": 0.5, "sag_blur_sigma": 2.0, "sag_threshold": 1.0,
               "loras": [{"name": "dmd2", "weight": 0.8}]},  # rel. to loras/<type>/
       "i2i": {"sampler": null, "scheduler": null, "cfg": null, "sag": false,
+              "sag_scale": 0.5, "sag_blur_sigma": 2.0, "sag_threshold": 1.0,
               "loras": []}
     }
 """
@@ -60,8 +62,13 @@ class ModeConfig(BaseModel):
     steps: int | None = Field(default=None, ge=1)
     cfg: float | None = Field(default=None, ge=0)
     # self attention guidance (Forge builtin extension) enabled for this
-    # direction; SDXL only (inert for the other families)
+    # direction; SDXL only (inert for the other families). The options
+    # carry the Forge slider names/ranges/defaults (the generate request
+    # no longer carries them: the configuration is the source of truth)
     sag: bool = False
+    sag_scale: float = Field(default=0.5, ge=-2.0, le=5.0)
+    sag_blur_sigma: float = Field(default=2.0, ge=0.0, le=10.0)
+    sag_threshold: float = Field(default=1.0, ge=0.0, le=4.0)
     loras: list[LoraRef] = Field(default_factory=list)
 
 
@@ -253,6 +260,12 @@ class ConfigStore:
 # ---------------------------------------------------------------- resolve --
 
 
+def mode_section(entry: ConfigEntry, mode: str) -> ModeConfig:
+    """The configuration section for a generation mode: t2i for
+    "generate", i2i for the inpaint modes."""
+    return entry.t2i if mode == "generate" else entry.i2i
+
+
 def resolve_settings(
     entry: ConfigEntry,
     mode: str,
@@ -275,8 +288,10 @@ def resolve_settings(
 
     Returns ``(sampler, scheduler, cfg, steps, loras, sag)`` with cfg/steps
     possibly None (= backend built-in) and ``sag`` the configuration's
-    self-attention-guidance flag for the picked section."""
-    section = entry.t2i if mode == "generate" else entry.i2i
+    self-attention-guidance flag for the picked section. The SAG *options*
+    are read from the section directly (``mode_section``) -- they have no
+    user-level override, so they are not part of the resolution."""
+    section = mode_section(entry, mode)
     sampler = user_sampler if user_sampler else section.sampler
     scheduler = user_scheduler if user_scheduler else section.scheduler
     cfg = section.cfg if user_cfg == CFG_SENTINEL else user_cfg

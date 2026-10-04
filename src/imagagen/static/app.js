@@ -22,10 +22,6 @@ const state = {
   // soft inpainting (Forge builtin extension) options; the enabled flag
   // lives on the checkbox. Defaults = Forge's built-in defaults.
   soft: { power: 1, scale: 0.5, detail: 4, maskInf: 0, threshold: 0.5, contrast: 2 },
-  // self attention guidance (Forge builtin extension) options; the
-  // enabled flag lives on the checkbox. Defaults = Forge's built-in
-  // defaults.
-  sag: { scale: 0.5, blur: 2, threshold: 1 },
   // the preset currently matching the form: {name, keys} where keys are its
   // enabled control keys. While set, the preset stays selected; a user edit of
   // any covered field clears it (clearActivePreset).
@@ -954,7 +950,6 @@ async function generate() {
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
     soft_inpainting: softInpaintBody(), // null = off
-    sag: sagBody(), // null = off
   };
   // pinned thumbnails are retained across the generation (their images
   // stay pinned server-side): their jobs get dropped, so source snapshots
@@ -1041,18 +1036,16 @@ async function refreshSamplers() {
 }
 
 // Family-specific main-form controls: Z-Image is a single-pass model (no
-// CFG/guidance, no negative prompt), and self attention guidance (SAG)
-// is implemented for the SDXL UNet only, so disable its options instead of
-// letting the user set values the backend silently ignores (the SAG
-// enable flag lives in the model configuration; the dialog checkbox is
-// only offered for SDXL models). The family comes from /api/models
-// (state.entries), not a samplers fetch (which would race the model load).
+// CFG/guidance, no negative prompt). Self attention guidance (SAG) has no
+// main-form controls: its enable flag and options live in the model
+// configuration (per-direction checkboxes + options dialog, SDXL entries
+// only). The family comes from /api/models (state.entries), not a samplers
+// fetch (which would race the model load).
 function applyFamilyControls() {
   const sel = $("model");
   const entry = state.entries.find((x) => x.id === sel.value) || state.entries[0];
   if (!entry) return;
   const zimage = entry.family === "zimage";
-  const sdxl = entry.family === "sdxl";
   const cfgIn = $("cfg");
   const negIn = $("negative");
   cfgIn.disabled = zimage;
@@ -1060,11 +1053,6 @@ function applyFamilyControls() {
   cfgIn.title = zimage
     ? "Z-Image is single-pass: CFG has no effect (always 1.0)"
     : "-1 = use the model configuration's CFG";
-  $("sag-cfg").disabled = !sdxl;
-  $("sag-row").classList.toggle("off", !sdxl);
-  $("sag-note").title = sdxl
-    ? "self attention guidance (Forge builtin extension): sharpens high-detail regions (faces, eyes, fine structures) by feeding the model's own self-attention back through an extra unconditional denoise (all modes, needs CFG > 1)"
-    : "self attention guidance is only supported by SDXL models";
 }
 
 // Refetch the LoRA list for the selected model's family and drop any
@@ -1114,8 +1102,9 @@ async function refreshModels(keepSelection = true) {
   else if (m.current) sel.value = m.current;
 }
 
-function modeFieldset(title, section, showSag) {
-  // section: {sampler, scheduler, cfg, sag, loras: [{name, weight}]}
+function modeFieldset(title, section, showSag, openSagOptions) {
+  // section: {sampler, scheduler, cfg, sag, sag_scale, sag_blur_sigma,
+  //           sag_threshold, loras: [{name, weight}]}
   const fs = el("fieldset", { class: "cfg-mode" }, el("legend", {}, title));
   const s = el("select", { class: "cfg-sampler" });
   s.append(opt("", "Model default"));
@@ -1146,24 +1135,45 @@ function modeFieldset(title, section, showSag) {
       el("label", { title: "steps override; empty = built-in default" }, "Steps", steps),
       el("label", { title: "CFG override; empty = model default" }, "CFG", cfg)),
   ];
+  // SAG is implemented for the SDXL UNet only; the checkbox row is omitted
+  // (not shown disabled) for the other families. The option values live in
+  // hidden inputs: the options dialog edits them and readCfgSection picks
+  // them up (the dialog replaces this one, so they cannot stay in sliders)
+  const sagInputs = [];
   if (showSag) {
-    // SAG is implemented for the SDXL UNet only; the checkbox is omitted
-    // (not shown disabled) for the other families
     const sag = el("input", { class: "cfg-sag", type: "checkbox" });
     sag.checked = !!section.sag;
+    const gear = el("button", { type: "button", class: "mini icon cfg-sag-cfg",
+      title: "self attention guidance options" }, "⚙");
+    gear.onclick = () => openSagOptions(fs);
     rows.push(el("div", { class: "row" },
       el("label", { class: "cfg-sag-row", title: "self attention guidance (Forge builtin extension): sharpens high-detail regions (faces, eyes, fine structures) by feeding the model's own self-attention back through an extra unconditional denoise (this direction, needs CFG > 1)" },
-        sag, "Self attention guidance")));
+        sag, "Self attention guidance"),
+      gear));
+    for (const [cls, key, dflt] of [
+      ["cfg-sag-scale", "sag_scale", 0.5],
+      ["cfg-sag-blur-sigma", "sag_blur_sigma", 2],
+      ["cfg-sag-threshold", "sag_threshold", 1],
+    ]) {
+      const i = el("input", { class: cls, type: "number", hidden: "" });
+      i.value = section[key] ?? dflt;
+      sagInputs.push(i);
+    }
   }
-  fs.append(...rows,
+  fs.append(...rows, ...sagInputs,
     el("div", { class: "loras" }, loraList, loraAddButton(loraList, null, false)),
   );
   return fs;
 }
 
 function readCfgSection(fs) {
-  // .cfg-sag only exists for SDXL entries; undefined (dropped by
-  // JSON.stringify) leaves the server-side default (false)
+  // the .cfg-sag* inputs only exist for SDXL entries; undefined (dropped
+  // by JSON.stringify) leaves the server-side defaults (false / Forge
+  // option values)
+  const num = (cls) => {
+    const i = fs.querySelector(cls);
+    return i ? parseFloat(i.value) : undefined;
+  };
   const sag = fs.querySelector(".cfg-sag");
   return {
     sampler: fs.querySelector(".cfg-sampler").value || null,
@@ -1171,13 +1181,19 @@ function readCfgSection(fs) {
     steps: fs.querySelector(".cfg-steps").value === "" ? null : parseInt(fs.querySelector(".cfg-steps").value, 10),
     cfg: fs.querySelector(".cfg-cfg").value === "" ? null : parseFloat(fs.querySelector(".cfg-cfg").value),
     sag: sag ? sag.checked : undefined,
+    sag_scale: num(".cfg-sag-scale"),
+    sag_blur_sigma: num(".cfg-sag-blur-sigma"),
+    sag_threshold: num(".cfg-sag-threshold"),
     loras: readLoraList(fs.querySelector(".lora-list")).map(([name, weight]) => ({ name, weight })),
   };
 }
 
-function openConfigDialog(entry) {
+function openConfigDialog(entry, prefill = null) {
+  // prefill: unsaved dialog state ({name, distilled, t2i, i2i}) captured
+  // before a nested dialog (the SAG options) replaced this one, so the
+  // detour back to this dialog keeps every edit
   const nameIn = el("input", { class: "cfg-name", type: "text", maxlength: "120" });
-  nameIn.value = entry.name;
+  nameIn.value = prefill ? prefill.name : entry.name;
   const modelIn = el("input", { class: "cfg-model", type: "text", readonly: "" });
   modelIn.value = entry.model_id;
   // distilled model: Flux-only flag (the CFG value becomes the embedded
@@ -1186,12 +1202,38 @@ function openConfigDialog(entry) {
   // user opens the dialog before the model finished loading.
   const isFlux = entry.family === "flux";
   const distilledIn = el("input", { class: "cfg-distilled", type: "checkbox" });
-  distilledIn.checked = entry.distilled !== false;
-  // SAG is implemented for the SDXL UNet only: the per-direction enable
-  // checkboxes are offered for SDXL entries only
+  distilledIn.checked = prefill ? !!prefill.distilled : entry.distilled !== false;
+  // SAG is implemented for the SDXL UNet only: the per-direction checkbox
+  // + options gear are offered for SDXL entries only
   const showSag = entry.family === "sdxl";
-  const f1 = modeFieldset("text to image", entry.t2i, showSag);
-  const f2 = modeFieldset("image to image / inpaint", entry.i2i, showSag);
+  // the SAG options dialog replaces this one (single #dialog element), so
+  // the click handler snapshots the whole dialog and reopens it
+  const openSagOptions = (fs) => {
+    const key = fs === f1 ? "t2i" : "i2i";
+    const cur = readCfgSection(fs);
+    const snap = {
+      name: nameIn.value,
+      distilled: distilledIn.checked,
+      t2i: readCfgSection(f1),
+      i2i: readCfgSection(f2),
+    };
+    // on save AND on cancel the config dialog reopens with the captured
+    // state, so unsaved edits survive the detour
+    const reopen = () => openConfigDialog(entry, snap);
+    openSagDialog({
+      scale: cur.sag_scale, blur: cur.sag_blur_sigma, threshold: cur.sag_threshold,
+    }, (v) => {
+      snap[key] = {
+        ...snap[key],
+        sag_scale: v.scale, sag_blur_sigma: v.blur, sag_threshold: v.threshold,
+      };
+      reopen();
+    }, reopen);
+  };
+  const f1 = modeFieldset("text to image", prefill?.t2i ?? entry.t2i, showSag,
+                          openSagOptions);
+  const f2 = modeFieldset("image to image / inpaint", prefill?.i2i ?? entry.i2i,
+                          showSag, openSagOptions);
   const box = el("div", { class: "cfg-dialog" },
     el("label", {}, "Name", nameIn),
     el("label", { class: "muted" }, "Model", modelIn),
@@ -1793,12 +1835,16 @@ const SAG_OPTS = [
    "How concentrated the attention has to be for a region to be degraded. 0 blurs everything, higher values target only the most focused regions."],
 ];
 
-function openSagDialog() {
+// The SAG options dialog (from the model configuration's per-direction
+// gear). ``vals`` = {scale, blur, threshold} to initialize the sliders;
+// onApply receives the edited values; onClose (cancel/escape/backdrop)
+// fires so the caller can restore the dialog it replaced.
+function openSagDialog(vals, onApply, onClose = null) {
   const fields = [];
   const make = ([key, label, min, max, step, help]) => {
     const input = el("input", { type: "range", min, max, step });
-    input.value = state.sag[key];
-    const val = el("b", {}, String(state.sag[key]));
+    input.value = vals[key];
+    const val = el("b", {}, String(vals[key]));
     input.oninput = () => { val.textContent = input.value; };
     fields.push({ key, input });
     return el("label", { class: "soft-opt" },
@@ -1812,26 +1858,20 @@ function openSagDialog() {
       "Self attention guidance (Forge builtin extension) sharpens high-detail regions (faces, eyes, fine structures): the unconditional x0 is degraded where the model's own self-attention is concentrated, the degraded copy is re-denoised with an extra unconditional UNet pass, and the difference is fed back into the result. Needs CFG > 1 and adds one extra UNet pass per step (~50% more model time)."),
     ...SAG_OPTS.map(make),
   ), () => {
-    fields.forEach(({ key, input }) => { state.sag[key] = parseFloat(input.value); });
-    scheduleSaveUiState(0);
-  });
+    const v = {};
+    fields.forEach(({ key, input }) => { v[key] = parseFloat(input.value); });
+    onApply(v);
+    // the caller replaces this dialog (reopening the config dialog): skip
+    // the closeDialog() this handler would run after onApply returned
+    return false;
+  }, "Save", onClose);
 }
 
-// The generate body's sag field: the slider values, always sent (all
-// modes), so the PNG metadata carries the Forge sag_* option keys
-// unconditionally (like the Forge extension). The ENABLED flag is not a
-// client field: the server resolves it from the selected model
-// configuration's per-direction checkbox (SDXL only) and writes
-// sag_enabled into the metadata from there. The backend needs cfg > 1 to
-// apply it (skips it like Forge when there is no unconditional pass)
-function sagBody() {
-  const s = state.sag;
-  return {
-    scale: s.scale,
-    blur_sigma: s.blur,
-    threshold: s.threshold,
-  };
-}
+// The generate body carries no SAG fields: the enabled flag AND the option
+// values are model-configuration settings (per direction, SDXL only),
+// resolved server-side. The server builds the request object from the
+// selected configuration, so the PNG metadata carries the Forge sag_* keys
+// unconditionally (like the extension).
 
 function wireToolbar() {
   $("tool-brush").onclick = () => switchTool("brush");
@@ -1873,7 +1913,6 @@ function wireToolbar() {
   $("seg-run").onclick = () => openSegDialog();
   $("soft-inpaint").onchange = () => { onUserFieldChange("soft-inpaint"); scheduleSaveUiState(0); };
   $("soft-inpaint-cfg").onclick = openSoftInpaintDialog;
-  $("sag-cfg").onclick = openSagDialog;
   $("rotation").onchange = () => { onUserFieldChange("rotation"); scheduleSaveUiState(0); };
   $("zoom-in").onclick = () => zoomCenter(1.25);
   $("zoom-out").onclick = () => zoomCenter(0.8);
@@ -2024,19 +2063,9 @@ async function applyPngMeta(meta, width, height) {
     }
   }
   // self attention guidance (Forge SAG extra parameters) round-trips
-  // through the PNG under the extension's raw snake_case keys. Only the
-  // OPTION values are imported here: the enabled flag is a model
-  // configuration setting (per-direction checkbox), not a UI field
-  if (meta.sag_enabled !== undefined && meta.sag_enabled !== null) {
-    for (const [key, label] of Object.entries({
-      scale: "sag_scale",
-      blur: "sag_blur_sigma",
-      threshold: "sag_threshold",
-    })) {
-      const v = parseFloat(meta[label]);
-      if (Number.isFinite(v)) state.sag[key] = v;
-    }
-  }
+  // through the PNG under the extension's raw snake_case keys, but is NOT
+  // imported: the enabled flag and the option values are model-configuration
+  // settings (per direction, SDXL only), not importable UI fields
   // switch to the image's model (see matchedEntry above)
   if (matchedEntry) {
     $("model").value = matchedEntry.id;
@@ -2133,10 +2162,8 @@ function readUiState() {
     soft_composite_mask_influence: state.soft.maskInf,
     soft_composite_difference_threshold: state.soft.threshold,
     soft_composite_difference_contrast: state.soft.contrast,
-    // the SAG enabled flag is a model configuration setting, not persisted
-    sag_scale: state.sag.scale,
-    sag_blur_sigma: state.sag.blur,
-    sag_threshold: state.sag.threshold,
+    // self attention guidance (enable flag + options) is a model
+    // configuration setting, not persisted here
     loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
     disabled_loras: getLoras().filter((x) => !x[2]).map(([n, w]) => [n, w]),
     styles: getStyles(),
@@ -2198,17 +2225,10 @@ function applyUiState(st) {
   ]) {
     if (typeof st[key] === "number") state.soft[k] = st[key];
   }
-  // self attention guidance: the three options (JS state object); the
-  // enabled flag is a model configuration setting, not persisted here
+  // self attention guidance (enable flag + options) is a model
+  // configuration setting, not persisted in the ui-state
   // sidebar width set by dragging its right border
   if (typeof st.sidebar_width === "number") $("controls").style.width = `${st.sidebar_width}px`;
-  for (const [key, k] of [
-    ["sag_scale", "scale"],
-    ["sag_blur_sigma", "blur"],
-    ["sag_threshold", "threshold"],
-  ]) {
-    if (typeof st[key] === "number") state.sag[k] = st[key];
-  }
   // canvas tools: current tool + per-tool remembered settings
   if (st.tools) {
     for (const [t, saved] of Object.entries(st.tools)) {

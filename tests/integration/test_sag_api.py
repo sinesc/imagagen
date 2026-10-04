@@ -1,9 +1,8 @@
 """Self attention guidance (Forge builtin extension) through the API,
-against the MockBackend: the ENABLED flag is a model-configuration
-setting (per t2i/i2i checkbox), the request body carries only the three
-options (null = no metadata; the mock ignores them), and the generated
-PNG metadata carries Forge's sag_* extra-parameter lines plus the
-resolved sag_enabled flag.
+against the MockBackend: the enabled flag AND the option values are
+model-configuration settings (per t2i/i2i); the generate body carries no
+sag fields, and the generated PNG metadata carries the resolved
+sag_enabled flag plus Forge's sag_* option keys unconditionally.
 """
 
 import io
@@ -31,11 +30,10 @@ def _upload_canvas(c: TestClient) -> None:
            headers={"content-type": "image/png"})
 
 
-SAG = {
-    "scale": 0.75,
-    "blur_sigma": 3.0,
-    "threshold": 1.5,
-}
+T2I = {"sag": True, "sag_scale": 0.75, "sag_blur_sigma": 3.0,
+       "sag_threshold": 1.5}
+I2I = {"sag": False, "sag_scale": -0.5, "sag_blur_sigma": 8.0,
+       "sag_threshold": 4.0}
 
 
 def _wait_done(ws, job: str, timeout: float = 10.0):
@@ -57,10 +55,11 @@ def _meta(c: TestClient, job: str) -> dict:
 
 def test_sag_enabled_by_model_config_t2i(tmp_path):
     """t2i sag=true in the selected configuration -> sag_enabled True in
-    the metadata for "generate" (with the client's option values)."""
+    the metadata, with the configuration's option values (the body
+    carries no sag fields at all)."""
     with _client(tmp_path) as c:
         r = c.post("/api/model-configs", json={
-            "name": "SAG on", "model": MODEL, "t2i": {"sag": True},
+            "name": "SAG on", "model": MODEL, "t2i": T2I,
         })
         assert r.status_code == 200, r.text
         cfg = r.json()
@@ -69,7 +68,7 @@ def test_sag_enabled_by_model_config_t2i(tmp_path):
             r = c.post("/api/models/select", json={"id": cfg["id"]})
             assert r.status_code == 200, r.text
             r = c.post("/api/generate", json={
-                "prompt": "test", "width": 64, "height": 64, "sag": SAG,
+                "prompt": "test", "width": 64, "height": 64,
             })
             assert r.status_code == 200, r.text
             _wait_done(ws, r.json()["job_id"])
@@ -82,113 +81,69 @@ def test_sag_enabled_by_model_config_t2i(tmp_path):
 
 def test_sag_disabled_by_default_writes_flag_false(tmp_path):
     # the default (no file configuration) entry has sag off in both
-    # sections; a disabled SAG still writes the flag (like the Forge
-    # extension), the client no longer sends an enabled flag
+    # sections with the Forge option defaults
     with _client(tmp_path) as c:
         with c.websocket_connect("/api/ws") as ws:
             r = c.post("/api/generate", json={
                 "prompt": "test", "width": 64, "height": 64,
-                "sag": {"scale": 1.25},
             })
             assert r.status_code == 200, r.text
             _wait_done(ws, r.json()["job_id"])
             meta = _meta(c, r.json()["job_id"])
         assert meta["sag_enabled"] == "False"
-        assert meta["sag_scale"] == 1.25
-        # values still default to the Forge sliders
+        # the Forge option defaults
+        assert meta["sag_scale"] == 0.5
         assert meta["sag_blur_sigma"] == 2.0
         assert meta["sag_threshold"] == 1.0
 
 
-def test_sag_flag_follows_the_mode_section(tmp_path):
-    """generate uses the t2i section, inpaint modes the i2i section."""
+def test_sag_flag_and_options_follow_the_mode_section(tmp_path):
+    """generate uses the t2i section, inpaint modes the i2i section --
+    for the flag AND the option values."""
     with _client(tmp_path) as c:
         r = c.post("/api/model-configs", json={
-            "name": "SAG t2i only", "model": MODEL,
-            "t2i": {"sag": True},  # i2i stays False
+            "name": "SAG t2i only", "model": MODEL, "t2i": T2I, "i2i": I2I,
         })
         cfg = r.json()
         with c.websocket_connect("/api/ws") as ws:
             c.post("/api/models/select", json={"id": cfg["id"]})
-            # t2i section: enabled
+            # t2i section: enabled, t2i options
             r = c.post("/api/generate", json={
-                "prompt": "test", "width": 64, "height": 64, "sag": SAG,
+                "prompt": "test", "width": 64, "height": 64,
             })
             _wait_done(ws, r.json()["job_id"])
-            assert _meta(c, r.json()["job_id"])["sag_enabled"] == "True"
-            # i2i section: disabled (same config, inpaint mode)
+            m = _meta(c, r.json()["job_id"])
+            assert m["sag_enabled"] == "True"
+            assert (m["sag_scale"], m["sag_blur_sigma"], m["sag_threshold"]) == \
+                (0.75, 3.0, 1.5)
+            # i2i section: disabled, i2i options
             _upload_canvas(c)
             r = c.post("/api/generate", json={
-                "prompt": "test", "width": 64, "height": 64, "sag": SAG,
+                "prompt": "test", "width": 64, "height": 64,
                 "mode": "inpaint_not_masked",
             })
             assert r.status_code == 200, r.text
             _wait_done(ws, r.json()["job_id"])
-            assert _meta(c, r.json()["job_id"])["sag_enabled"] == "False"
+            m = _meta(c, r.json()["job_id"])
+            assert m["sag_enabled"] == "False"
+            assert (m["sag_scale"], m["sag_blur_sigma"], m["sag_threshold"]) == \
+                (-0.5, 8.0, 4.0)
 
 
-def test_generate_without_sag_has_no_sag_metadata(tmp_path):
-    with _client(tmp_path) as c:
-        with c.websocket_connect("/api/ws") as ws:
-            r = c.post("/api/generate", json={
-                "prompt": "test", "width": 64, "height": 64, "sag": None,
-            })
-            assert r.status_code == 200
-            _wait_done(ws, r.json()["job_id"])
-            meta = _meta(c, r.json()["job_id"])
-        assert "sag_enabled" not in meta
-
-
-def test_generate_rejects_bad_sag_values(tmp_path):
+def test_model_config_rejects_bad_sag_option_values(tmp_path):
     # outside the Forge slider ranges -> 422
-    bad = dict(SAG)
-    bad["scale"] = 5.5
+    bad = dict(T2I, sag_scale=5.5)
     with _client(tmp_path) as c:
-        assert c.post("/api/generate", json={
-            "prompt": "t", "width": 64, "height": 64, "sag": bad,
+        assert c.post("/api/model-configs", json={
+            "name": "Bad", "model": MODEL, "t2i": bad,
         }).status_code == 422
-    bad = dict(SAG)
-    bad["threshold"] = -0.1
+    bad = dict(T2I, sag_threshold=-0.1)
     with _client(tmp_path) as c:
-        assert c.post("/api/generate", json={
-            "prompt": "t", "width": 64, "height": 64, "sag": bad,
+        assert c.post("/api/model-configs", json={
+            "name": "Bad", "model": MODEL, "t2i": bad,
         }).status_code == 422
-    # a partial object: the Forge defaults fill in the missing fields
+    bad = dict(T2I, sag_blur_sigma=10.5)
     with _client(tmp_path) as c:
-        with c.websocket_connect("/api/ws") as ws:
-            r = c.post("/api/generate", json={
-                "prompt": "t", "width": 64, "height": 64,
-                "sag": {"scale": 0.25},
-            })
-            assert r.status_code == 200, r.text
-            _wait_done(ws, r.json()["job_id"])
-            meta = _meta(c, r.json()["job_id"])
-        assert meta["sag_scale"] == 0.25
-        assert meta["sag_blur_sigma"] == 2.0
-        assert meta["sag_threshold"] == 1.0
-
-
-def test_ui_state_persists_sag_options(tmp_path):
-    # the enabled flag is no longer a UI field: only the three options
-    # persist in ui-state
-    with _client(tmp_path) as c:
-        r = c.post("/api/ui-state", json={
-            "sag_scale": 0.25,
-            "sag_blur_sigma": 4.5,
-            "sag_threshold": 2.5,
-        })
-        assert r.json() == {"ok": True}
-        state = c.get("/api/ui-state").json()["state"]
-        assert "sag" not in state
-        assert state["sag_scale"] == 0.25
-        assert state["sag_blur_sigma"] == 4.5
-        assert state["sag_threshold"] == 2.5
-
-
-def test_ui_state_rejects_out_of_range_sag_values(tmp_path):
-    with _client(tmp_path) as c:
-        assert c.post("/api/ui-state", json={"sag_scale": -2.5}).status_code == 422
-        assert c.post("/api/ui-state", json={"sag_scale": 5.5}).status_code == 422
-        assert c.post("/api/ui-state", json={"sag_blur_sigma": 10.5}).status_code == 422
-        assert c.post("/api/ui-state", json={"sag_threshold": -0.1}).status_code == 422
-        assert c.post("/api/ui-state", json={"sag_threshold": 4.1}).status_code == 422
+        assert c.post("/api/model-configs", json={
+            "name": "Bad", "model": MODEL, "t2i": bad,
+        }).status_code == 422

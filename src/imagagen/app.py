@@ -30,6 +30,7 @@ from .model_configs import (
     ConfigStore,
     ModelConfig,
     ModelConfigUpsert,
+    mode_section,
     resolve_settings,
 )
 from .models import ModelRegistry, list_loras, resolve_lora_names
@@ -162,16 +163,6 @@ class LoraSettingsBody(BaseModel):
     notes: str = ""
 
 
-class SagOptions(BaseModel):
-    """SAG slider values in the generate body; same names/ranges/defaults
-    as the Forge sliders. The enabled flag is a model-configuration
-    setting (per t2i/i2i checkbox), not part of this body."""
-
-    scale: float = Field(default=0.5, ge=-2.0, le=5.0)
-    blur_sigma: float = Field(default=2.0, ge=0.0, le=10.0)
-    threshold: float = Field(default=1.0, ge=0.0, le=4.0)
-
-
 class GenerateBody(BaseModel):
     prompt: str
     negative_prompt: str = ""
@@ -200,14 +191,6 @@ class GenerateBody(BaseModel):
     # soft inpainting (Forge builtin extension); null = off. The UI only
     # sends it for inpaint modes (the backend requires an init mask anyway)
     soft_inpainting: SoftInpainting | None = None
-    # self attention guidance (Forge builtin extension); null = no metadata.
-    # The UI always sends the options (enabled or not) so the PNG metadata
-    # carries them unconditionally (like the Forge extension); the ENABLED
-    # flag is NOT a client field -- it comes from the selected model
-    # configuration's per-direction sag checkbox (SDXL only). Needs cfg > 1
-    # (the SDXL backend skips it, like Forge, when there is no
-    # unconditional pass)
-    sag: SagOptions | None = None
     # context padding around the masked area (canvas px per side);
     # "inpaint_masked" only, capped at the mask's largest extent
     mask_padding: int = Field(default=INPAINT_PADDING, ge=0, le=2048)
@@ -588,6 +571,7 @@ def create_app(
                     body.steps,
                 )
             )
+            sag_section = mode_section(entry, body.mode)
         except ConfigError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         model_id = entry.model_id
@@ -663,12 +647,15 @@ def create_app(
             scheduler=scheduler,
             loras=loras,
             soft_inpainting=body.soft_inpainting,
-            # the enabled flag comes from the model configuration (per
-            # direction); the client supplies only the slider values
-            sag=(SelfAttentionGuidance(enabled=sag_enabled, scale=body.sag.scale,
-                                       blur_sigma=body.sag.blur_sigma,
-                                       threshold=body.sag.threshold)
-                 if body.sag is not None else None),
+            # self attention guidance: the enabled flag AND the option
+            # values come from the model configuration's per-direction
+            # section (SDXL only); the object is always present so the PNG
+            # metadata carries the Forge sag_* keys unconditionally, like
+            # the extension
+            sag=SelfAttentionGuidance(
+                enabled=sag_enabled, scale=sag_section.sag_scale,
+                blur_sigma=sag_section.sag_blur_sigma,
+                threshold=sag_section.sag_threshold),
         )
         try:
             # inpaint modes snapshot the canvas and populate init image/mask;

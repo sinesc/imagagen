@@ -116,12 +116,8 @@ class UiState(BaseModel):
     soft_composite_mask_influence: float = Field(0.0, ge=0, le=1)
     soft_composite_difference_threshold: float = Field(0.5, ge=0, le=8)
     soft_composite_difference_contrast: float = Field(2.0, ge=0, le=8)
-    # self attention guidance (Forge builtin extension): the three options;
-    # same ranges/defaults as the Forge sliders. The ENABLED flag is a model
-    # configuration setting (per t2i/i2i checkbox), not persisted here
-    sag_scale: float = Field(0.5, ge=-2.0, le=5.0)
-    sag_blur_sigma: float = Field(2.0, ge=0.0, le=10.0)
-    sag_threshold: float = Field(1.0, ge=0.0, le=4.0)
+    # self attention guidance: the enabled flag AND the option values are
+    # model-configuration settings (per t2i/i2i), not persisted here
     # user-selected LoRAs, [[name, weight], ...] (model-config LoRAs are
     # prepended server-side at generation time)
     loras: list[tuple[str, float]] = Field(default_factory=list)

@@ -28,14 +28,14 @@ def test_soft_row_layout_and_mode_gating(page, server):
     base, _ = server
     _open(page, base)
 
-    # the row exists in the sidebar, above the self-attention-guidance row
-    # (which sits directly above the Generate/Save buttons), with the
-    # checkbox first and the gear last (right-aligned)
+    # the row sits directly above the Generate/Save buttons, with the
+    # checkbox first and the gear last (right-aligned). (Self attention
+    # guidance has no main-form row: its enable flag and options live in
+    # the model configuration.)
     rows = page.locator("#controls > .row")
     classes = [rows.nth(i).get_attribute("class") or "" for i in range(rows.count())]
     assert "actions" in classes[-1]
-    assert "sag-row" in classes[-2]
-    assert "soft-row" in classes[-3]
+    assert "soft-row" in classes[-2]
     row = page.locator(".soft-row")
     # checkbox (left) first, gear (right) last
     first = row.locator("> :first-child")

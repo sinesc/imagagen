@@ -89,8 +89,12 @@ def test_models_endpoint(client):
         "model_id": "mock/mock.safetensors",
         "family": "sdxl",
         "distilled": True,
-        "t2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None, "sag": False, "loras": []},
-        "i2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None, "sag": False, "loras": []},
+        "t2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None,
+                "sag": False, "sag_scale": 0.5, "sag_blur_sigma": 2.0,
+                "sag_threshold": 1.0, "loras": []},
+        "i2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None,
+                "sag": False, "sag_scale": 0.5, "sag_blur_sigma": 2.0,
+                "sag_threshold": 1.0, "loras": []},
         "is_default": True,
     }]
     assert body["current"] == "mock/mock.safetensors"

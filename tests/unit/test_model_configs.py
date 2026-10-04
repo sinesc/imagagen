@@ -4,6 +4,7 @@ resolution order (user -> config -> backend built-in)."""
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from imagagen.config import Config
 from imagagen.model_configs import (
@@ -62,23 +63,38 @@ def test_file_layout(tmp_path):
     assert on_disk["t2i"]["sag"] is False
     assert on_disk["i2i"] == {"sampler": None, "scheduler": None,
                               "steps": None, "cfg": None, "sag": False,
+                              "sag_scale": 0.5, "sag_blur_sigma": 2.0,
+                              "sag_threshold": 1.0,
                               "loras": []}
 
 
-def test_sag_flag_per_direction(tmp_path):
-    # the enable flag is per direction (t2i/i2i) and round-trips through
-    # the configuration file
+def test_sag_flag_and_options_per_direction(tmp_path):
+    # the enable flag and the option values are per direction (t2i/i2i)
+    # and round-trip through the configuration file
     s = store(tmp_path)
     s.save(ModelConfig(name="SAG on", model="sdxl/a.safetensors",
-                       t2i=ModeConfig(sag=True)))
+                       t2i=ModeConfig(sag=True, sag_scale=1.25,
+                                      sag_blur_sigma=5.0)))
     e = s.resolve("sag-on")
     assert e.t2i.sag is True and e.i2i.sag is False
+    # t2i carries the saved values, i2i the Forge defaults
+    assert (e.t2i.sag_scale, e.t2i.sag_blur_sigma, e.t2i.sag_threshold) == \
+        (1.25, 5.0, 1.0)
+    assert (e.i2i.sag_scale, e.i2i.sag_blur_sigma, e.i2i.sag_threshold) == \
+        (0.5, 2.0, 1.0)
     on_disk = json.loads(
         (tmp_path / "user" / "model-configs" / "sag-on.json").read_text())
     assert on_disk["t2i"]["sag"] is True and on_disk["i2i"]["sag"] is False
+    assert on_disk["t2i"]["sag_scale"] == 1.25
     # survives a reload from disk (the store reads the files fresh)
     e2 = store(tmp_path).resolve("sag-on")
     assert e2.t2i.sag is True and e2.i2i.sag is False
+    assert e2.t2i.sag_scale == 1.25
+    # outside the Forge slider ranges -> rejected
+    with pytest.raises(ValidationError):
+        store(tmp_path).save(ModelConfig(
+            name="Bad", model="sdxl/a.safetensors",
+            t2i=ModeConfig(sag=True, sag_scale=5.5)))
 
 
 def test_distilled_flag_default_and_roundtrip(tmp_path):
