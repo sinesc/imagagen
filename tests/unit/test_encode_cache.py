@@ -1,5 +1,5 @@
-"""The per-backend encoded-prompt cache (zimage ``_get_context`` / flux
-``_get_encoding``).
+"""The shared per-model encoded-prompt cache (zimage ``_get_context`` /
+flux ``_get_encoding``).
 
 An encoding is a deterministic function of the prompt (eval-mode encoders,
 no dropout), so a batch of identical prompts should run the (expensive)
@@ -10,18 +10,20 @@ cache-hit count, LRU eviction, and -- for Flux -- that the negative prompt
 is part of the key.
 """
 
-from collections import OrderedDict
+import threading
 
 import torch
 
-from imagagen.flux_backend import _ENC_CACHE_MAX, FluxBackend
+from imagagen.backends import EncCache, _ENC_CACHE_MAX
+from imagagen.flux_backend import FluxBackend
 from imagagen.zimage_backend import ZImageBackend
 
 
 def _stub(cls):
     """A backend shell with just the attributes the encode helpers touch."""
     b = cls.__new__(cls)
-    b._enc_cache = OrderedDict()
+    b._enc_cache = EncCache()
+    b._lock = threading.Lock()
     b.device = "cpu"
     b.te_device = "cpu"  # short-circuits the transformer-swap branch (no CUDA)
     b.name = "test"
@@ -120,6 +122,18 @@ class TestZImageContextCache:
         b._get_context("a prompt")
         assert offloads == [True]
 
+    def test_pre_encode_encodes_batch_in_one_session(self):
+        # a wildcard batch: every unique prompt encoded exactly once, the
+        # reserve bumps the LRU cap, and the later generations are hits
+        b, calls = _stub(ZImageBackend)
+        b.pre_encode([("a", ""), ("b", ""), ("a", "")], reserve=10)
+        assert sorted(calls) == ["a", "b"]
+        assert b._enc_cache.max == 10
+        calls.clear()
+        b._get_context("a")
+        b._get_context("b")
+        assert calls == []  # both were pre-encoded: no further encoder runs
+
 
 class TestFluxEncodingCache:
     def test_same_prompt_no_negative_encodes_once(self):
@@ -136,11 +150,12 @@ class TestFluxEncodingCache:
         assert neg is None
         (c2, y2, neg2) = b._get_encoding("p", "n")
         # different key -> a fresh encode of BOTH the prompt and negative
-        assert calls == ["p", "p", "n"]
+        # (the order between the two texts is not contractual)
+        assert sorted(calls) == ["n", "p", "p"]
         assert neg2 is not None
         (c3, y3, neg3) = b._get_encoding("p", "n")
         # and the negative variant is now cached too
-        assert calls == ["p", "p", "n"]
+        assert sorted(calls) == ["n", "p", "p"]
         assert torch.equal(c2, c3) and torch.equal(neg2[0], neg3[0])
 
     def test_lru_eviction_caps_the_cache(self):
@@ -174,3 +189,15 @@ class TestFluxEncodingCache:
         b._get_encoding("a prompt", None)
         b._get_encoding("a prompt", None)
         assert offloads == [True]
+
+    def test_pre_encode_covers_both_key_variants(self):
+        # a wildcard batch pre-encodes a pair under BOTH keys a generation
+        # could look up -- (p, n) and (p, None) (distilled mode) -- from one
+        # encoder session per unique text
+        b, calls = _stub(FluxBackend)
+        b.pre_encode([("p", "n")], reserve=8)
+        assert sorted(calls) == ["n", "p"]
+        (c1, y1, neg1) = b._get_encoding("p", "n")
+        (c2, y2, neg2) = b._get_encoding("p", None)
+        assert sorted(calls) == ["n", "p"]  # no further encoder runs
+        assert neg1 is not None and neg2 is None

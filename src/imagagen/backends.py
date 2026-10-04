@@ -8,6 +8,7 @@ environments without a GPU.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -40,6 +41,50 @@ _PARAM_INIT_LOCK = threading.RLock()
 #: built-in CFG when neither the user (sentinel -1) nor the model
 #: configuration provide an override (A1111's universal default)
 DEFAULT_CFG = 7.0
+
+#: default LRU cap for a model's prompt-encoding cache
+_ENC_CACHE_MAX = 8
+
+#: how many models keep prompt-encoding caches at once (per-model LRU)
+_MAX_CACHED_MODELS = 8
+
+
+class EncCache(OrderedDict):
+    """LRU store of CPU-side encoded prompt tensors for one model.
+
+    Shared across that model's per-GPU backend instances (each holds a
+    reference to the same object): an encoding is a deterministic function
+    of the encoder weights and the prompt, so every instance of the model
+    on every GPU can reuse it. The generation queue pre-encodes a wildcard
+    batch in one encoder session on the primary GPU, and every task of the
+    batch is then a cache hit wherever it runs.
+
+    ``max`` is the LRU cap; ``bump`` grows it (a pre-encoded batch must not
+    be evicted before all of its tasks have run).
+    """
+
+    def __init__(self, max_entries: int = _ENC_CACHE_MAX) -> None:
+        super().__init__()
+        self.max = max_entries
+
+    def bump(self, entries: int) -> None:
+        if entries > self.max:
+            self.max = entries
+
+
+_shared_enc_caches: OrderedDict[tuple[str, str], EncCache] = OrderedDict()
+
+
+def shared_enc_cache(family: str, model_id: str) -> EncCache:
+    """The shared prompt-encoding cache for one (family, model_id)."""
+    key = (family, model_id)
+    cache = _shared_enc_caches.get(key)
+    if cache is None:
+        _shared_enc_caches[key] = cache = EncCache()
+    _shared_enc_caches.move_to_end(key)
+    while len(_shared_enc_caches) > _MAX_CACHED_MODELS:
+        _shared_enc_caches.popitem(last=False)
+    return cache
 
 
 class GenerateRequest(BaseModel):
@@ -147,6 +192,20 @@ class ModelBackend(ABC):
 
         The default does nothing: model types that cannot be moved simply
         stay in VRAM.
+        """
+
+    def pre_encode(self, pairs: list[tuple[str, str]],
+                   reserve: int | None = None) -> None:
+        """Encode every ``(prompt, negative_prompt)`` pair into the shared
+        prompt-encoding cache (see :func:`shared_enc_cache`), ideally in a
+        single text-encoder session.
+
+        The generation queue calls this for wildcard batches BEFORE any of
+        their tasks runs: without it every task of the batch carries a
+        different resolved prompt, misses the cache, and re-loads / swaps
+        the (multi-GiB) text encoder for itself. After this call every task
+        of the batch is a cache hit and the encoder crosses the bus once
+        per batch, not once per image. The default is a no-op (mock).
         """
 
     def load(self) -> None:

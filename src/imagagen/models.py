@@ -424,6 +424,25 @@ class ModelRegistry:
         with state.lock:
             return self._load_backend_locked(state, model_id)
 
+    def pre_encode(self, model_id: str, gpu: int | None, pairs,
+                   reserve: int | None = None):
+        """Ensure ``model_id`` is loaded on ``gpu`` (or the primary) and
+        encode every ``(prompt, negative_prompt)`` pair of a batch in one
+        text-encoder session (see :meth:`ModelBackend.pre_encode`).
+
+        The generation queue calls this for wildcard batches BEFORE any of
+        their tasks runs, so the batch's per-image prompt picks each get
+        one encoder load for the whole batch instead of one per image. The
+        per-GPU lock is held across the encode, so a model swap can never
+        park the backend mid-encode.
+        """
+        if gpu is None:
+            gpu = self.primary
+        state = self._get_gpu_state(gpu)
+        with state.lock:
+            backend = self._load_backend_locked(state, model_id)
+            backend.pre_encode(pairs, reserve=reserve)
+
     def run(self, model_id: str, gpu: int, request, progress=None):
         """Atomically ensure ``model_id`` is loaded on ``gpu`` and run one
         generation.

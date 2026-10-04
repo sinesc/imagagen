@@ -45,7 +45,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
-from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -58,6 +57,7 @@ from .backends import (
     GenerateResult,
     ModelBackend,
     format_loras,
+    shared_enc_cache,
 )
 from .flux_lora import FluxLoraSpec, merge_module_deltas
 from .gguf_ops import QuantLinear, quant_linear_scope
@@ -87,8 +87,6 @@ DEFAULT_STEPS = 8
 DEFAULT_CFG = 1.0
 
 SAMPLERS = {"Euler": kdiff.sample_euler}
-# the encoded-context cache's entry cap (LRU; entries are a few MB each)
-_ENC_CACHE_MAX = 8
 # Z-Image has no scheduler concept: the shifted sigma schedule is computed
 # internally (kdiff.get_sigmas_zimage).
 SCHEDULERS = {}
@@ -164,9 +162,9 @@ class ZImageBackend(ModelBackend):
         # (path, mtime), so a re-apply of the same set skips the re-read
         self._lora_cache: dict[str, tuple[float, list[FluxLoraSpec]]] = {}
         # prompt str -> the encoded context on the CPU (few MB each, LRU);
-        # see _get_context -- an encoding is deterministic, so identical
-        # prompts (a same-prompt batch) are encoded once
-        self._enc_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
+        # SHARED across this model's per-GPU instances so a pre-encoded
+        # wildcard batch (queue.py) is a hit on every GPU; see _get_context
+        self._enc_cache = shared_enc_cache(info.family, info.id)
 
         from diffusers import AutoencoderKL
         from diffusers.utils.logging import disable_progress_bar
@@ -260,57 +258,87 @@ class ZImageBackend(ModelBackend):
         """The encoded (1, L, 2560) bf16 context for ``prompt`` on the
         model's device.
 
-        Encodings are cached on the CPU (LRU, a few MB each): the encoding
-        is deterministic, so a batch of identical prompts -- or any later
-        repeat of the same prompt -- reuses the first encoding instead of
-        running the ~4.4 GiB encoder again. A cache hit also skips the
-        transformer swap that an uncached encode would trigger.
+        Encodings are cached on the CPU (LRU, a few MB each, shared across
+        this model's per-GPU instances): the encoding is deterministic, so
+        a batch of identical prompts -- or any later repeat of the same
+        prompt -- reuses the first encoding instead of running the ~4.4 GiB
+        encoder again. A cache hit also skips the transformer swap that an
+        uncached encode would trigger.
         """
         cached = self._enc_cache.get(prompt)
         if cached is not None:
             self._enc_cache.move_to_end(prompt)
-            # A hit skips the encode, so the post-encode offload below never
-            # runs: if the co-resident fit check (cold load / parked restore)
-            # left the encoder on the GPU, drop it now, or its ~4.1 GiB sits
-            # next to the transformer through sampling and starves the VAE
-            # decode (the untiled 1024x1280 decode alone wants ~3 GiB)
+            # A hit skips the encode, so the post-encode offload in
+            # _encode_prompts never runs: if the co-resident fit check (cold
+            # load / parked restore) left the encoder on the GPU, drop it
+            # now, or its ~4.1 GiB sits next to the transformer through
+            # sampling and starves the VAE decode (the untiled 1024x1280
+            # decode alone wants ~3 GiB)
             if (self.te_device != "cpu"
                     and next(self.te.parameters()).device == self.device):
                 self._text_offload()
             return cached.to(self.device)
-        # bring the encoder to te_device, then park it. With the GPU
-        # text-encoder default, the resident transformer (~6.2 GiB) and the
-        # encoder (~4.4 GiB) may not leave room for the sampling working
-        # set on a 16 GiB card; Forge's memory manager unloads the unet
-        # while the text encoders run. We do the same swap when the encoder
-        # is parked on the CPU for this reason (see __init__): park the
-        # transformer on the CPU for the encode, then bring it back after
-        # the encoder is parked again.
+        self._encode_prompts([prompt])
+        return self._enc_cache[prompt].to(self.device)
+
+    def _encode_prompts(self, prompts: list[str],
+                        reserve: int | None = None) -> None:
+        """Bring the encoder to ``te_device`` ONCE, encode every prompt not
+        yet in the shared cache, and park the encoder again.
+
+        The ~4.4 GiB encoder crosses the bus at most once per call, however
+        many prompts it encodes: the generation queue pre-encodes a whole
+        wildcard batch here (via :meth:`pre_encode`) instead of every task
+        of the batch triggering its own transformer swap. With the GPU
+        text-encoder default, the resident transformer (~6.2 GiB) and the
+        encoder (~4.4 GiB) may not leave room for the sampling working set
+        on a 16 GiB card; Forge's memory manager unloads the unet while the
+        text encoders run. We do the same swap when the encoder is parked
+        on the CPU for this reason (see __init__): park the transformer on
+        the CPU for the encode, then bring it back after the encoder is
+        parked again.
+
+        ``reserve`` is the number of cache entries the caller expects to be
+        resident afterwards: the LRU cap is raised to it so a pre-encoded
+        batch is not evicted before its slowest task has run.
+        """
+        missing = [p for p in dict.fromkeys(prompts)
+                   if self._enc_cache.get(p) is None]
+        if not missing:
+            return
+        if reserve is not None:
+            self._enc_cache.bump(reserve)
         swapped = False
         if self.te_device != "cpu" and next(self.te.parameters()).device != self.device:
             free, _ = torch.cuda.mem_get_info(self.device)
             log.info(
-                "%s: transformer swapped to the CPU for text encoding "
-                "(%.2f GiB encoder, %.2f GiB free)",
-                self.name, self._encoder_bytes / 2**30, free / 2**30)
+                "%s: transformer swapped to the CPU for text encoding of %d "
+                "prompt(s) (%.2f GiB encoder, %.2f GiB free)",
+                self.name, len(missing), self._encoder_bytes / 2**30,
+                free / 2**30)
             self.transformer.to("cpu")
             torch.cuda.empty_cache()
             swapped = True
         self._text_to(self.te_device)
         with torch.inference_mode():
-            context = self._encode_prompt(prompt)
-            # CPU copy for the cache; the embedding itself goes to the GPU
-            # (with te_device=cpu the encoder stays in system RAM)
-            cached = context.cpu()
-            context = context.to(self.device)
-        self._enc_cache[prompt] = cached
-        while len(self._enc_cache) > _ENC_CACHE_MAX:
+            for p in missing:
+                # CPU copy for the cache (with te_device=cpu the encoder
+                # stays in system RAM)
+                self._enc_cache[p] = self._encode_prompt(p).cpu()
+                self._enc_cache.move_to_end(p)
+        while len(self._enc_cache) > self._enc_cache.max:
             self._enc_cache.popitem(last=False)
         self._text_offload()
         if swapped:
             self.transformer.to(self.device)
             torch.cuda.empty_cache()
-        return context
+
+    def pre_encode(self, pairs: list[tuple[str, str]],
+                   reserve: int | None = None) -> None:
+        """One encoder session for a whole batch (see ModelBackend). Z-Image
+        ignores the negative prompt: only the prompts are encoded."""
+        with self._lock:
+            self._encode_prompts([prompt for prompt, _ in pairs], reserve)
 
     def _text_to(self, device) -> None:
         self.te.to(device)

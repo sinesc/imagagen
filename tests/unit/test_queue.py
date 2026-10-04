@@ -36,6 +36,8 @@ class FakeRegistry:
         self.uses = []
         self.model_uses = []
         self.cancels = []
+        # (model_id, gpu, pairs, reserve) in the order pre-encodes ran
+        self.pre_encodes = []
         self._lk = threading.Lock()
 
     def list(self):
@@ -63,6 +65,11 @@ class FakeRegistry:
             self.uses.append((gpu, request.seed))
             self.model_uses.append((gpu, model_id))
         return self._b.generate(request, progress), self._b
+
+    def pre_encode(self, model_id, gpu=None, pairs=None, reserve=None):
+        with self._lk:
+            self.pre_encodes.append(
+                (model_id, gpu, list(pairs or []), reserve))
 
     def cancel(self, gpu=None):
         self.cancels.append(gpu)
@@ -314,25 +321,81 @@ def test_wildcards_resolved_per_seed_and_stored_in_metadata(tmp_path):
     assert all(p in ("a sunny day", "a stormy day") for p in prompts)
 
 
-def test_wildcard_error_settles_task_with_error_event(tmp_path):
-    # a per-task WildcardError (shouldn't normally reach the worker, since it
-    # is validated at submit) is surfaced as an error event, not a crash
+def test_wildcard_resolution_error_fails_whole_job(tmp_path):
+    # a WildcardError at submit-time resolution (the file went missing or
+    # empty after app.py's validation) would fail EVERY task of the batch,
+    # so the whole job is rejected up front with an error event
     backend = MockBackend()
     events = []
     q, _ = _queue(backend, events, wildcards_dir=tmp_path)
     job = q.submit(
         "m",
         GenerateRequest(prompt="a __ghost__ day", width=8, height=8, steps=1, seed=1),
-        1,
+        3,
     )
-    # an error settles the task (finished) without producing a result, so
-    # wait on done_emitted rather than completed==batch_size
-    deadline = time.time() + 10
-    while time.time() < deadline and not job.done_emitted:
-        time.sleep(0.02)
+    # every task settled at submit time without any generation running
     assert job.done_emitted
+    assert q.registry.uses == []
+    assert q.registry.pre_encodes == []  # nothing was encoded for it
     assert any(e["type"] == "error" and "not found" in e["message"] for e in events)
     assert job.results == {}
+
+
+def test_wildcard_batch_pre_encodes_prompts_before_generation(tmp_path):
+    # a wildcard batch's per-task resolved prompts are pre-encoded in one
+    # registry.pre_encode call (one encoder session) before any generation
+    (tmp_path / "mood.txt").write_text("sunny\nstormy\n", encoding="utf-8")
+    backend = MockBackend()
+    events = []
+    q, _ = _queue(backend, events, wildcards_dir=tmp_path)
+    job = q.submit(
+        "m",
+        GenerateRequest(prompt="a __mood__ day", width=8, height=8, steps=1, seed=10),
+        3,
+    )
+    _wait_done(q, job.id)
+    assert len(q.registry.pre_encodes) == 1
+    model_id, gpu, pairs, reserve = q.registry.pre_encodes[0]
+    assert model_id == "m"
+    assert reserve == 3  # the batch size: the entries must survive
+    assert len(pairs) == 3
+    assert all(p.startswith("a ") and p.endswith(" day")
+               and ("sunny" in p or "stormy" in p) for p, _ in pairs)
+
+
+def test_wildcard_tasks_wait_for_pre_encode(tmp_path):
+    # no task of a wildcard batch may start before its pre-encode finished:
+    # otherwise each task would trigger its own text-encoder load
+    (tmp_path / "mood.txt").write_text("sunny\nstormy\n", encoding="utf-8")
+    backend = MockBackend(steps_delay=0.05)
+    events = []
+    q, _ = _queue(backend, events, wildcards_dir=tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_pre_encode(model_id, gpu=None, pairs=None, reserve=None):
+        with q.registry._lk:
+            q.registry.pre_encodes.append(
+                (model_id, gpu, list(pairs or []), reserve))
+        started.set()
+        assert release.wait(10)
+
+    q.registry.pre_encode = slow_pre_encode
+    job = q.submit(
+        "m",
+        GenerateRequest(prompt="a __mood__ day", width=8, height=8, steps=2, seed=10),
+        2,
+    )
+    deadline = time.time() + 10
+    while time.time() < deadline and not started.is_set():
+        time.sleep(0.01)
+    assert started.is_set()
+    # give the workers time to (incorrectly) start tasks behind the gate
+    time.sleep(0.5)
+    assert q.registry.uses == []
+    release.set()
+    _wait_done(q, job.id)
+    assert sorted(seed for _, seed in q.registry.uses) == [10, 11]
 
 
 def test_generation_error_is_logged_to_console(caplog):

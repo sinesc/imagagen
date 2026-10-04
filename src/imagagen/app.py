@@ -143,6 +143,10 @@ class _MockRegistry:
     def run(self, model_id: str, gpu: int, request, progress=None):
         return self._backend.generate(request, progress), self._backend
 
+    def pre_encode(self, model_id: str, gpu: int | None, pairs,
+                   reserve: int | None = None):
+        self._backend.pre_encode(list(pairs), reserve=reserve)
+
     def unload_all(self) -> None:
         self._backend.unload()
 

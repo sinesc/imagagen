@@ -76,6 +76,14 @@ class Job:
     # LoRAs the UI showed toggled off: not applied to the request, recorded
     # in the image metadata so an import restores them in the disabled state
     meta_disabled_loras: list[tuple[str, float]] | None = None
+    # Wildcard-resolved (prompt, negative) per task index: the per-seed
+    # picks are made at submit time (submit) so the batch's prompts can be
+    # pre-encoded in ONE text-encoder session before any task runs. None =
+    # no wildcard processing (tasks use the request's text as-is).
+    resolved: dict[int, tuple[str, str]] | None = None
+    # Tasks of this job may not be dispatched until its prompts are fully
+    # pre-encoded (wildcard jobs); set immediately for all other jobs.
+    pre_encoded: threading.Event = field(default_factory=threading.Event)
     # Batch-wide step progress (see _STEP_RE): `steps_per_task` is the total
     # number of denoising steps one image needs (learned from the backend's
     # first progress event; identical for every task of the job because they
@@ -193,11 +201,42 @@ class GenerationQueue:
         import random
 
         base_seed = random.randrange(2**31) if request.seed == -1 else request.seed
+        # Wildcards: resolve the per-seed prompt picks for EVERY task of
+        # the batch up front (a fresh RNG per resolve, exactly the per-task
+        # picks _run_task used to make) so the batch's prompts can be
+        # pre-encoded in one text-encoder session before any task runs
+        # (below) -- otherwise every task of the batch misses the
+        # prompt-encoding cache and re-loads / swaps the multi-GiB text
+        # encoder for itself.
+        resolved = None
+        resolve_error: wildcards.WildcardError | None = None
+        if self._wildcards_dir is not None and (
+            wildcards.has_wildcards(request.prompt)
+            or wildcards.has_wildcards(request.negative_prompt)
+        ):
+            try:
+                resolved = {
+                    i: (
+                        wildcards.resolve(
+                            request.prompt, self._wildcards_dir, base_seed + i),
+                        wildcards.resolve(
+                            request.negative_prompt, self._wildcards_dir,
+                            base_seed + i),
+                    )
+                    for i in range(batch_size)
+                }
+            except wildcards.WildcardError as e:
+                # app.py already rejected the structural errors; a file may
+                # still have changed (emptied or deleted) since. Such an
+                # error would fail EVERY task of the batch, so reject the
+                # whole job up front instead of settling the tasks one by
+                # one.
+                resolve_error = e
         job = Job(id=self._next_job_id, model_id=model_id, request=request,
                   batch_size=batch_size, base_seed=base_seed, plan=plan,
                   meta_prompt=meta_prompt, meta_negative=meta_negative,
                   meta_styles=meta_styles,
-                  meta_disabled_loras=meta_disabled_loras)
+                  meta_disabled_loras=meta_disabled_loras, resolved=resolved)
         job.source_image_id = self.canvas.current_id()
         job.source_seed = self._source_seed(job.source_image_id)
         if job.source_image_id is not None:
@@ -220,10 +259,28 @@ class GenerationQueue:
         # entities are no longer reachable and can be evicted.
         self.canvas.release_pins()
         self.canvas.evict_stale()
+        if resolve_error is not None:
+            log.error("job %d: %s", job.id, resolve_error)
+            with self._cond:
+                job.finished.update(range(job.batch_size))
+                job.done_emitted = True
+            self.emit({"type": "error", "job": job.id,
+                      "message": str(resolve_error)})
+            return job
+        if resolved is None:
+            job.pre_encoded.set()
         with self._cond:
             for i in range(batch_size):
                 self._pending.append(_Task(job.id, i, base_seed + i))
             self._dispatch()
+        if resolved is not None:
+            # encode the batch's prompts in one text-encoder session before
+            # any task of it runs (the dispatch gate holds them until the
+            # event is set -- see _pre_encode_job)
+            threading.Thread(
+                target=self._pre_encode_job, args=(job,),
+                name=f"pre-encode-job-{job.id}", daemon=True,
+            ).start()
         self.emit({"type": "job_started", "job": job.id, "batch_size": batch_size,
                    "base_seed": base_seed})
         # Cold models warm up alone on the primary GPU first (see module
@@ -348,7 +405,13 @@ class GenerationQueue:
         while i < len(self._pending) and free:
             task = self._pending[i]
             job = self.job(task.job_id)
-            if job is not None and job.model_id == self._warmed_model:
+            if job is None or not job.pre_encoded.is_set():
+                # gone, or a wildcard batch still being pre-encoded: its
+                # tasks wait (the pre-encode thread dispatches again when it
+                # finishes); later jobs' tasks can still flow
+                i += 1
+                continue
+            if job.model_id == self._warmed_model:
                 gpu = free.pop(0)  # warm: any free GPU, primary first
             else:
                 # Cold model: primary only, and only while it is the next
@@ -379,30 +442,19 @@ class GenerationQueue:
                  model_name=info.name if info is not None else job.model_id)
         req = GenerateRequest.model_validate(d)
 
-        # Wildcards are resolved per task, using this task's seed: each image
-        # of a batch may pick different wildcard lines. The resolved text is
-        # what the model sees AND what the image metadata stores (the raw
-        # prompt can't be re-rolled to reproduce the pick). A structural
-        # error (missing file / recursion) was already rejected at submit
-        # time, so this is a defensive guard only.
+        # Wildcards: the per-seed prompt picks were resolved at submit time
+        # (Job.resolved) -- identical to per-task resolution (a fresh RNG
+        # seeded with the task's seed), just made up front so the batch can
+        # be pre-encoded in one text-encoder session (see submit /
+        # _pre_encode_job). The resolved text is what the model sees AND
+        # what the image metadata stores (the raw prompt can't be re-rolled
+        # to reproduce the pick).
         meta_prompt = job.meta_prompt
         meta_negative = job.meta_negative
-        # only touch the request / metadata when a reference is actually
-        # present: without wildcards the (raw + styles) round-trip behaviour
-        # is left exactly as before
-        if self._wildcards_dir is not None and (
-            wildcards.has_wildcards(req.prompt)
-            or wildcards.has_wildcards(req.negative_prompt)
-        ):
-            try:
-                prompt = wildcards.resolve(req.prompt, self._wildcards_dir, task.seed)
-                negative = wildcards.resolve(req.negative_prompt, self._wildcards_dir, task.seed)
-            except wildcards.WildcardError as e:
-                log.error("job %s task %d: %s", job.id, task.index, e)
-                self.emit({"type": "error", "job": job.id, "message": str(e)})
-                self._settle(job, task.index)
-                return
-            req = req.model_copy(update={"prompt": prompt, "negative_prompt": negative})
+        if job.resolved is not None:
+            prompt, negative = job.resolved[task.index]
+            req = req.model_copy(update={"prompt": prompt,
+                                         "negative_prompt": negative})
             meta_prompt, meta_negative = prompt, negative
 
         def progress(fraction: float, message: str) -> None:
@@ -538,6 +590,42 @@ class GenerationQueue:
                            "index": task.index})
         self._settle(job, task.index)
 
+    def _pre_encode_job(self, job: Job) -> None:
+        """Encode the whole batch's wildcard-resolved prompts in ONE
+        text-encoder session before any task of the job runs.
+
+        Each task of a wildcard batch carries a different prompt, so
+        without this every task would miss the prompt-encoding cache and
+        re-load / swap the multi-GiB text encoder for itself (the encoder
+        crossing the bus once per image). Encoded on the primary GPU's
+        backend, the shared per-model cache (backends.shared_enc_cache)
+        makes every task of the batch a cache hit on every GPU it is
+        spread over. registry.pre_encode holds the per-GPU lock across the
+        encode, so a model swap can never park the backend mid-encode.
+        """
+        gpu = self._gpus[0] if self._gpus else None
+        try:
+            self.registry.pre_encode(job.model_id, gpu,
+                                     list(job.resolved.values()),
+                                     reserve=len(job.resolved))
+            log.info("job %d: pre-encoded %d prompt(s) in one encoder "
+                     "session before generation", job.id, len(job.resolved))
+        except Exception as e:
+            # the model failed to load (OOM, ...) or the encode crashed: the
+            # whole batch would have failed the same way task by task
+            log.exception("job %d: pre-encode failed: %s", job.id, e)
+            self.emit({"type": "error", "job": job.id,
+                       "message": f"{type(e).__name__}: {e}"})
+            for i in range(job.batch_size):
+                self._settle(job, i)
+        finally:
+            with self._cond:
+                job.pre_encoded.set()
+                self._dispatch()
+                self._cond.notify_all()
+            # an interrupted batch may have left the queue fully idle
+            self._maybe_unload_idle()
+
     def _settle(self, job: Job, index: int) -> None:
         """Mark a task index as settled; emit 'done' once when all are settled."""
         with self._cond:
@@ -559,6 +647,10 @@ class GenerationQueue:
         if self._pending or self._gpu_running or any(self._gpu_queues.values()):
             return False
         for job in self._jobs.values():
+            if job.resolved is not None and not job.pre_encoded.is_set():
+                # a wildcard batch still being pre-encoded: its encode holds
+                # a backend on a GPU, so parking models now would race it
+                return False
             if not job.done_emitted and not job.interrupted:
                 return False
         return True

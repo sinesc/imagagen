@@ -42,7 +42,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
-from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -55,6 +54,7 @@ from .backends import (
     GenerateResult,
     ModelBackend,
     format_loras,
+    shared_enc_cache,
 )
 from .clip_encoder import clip_pooled, load_clip_l
 from .flux_lora import FluxLoraSpec, merge_module_deltas, parse_lora
@@ -115,8 +115,6 @@ DEFAULT_STEPS = 25
 DEFAULT_STEPS_SCHNELL = 4
 
 SAMPLERS = {"Euler": kdiff.sample_euler}
-# the encoded-context cache's entry cap (LRU; entries are a few MB each)
-_ENC_CACHE_MAX = 8
 # the untiled 16-channel decoder's working set in GiB per megapixel: the
 # peak live conv + SiLU activations at the final full-resolution stage
 # (measured 3.0 GiB at 1024x1280; it scales linearly with pixel count)
@@ -155,10 +153,10 @@ class FluxBackend(ModelBackend):
         # (path, mtime), so a re-apply of the same set skips the re-read
         self._lora_cache: dict[str, tuple[float, list[FluxLoraSpec]]] = {}
         # (prompt, negative-or-None) -> the encoded embeddings on the CPU
-        # (few MB each, LRU); see _get_encoding -- an encoding is
-        # deterministic, so identical prompts (a same-prompt batch) are
-        # encoded once
-        self._enc_cache: OrderedDict[tuple[str, str | None], tuple] = OrderedDict()
+        # (few MB each, LRU); SHARED across this model's per-GPU instances
+        # so a pre-encoded wildcard batch (queue.py) is a hit on every
+        # GPU; see _get_encoding
+        self._enc_cache = shared_enc_cache(info.family, info.id)
 
         from diffusers import AutoencoderKL
         from diffusers.utils.logging import disable_progress_bar
@@ -281,21 +279,22 @@ class FluxBackend(ModelBackend):
         """(context, y) -- plus (context_neg, y_neg) when ``negative`` is
         not None -- on the model's device.
 
-        Encodings are cached on the CPU (LRU, a few MB each) keyed by
-        (prompt, negative-or-None): the encoding is deterministic, so a
-        batch of identical prompts -- or any later repeat of the same
-        prompt -- reuses the first result instead of running the ~4.6 GiB
-        T5 encoder again. A cache hit also skips the transformer swap that
-        an uncached encode would trigger.
+        Encodings are cached on the CPU (LRU, a few MB each, shared across
+        this model's per-GPU instances) keyed by (prompt, negative-or-None):
+        the encoding is deterministic, so a batch of identical prompts -- or
+        any later repeat of the same prompt -- reuses the first result
+        instead of running the ~4.6 GiB T5 encoder again. A cache hit also
+        skips the transformer swap that an uncached encode would trigger.
         """
         key = (prompt, negative)
         entry = self._enc_cache.get(key)
         if entry is not None:
             self._enc_cache.move_to_end(key)
-            # A hit skips the encode, so the post-encode offload below never
-            # runs: if the co-resident fit check left the T5/CLIP encoders on
-            # the GPU, drop them now, or they sit next to the transformer
-            # through sampling and starve the VAE decode (see zimage's note)
+            # A hit skips the encode, so the post-encode offload in
+            # _encode_pairs never runs: if the co-resident fit check left
+            # the T5/CLIP encoders on the GPU, drop them now, or they sit
+            # next to the transformer through sampling and starve the VAE
+            # decode (see zimage's note)
             if (self.te_device != "cpu"
                     and next(self.t5.parameters()).device == self.device):
                 self._text_offload()
@@ -303,47 +302,97 @@ class FluxBackend(ModelBackend):
             if negative is not None:
                 return tensors[0], tensors[1], (tensors[2], tensors[3])
             return tensors[0], tensors[1], None
-        # bring the encoders to te_device, then park them. With the GPU
-        # text-encoder default, a large resident transformer (FP8 ~11.1
-        # GiB) and the text encoders (T5 ~4.6 GiB + CLIP ~0.2 GiB) may not
-        # share a 16 GB card; Forge's memory manager unloads the unet
-        # while the text encoders run. We do the same swap when the
-        # encoders are parked on the CPU for this reason (see __init__):
-        # park the transformer on the CPU for the encode, and bring it
-        # back after the encoders are parked again.
+        self._encode_pairs([key])
+        entry = self._enc_cache[key]
+        tensors = [t.to(self.device) for t in entry]
+        if negative is not None:
+            return tensors[0], tensors[1], (tensors[2], tensors[3])
+        return tensors[0], tensors[1], None
+
+    def _encode_pairs(self, keys: list[tuple[str, str | None]],
+                      reserve: int | None = None) -> None:
+        """Bring the T5/CLIP encoders to ``te_device`` ONCE, encode every
+        (prompt, negative-or-None) key not yet in the shared cache, and
+        park the encoders again.
+
+        The ~4.6 GiB T5 crosses the bus at most once per call, however many
+        prompts it encodes: the generation queue pre-encodes a whole
+        wildcard batch here (via :meth:`pre_encode`) instead of every task
+        of the batch triggering its own transformer swap. With the GPU
+        text-encoder default, a large resident transformer (FP8 ~11.1 GiB)
+        and the text encoders (T5 ~4.6 GiB + CLIP ~0.2 GiB) may not share a
+        16 GB card; Forge's memory manager unloads the unet while the text
+        encoders run. We do the same swap when the encoders are parked on
+        the CPU for this reason (see __init__): park the transformer on the
+        CPU for the encode, and bring it back after the encoders are
+        parked again.
+
+        Each unique text (prompt or negative) is encoded once; every key's
+        entry is assembled from the shared parts ((prompt, None) entries
+        carry only the prompt parts).
+
+        ``reserve`` is the number of cache entries the caller expects to be
+        resident afterwards: the LRU cap is raised to it so a pre-encoded
+        batch is not evicted before its slowest task has run.
+        """
+        keys = list(dict.fromkeys(keys))
+        missing = [k for k in keys if self._enc_cache.get(k) is None]
+        if not missing:
+            return
+        if reserve is not None:
+            self._enc_cache.bump(reserve)
         swapped = False
         if self.te_device != "cpu" and next(self.t5.parameters()).device != self.device:
             free, _ = torch.cuda.mem_get_info(self.device)
             log.info(
-                "%s: transformer swapped to the CPU for text encoding "
-                "(%.2f GiB encoders, %.2f GiB free)",
-                self.name, self._encoder_bytes / 2**30, free / 2**30)
+                "%s: transformer swapped to the CPU for text encoding of %d "
+                "prompt(s) (%.2f GiB encoders, %.2f GiB free)",
+                self.name, len(missing), self._encoder_bytes / 2**30, free / 2**30)
             self.transformer.to("cpu")
             torch.cuda.empty_cache()
             swapped = True
         self._text_to(self.te_device)
         with torch.inference_mode():
-            context, y = self._encode_prompt(prompt)
-            if negative is not None:
-                context_neg, y_neg = self._encode_prompt(negative)
-            # CPU copies for the cache; the embeddings themselves go to the
-            # GPU (with te_device=cpu the encoders stay in system RAM)
-            entry = (context.cpu(), y.cpu())
-            if negative is not None:
-                entry = entry + (context_neg.cpu(), y_neg.cpu())
-            context = context.to(self.device)
-            y = y.to(self.device)
-            if negative is not None:
-                context_neg = context_neg.to(self.device)
-                y_neg = y_neg.to(self.device)
-        self._enc_cache[key] = entry
-        while len(self._enc_cache) > _ENC_CACHE_MAX:
+            # sorted: a stable encode order (the result does not depend on
+            # it, but logs and tests stay deterministic)
+            texts = sorted({p for p, _ in missing}
+                           | {n for _, n in missing if n is not None})
+            parts: dict[str, tuple] = {}
+            for t in texts:
+                context, y = self._encode_prompt(t)
+                # CPU copies for the cache (with te_device=cpu the encoders
+                # stay in system RAM)
+                parts[t] = (context.cpu(), y.cpu())
+            for key in keys:
+                if self._enc_cache.get(key) is None:
+                    p, n = key
+                    self._enc_cache[key] = (
+                        parts[p] + parts[n] if n is not None else parts[p])
+                    self._enc_cache.move_to_end(key)
+        while len(self._enc_cache) > self._enc_cache.max:
             self._enc_cache.popitem(last=False)
         self._text_offload()
         if swapped:
             self.transformer.to(self.device)
             torch.cuda.empty_cache()
-        return context, y, (context_neg, y_neg) if negative is not None else None
+
+    def pre_encode(self, pairs: list[tuple[str, str]],
+                   reserve: int | None = None) -> None:
+        """One encoder session for a whole batch (see ModelBackend).
+
+        For every (prompt, negative) pair an entry is stored under BOTH
+        keys a generation could look up: (prompt, negative) and
+        (prompt, None) -- which one a generation consumes depends on the
+        effective distilled / classic-CFG mode, resolved only when the
+        request runs. The variants share the same prompt parts, so
+        covering both costs nothing.
+        """
+        keys: list[tuple[str, str | None]] = []
+        for p, n in pairs:
+            keys.append((p, None))
+            keys.append((p, n))
+        with self._lock:
+            self._encode_pairs(keys, reserve)
 
     def _text_to(self, device) -> None:
         self.clip.to(device)

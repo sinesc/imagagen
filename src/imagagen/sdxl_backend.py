@@ -112,7 +112,6 @@ import hashlib
 import logging
 import threading
 import warnings
-from collections import OrderedDict
 
 import numpy as np
 
@@ -124,6 +123,7 @@ from .backends import (
     ModelBackend,
     _PARAM_INIT_LOCK,
     format_loras,
+    shared_enc_cache,
 )
 from .sag import SagRecorder, compute_sag_mask, create_blur_map, install_sag_hooks
 from .soft_inpaint import SoftInpainting, adaptive_change_alpha, latent_blend
@@ -191,8 +191,6 @@ SAMPLERS = {
     "DPM++ 2M SDE": kdiff.sample_dpmpp_2m_sde,
     "LCM": kdiff.sample_lcm,
 }
-# the encoded-prompt cache's entry cap (LRU; entries are a few MB each)
-_ENC_CACHE_MAX = 8
 
 SCHEDULERS = {
     "Karras": kdiff.get_sigmas_karras,
@@ -394,10 +392,10 @@ class SdxlBackend(ModelBackend):
         self.config = config  # project Config (loras dir, VRAM options)
         self._active_loras: tuple[tuple[str, float], ...] | None = None
         # (prompt, negative) -> the encoded embeddings on the CPU (few MB
-        # each, LRU); see the encoding block in _generate_impl -- an
-        # encoding is deterministic, so identical prompts (a same-prompt
-        # batch) are encoded once
-        self._enc_cache: OrderedDict[tuple[str, str], tuple] = OrderedDict()
+        # each, LRU); SHARED across this model's per-GPU instances so a
+        # pre-encoded wildcard batch (queue.py) is a hit on every GPU; see
+        # the encoding block in _generate_impl
+        self._enc_cache = shared_enc_cache(info.family, info.id)
 
         # Model init creates torch parameters (unet + transformers text
         # encoders + VAE). peft/transformers monkey-patch GLOBAL torch state
@@ -597,6 +595,65 @@ class SdxlBackend(ModelBackend):
 
         prompt_embeds = torch.cat(window_embeds, dim=-1)
         return prompt_embeds, pooled
+
+    def _encode_pairs(self, pairs: list[tuple[str, str]],
+                      reserve: int | None = None) -> None:
+        """Bring the text encoders to ``te_dev`` ONCE, encode every
+        (prompt, negative) pair not yet in the shared cache, and park the
+        encoders again.
+
+        The ~1.4 GiB of encoders crosses the bus at most once per call,
+        however many prompts it encodes: the generation queue pre-encodes
+        a whole wildcard batch here (via :meth:`pre_encode`) instead of
+        every task of the batch triggering its own encoder move. Each
+        unique text is encoded once; every entry is assembled from the
+        shared parts (A1111 semantics: an empty negative prompt means
+        encoding "").
+
+        ``reserve`` is the number of cache entries the caller expects to be
+        resident afterwards: the LRU cap is raised to it so a pre-encoded
+        batch is not evicted before its slowest task has run.
+        """
+        import torch
+
+        pipe = self.pipe
+        te_dev = self.text_encoder_device
+        keys = list(dict.fromkeys((p, n or "") for p, n in pairs))
+        missing = [k for k in keys if self._enc_cache.get(k) is None]
+        if not missing:
+            return
+        if reserve is not None:
+            self._enc_cache.bump(reserve)
+        with torch.inference_mode():
+            pipe.text_encoder.to(te_dev)
+            if getattr(pipe, "text_encoder_2", None) is not None:
+                pipe.text_encoder_2.to(te_dev)
+            # sorted: a stable encode order (the result does not depend on
+            # it, but logs and tests stay deterministic)
+            texts = sorted({p for p, _ in missing} | {n for _, n in missing})
+            parts: dict[str, tuple] = {}
+            for t in texts:
+                embeds, pooled = self._encode_prompt_chunked(t, te_dev)
+                # CPU copies for the cache
+                parts[t] = (embeds.cpu(), pooled.cpu())
+            for key in keys:
+                if self._enc_cache.get(key) is None:
+                    p, n = key
+                    self._enc_cache[key] = parts[p] + parts[n]
+                    self._enc_cache.move_to_end(key)
+            while len(self._enc_cache) > self._enc_cache.max:
+                self._enc_cache.popitem(last=False)
+            if te_dev != "cpu":
+                pipe.text_encoder.cpu()
+                if getattr(pipe, "text_encoder_2", None) is not None:
+                    pipe.text_encoder_2.cpu()
+                torch.cuda.empty_cache()
+
+    def pre_encode(self, pairs: list[tuple[str, str]],
+                   reserve: int | None = None) -> None:
+        """One encoder session for a whole batch (see ModelBackend)."""
+        with self._lock:
+            self._encode_pairs(list(pairs), reserve)
 
     def cancel(self) -> None:
         self._cancel = True
@@ -821,39 +878,23 @@ class SdxlBackend(ModelBackend):
             # each window is encoded, then concatenated -- nothing is dropped.
             # diffusers' encode_prompt would hard-truncate to 77 instead.
             # The encoding is deterministic, so it is cached on the CPU
-            # (a few MB, LRU): a batch of identical prompts -- or any later
-            # repeat of the same prompt -- is encoded once, and a hit
-            # skips the encoder moves entirely.
+            # (a few MB, LRU, shared across this model's per-GPU instances):
+            # a batch of identical prompts -- or any later repeat of the same
+            # prompt -- is encoded once, and a hit skips the encoder moves
+            # entirely.
             key = (request.prompt, request.negative_prompt or "")
             entry = self._enc_cache.get(key)
-            if entry is not None:
-                self._enc_cache.move_to_end(key)
-                prompt_embeds, pooled, neg_embeds, neg_pooled = (
-                    t.to(device) for t in entry)
-            else:
-                pipe.text_encoder.to(te_dev)
-                if getattr(pipe, "text_encoder_2", None) is not None:
-                    pipe.text_encoder_2.to(te_dev)
-                prompt_embeds, pooled = self._encode_prompt_chunked(
-                    request.prompt, te_dev)
-                # A1111 semantics: an empty negative prompt means encoding ""
-                neg_embeds, neg_pooled = self._encode_prompt_chunked(
-                    request.negative_prompt or "", te_dev
-                )
-                # CPU copies for the cache; the embeddings themselves go to
-                # the GPU (with te_dev=cpu the encoders stay in system RAM)
-                entry = (prompt_embeds.cpu(), pooled.cpu(),
-                         neg_embeds.cpu(), neg_pooled.cpu())
-                self._enc_cache[key] = entry
-                while len(self._enc_cache) > _ENC_CACHE_MAX:
-                    self._enc_cache.popitem(last=False)
-                prompt_embeds = prompt_embeds.to(device)
-                neg_embeds = neg_embeds.to(device)
-                pooled = pooled.to(device)
-                neg_pooled = neg_pooled.to(device)
+            if entry is None:
+                self._encode_pairs([(request.prompt, request.negative_prompt)])
+                entry = self._enc_cache[key]
+            self._enc_cache.move_to_end(key)
+            prompt_embeds, pooled, neg_embeds, neg_pooled = (
+                t.to(device) for t in entry)
             if te_dev != "cpu":
                 # Free ~1.3 GiB for UNet + VAE activations: the text
-                # encoders are only needed for prompt encoding.
+                # encoders are only needed for prompt encoding. On a cache
+                # hit they are normally already on the CPU (moving a parked
+                # module is a no-op).
                 pipe.text_encoder.cpu()
                 if getattr(pipe, "text_encoder_2", None) is not None:
                     pipe.text_encoder_2.cpu()
