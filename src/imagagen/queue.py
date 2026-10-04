@@ -483,7 +483,8 @@ class GenerationQueue:
                 req.scheduler or backend.default_scheduler,
                 req.denoise,
                 req.init_image is not None, req.init_mask is not None,
-                req.soft_inpainting is not None, req.sag is not None,
+                req.soft_inpainting is not None,
+                req.sag.enabled if req.sag is not None else None,
                 getattr(backend, "vae_dtype", "?"),
                 gpu, _short(req.prompt),
             )

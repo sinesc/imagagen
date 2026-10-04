@@ -104,12 +104,13 @@ body.resizing-sidebar, body.resizing-sidebar * {
 select option[value=""] { font-style: italic; }
 .actions { margin-top: 0.3rem; }
 .actions button { flex: 1; }
-/* soft inpainting / self attention guidance rows: checkbox left-aligned,
-   options gear right-aligned. #controls-prefixed to win the specificity
+/* soft inpainting row: checkbox left-aligned; self attention guidance
+   row: note text left, options gear right (the SAG enable flag lives in
+   the model configuration). #controls-prefixed to win the specificity
    over #controls label (which is flex-column for the label-over-control
    sidebar layout) */
 #controls .soft-row, #controls .sag-row { align-items: center; }
-#controls .soft-row .soft-check, #controls .sag-row .soft-check {
+#controls .soft-row .soft-check {
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -117,11 +118,14 @@ select option[value=""] { font-style: italic; }
   font-size: 0.85rem;
   color: #ccc;
 }
-#controls .soft-row input[type="checkbox"],
-#controls .sag-row input[type="checkbox"] { width: auto; height: auto; padding: 0; }
+#controls .soft-row input[type="checkbox"] { width: auto; height: auto; padding: 0; }
 /* disabled checkbox rows: dim the label text (the checkbox itself is
    already dimmed by the #controls input:disabled rule) */
 #controls .soft-check:has(input:disabled) { color: #aaa; }
+/* the SAG options note: checkbox-styled text; dimmed when the row is
+   not usable (non-SDXL model) */
+#controls .sag-row .soft-note { font-size: 0.85rem; color: #ccc; }
+#controls .sag-row.off .soft-note { color: #aaa; }
 
 /* model configuration buttons next to the model selector */
 .model-row { align-items: flex-end; }
@@ -623,11 +627,11 @@ button.danger:hover { background: #a33; }
 /* a few extra px between the model input and the mode fieldsets */
 .cfg-dialog .cfg-mode:first-of-type { margin-top: 0.35rem; }
 
-/* the Flux "distilled model" row: #dialog-body label is flex-column
-   (label-over-control), so the checkbox row opts back into a row layout,
-   checkbox left of the label, vertically centred (cf. #dialog-body
-   .seg-class) */
-#dialog-body .cfg-distilled-row {
+/* the Flux "distilled model" row and the per-mode SAG checkboxes:
+   #dialog-body label is flex-column (label-over-control), so the checkbox
+   rows opt back into a row layout, checkbox left of the label, vertically
+   centred (cf. #dialog-body .seg-class) */
+#dialog-body .cfg-distilled-row, #dialog-body .cfg-sag-row {
   display: flex;
   flex-direction: row;
   align-items: center;

@@ -1042,10 +1042,11 @@ async function refreshSamplers() {
 
 // Family-specific main-form controls: Z-Image is a single-pass model (no
 // CFG/guidance, no negative prompt), and self attention guidance (SAG)
-// is implemented for the SDXL UNet only, so disable those controls instead
-// of letting the user set values the backend silently ignores. The family
-// comes from /api/models (state.entries), not a samplers fetch (which
-// would race the model load).
+// is implemented for the SDXL UNet only, so disable its options instead of
+// letting the user set values the backend silently ignores (the SAG
+// enable flag lives in the model configuration; the dialog checkbox is
+// only offered for SDXL models). The family comes from /api/models
+// (state.entries), not a samplers fetch (which would race the model load).
 function applyFamilyControls() {
   const sel = $("model");
   const entry = state.entries.find((x) => x.id === sel.value) || state.entries[0];
@@ -1059,11 +1060,9 @@ function applyFamilyControls() {
   cfgIn.title = zimage
     ? "Z-Image is single-pass: CFG has no effect (always 1.0)"
     : "-1 = use the model configuration's CFG";
-  const sagIn = $("sag");
-  const sagLbl = sagIn.closest("label");
-  sagIn.disabled = !sdxl;
   $("sag-cfg").disabled = !sdxl;
-  sagLbl.title = sdxl
+  $("sag-row").classList.toggle("off", !sdxl);
+  $("sag-note").title = sdxl
     ? "self attention guidance (Forge builtin extension): sharpens high-detail regions (faces, eyes, fine structures) by feeding the model's own self-attention back through an extra unconditional denoise (all modes, needs CFG > 1)"
     : "self attention guidance is only supported by SDXL models";
 }
@@ -1115,8 +1114,8 @@ async function refreshModels(keepSelection = true) {
   else if (m.current) sel.value = m.current;
 }
 
-function modeFieldset(title, section) {
-  // section: {sampler, scheduler, cfg, loras: [{name, weight}]}
+function modeFieldset(title, section, showSag) {
+  // section: {sampler, scheduler, cfg, sag, loras: [{name, weight}]}
   const fs = el("fieldset", { class: "cfg-mode" }, el("legend", {}, title));
   const s = el("select", { class: "cfg-sampler" });
   s.append(opt("", "Model default"));
@@ -1139,24 +1138,39 @@ function modeFieldset(title, section) {
   const loraList = el("div", { class: "lora-list" });
   (section.loras || []).forEach((l) =>
     loraList.append(loraRow(l.name, l.weight, undefined, true, false)));
-  fs.append(
+  const rows = [
     el("div", { class: "row" },
       el("label", {}, "Sampler", s),
       el("label", {}, "Scheduler", sc)),
     el("div", { class: "row" },
       el("label", { title: "steps override; empty = built-in default" }, "Steps", steps),
       el("label", { title: "CFG override; empty = model default" }, "CFG", cfg)),
+  ];
+  if (showSag) {
+    // SAG is implemented for the SDXL UNet only; the checkbox is omitted
+    // (not shown disabled) for the other families
+    const sag = el("input", { class: "cfg-sag", type: "checkbox" });
+    sag.checked = !!section.sag;
+    rows.push(el("div", { class: "row" },
+      el("label", { class: "cfg-sag-row", title: "self attention guidance (Forge builtin extension): sharpens high-detail regions (faces, eyes, fine structures) by feeding the model's own self-attention back through an extra unconditional denoise (this direction, needs CFG > 1)" },
+        sag, "Self attention guidance")));
+  }
+  fs.append(...rows,
     el("div", { class: "loras" }, loraList, loraAddButton(loraList, null, false)),
   );
   return fs;
 }
 
 function readCfgSection(fs) {
+  // .cfg-sag only exists for SDXL entries; undefined (dropped by
+  // JSON.stringify) leaves the server-side default (false)
+  const sag = fs.querySelector(".cfg-sag");
   return {
     sampler: fs.querySelector(".cfg-sampler").value || null,
     scheduler: fs.querySelector(".cfg-scheduler").value || null,
     steps: fs.querySelector(".cfg-steps").value === "" ? null : parseInt(fs.querySelector(".cfg-steps").value, 10),
     cfg: fs.querySelector(".cfg-cfg").value === "" ? null : parseFloat(fs.querySelector(".cfg-cfg").value),
+    sag: sag ? sag.checked : undefined,
     loras: readLoraList(fs.querySelector(".lora-list")).map(([name, weight]) => ({ name, weight })),
   };
 }
@@ -1173,8 +1187,11 @@ function openConfigDialog(entry) {
   const isFlux = entry.family === "flux";
   const distilledIn = el("input", { class: "cfg-distilled", type: "checkbox" });
   distilledIn.checked = entry.distilled !== false;
-  const f1 = modeFieldset("text to image", entry.t2i);
-  const f2 = modeFieldset("image to image / inpaint", entry.i2i);
+  // SAG is implemented for the SDXL UNet only: the per-direction enable
+  // checkboxes are offered for SDXL entries only
+  const showSag = entry.family === "sdxl";
+  const f1 = modeFieldset("text to image", entry.t2i, showSag);
+  const f2 = modeFieldset("image to image / inpaint", entry.i2i, showSag);
   const box = el("div", { class: "cfg-dialog" },
     el("label", {}, "Name", nameIn),
     el("label", { class: "muted" }, "Model", modelIn),
@@ -1258,7 +1275,7 @@ async function deleteConfig() {
 // ---------------- presets (Phase 4) ----------------
 const PRESET_KEYS = ["width", "height", "rotation", "steps", "cfg", "seed", "batch",
   "sampler", "scheduler", "mode", "denoise", "mask_padding", "loras",
-  "soft_inpaint", "sag"]; // enable/disable of the sidebar checkboxes
+  "soft_inpaint"]; // enable/disable of the sidebar checkboxes
 
 // The preset box keeps its selection while the form still matches the applied
 // preset. Programmatic changes (applyPreset itself, PNG import) don't fire
@@ -1299,7 +1316,6 @@ async function applyPreset(name) {
         syncMode();
       }
       else if (key === "soft_inpaint") $("soft-inpaint").checked = p[key];
-      else if (key === "sag") $("sag").checked = p[key];
       // sidebar ids are hyphenated but preset keys use underscores
       // (e.g. mask_padding -> #mask-padding); the rest map 1:1
       else $(key.replace(/_/g, "-")).value = p[key];
@@ -1396,7 +1412,6 @@ function openPresetDialog(existing, onClose = null) {
     ["mask_padding", "Mask padding", "number", p.mask_padding],
     ["loras", "LORAs", "loras", p.loras],
     ["soft_inpaint", "Soft inpainting", "bool", p.soft_inpaint],
-    ["sag", "Self attention guidance", "bool", p.sag],
   ];
   const rows = el("div", { class: "preset-rows" });
   for (const [key, label, kind, value] of defs) {
@@ -1802,15 +1817,16 @@ function openSagDialog() {
   });
 }
 
-// The generate body's sag field: always sent (all modes), enabled or not,
-// so the PNG metadata carries sag_enabled unconditionally (like the Forge
-// extension) and a dropped image can restore the checkbox in both states.
-// The backend needs cfg > 1 to apply it (skips it like Forge when there
-// is no unconditional pass)
+// The generate body's sag field: the slider values, always sent (all
+// modes), so the PNG metadata carries the Forge sag_* option keys
+// unconditionally (like the Forge extension). The ENABLED flag is not a
+// client field: the server resolves it from the selected model
+// configuration's per-direction checkbox (SDXL only) and writes
+// sag_enabled into the metadata from there. The backend needs cfg > 1 to
+// apply it (skips it like Forge when there is no unconditional pass)
 function sagBody() {
   const s = state.sag;
   return {
-    enabled: $("sag").checked,
     scale: s.scale,
     blur_sigma: s.blur,
     threshold: s.threshold,
@@ -1857,7 +1873,6 @@ function wireToolbar() {
   $("seg-run").onclick = () => openSegDialog();
   $("soft-inpaint").onchange = () => { onUserFieldChange("soft-inpaint"); scheduleSaveUiState(0); };
   $("soft-inpaint-cfg").onclick = openSoftInpaintDialog;
-  $("sag").onchange = () => { onUserFieldChange("sag"); scheduleSaveUiState(0); };
   $("sag-cfg").onclick = openSagDialog;
   $("rotation").onchange = () => { onUserFieldChange("rotation"); scheduleSaveUiState(0); };
   $("zoom-in").onclick = () => zoomCenter(1.25);
@@ -2009,11 +2024,10 @@ async function applyPngMeta(meta, width, height) {
     }
   }
   // self attention guidance (Forge SAG extra parameters) round-trips
-  // through the PNG under the extension's raw snake_case keys; the
-  // enabled flag is written unconditionally, so a dropped image restores
-  // the checkbox in BOTH states (absent key = leave as-is)
+  // through the PNG under the extension's raw snake_case keys. Only the
+  // OPTION values are imported here: the enabled flag is a model
+  // configuration setting (per-direction checkbox), not a UI field
   if (meta.sag_enabled !== undefined && meta.sag_enabled !== null) {
-    $("sag").checked = String(meta.sag_enabled) === "True";
     for (const [key, label] of Object.entries({
       scale: "sag_scale",
       blur: "sag_blur_sigma",
@@ -2119,7 +2133,7 @@ function readUiState() {
     soft_composite_mask_influence: state.soft.maskInf,
     soft_composite_difference_threshold: state.soft.threshold,
     soft_composite_difference_contrast: state.soft.contrast,
-    sag: $("sag").checked,
+    // the SAG enabled flag is a model configuration setting, not persisted
     sag_scale: state.sag.scale,
     sag_blur_sigma: state.sag.blur,
     sag_threshold: state.sag.threshold,
@@ -2184,11 +2198,10 @@ function applyUiState(st) {
   ]) {
     if (typeof st[key] === "number") state.soft[k] = st[key];
   }
-  // self attention guidance: enabled flag + the three options (JS state
-  // object)
+  // self attention guidance: the three options (JS state object); the
+  // enabled flag is a model configuration setting, not persisted here
   // sidebar width set by dragging its right border
   if (typeof st.sidebar_width === "number") $("controls").style.width = `${st.sidebar_width}px`;
-  if (typeof st.sag === "boolean") $("sag").checked = st.sag;
   for (const [key, k] of [
     ["sag_scale", "scale"],
     ["sag_blur_sigma", "blur"],

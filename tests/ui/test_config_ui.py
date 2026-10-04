@@ -347,64 +347,45 @@ def test_preset_manage_filter_survives_edit(page, server):
     page.click("#dialog-ok")
 
 
-def test_preset_soft_inpaint_sag_checkbox_rows(page, server):
-    # the dialog gains two rows, each with the usual controls checkbox
-    # PLUS a second checkbox that is the enable/disable value itself;
-    # applying the preset toggles the sidebar checkboxes
+def test_preset_soft_inpaint_checkbox_row(page, server):
+    # the dialog has a soft inpainting row with the usual controls
+    # checkbox PLUS a second checkbox that is the enable/disable value
+    # itself; applying the preset toggles the sidebar checkbox (even
+    # while it is disabled in "generate" mode). There is NO self
+    # attention guidance row: its enable flag lives in the model
+    # configuration
     base, _ = server
     _open(page, base)
     page.click("#preset-manage")
     page.click("text=+ New preset")
     box = page.locator(".preset-dialog")
-    box.locator("label input").first.fill("Enable SAG")
+    box.locator("label input").first.fill("Soft inpaint off")
     srow = box.locator(".preset-row", has_text="soft inpainting")
     assert srow.locator("input[type=checkbox]").count() == 2
-    srow.locator(".preset-cb").check()        # the preset controls it
-    srow.locator(".preset-val").check()       # value: enable
-    arow = box.locator(".preset-row", has_text="self attention guidance")
-    assert arow.locator("input[type=checkbox]").count() == 2
-    arow.locator(".preset-cb").check()        # value stays unchecked:
-    # the preset actively disables SAG
+    srow.locator(".preset-cb").check()         # the preset controls it
+    # value stays unchecked: the preset actively disables soft inpainting
+    assert not srow.locator(".preset-val").is_checked()
+    # self attention guidance is no longer a preset field
+    assert box.locator(".preset-row", has_text="self attention guidance").count() == 0
     page.click("#dialog-ok")
     # saving returns to the management list (the new preset is re-listed)
     wait_until(lambda: page.evaluate(
         "document.getElementById('dialog-title').textContent") == "Setting presets")
     with httpx.Client(base_url=base, timeout=10) as c:
-        p = c.get("/api/presets/enable-sag").json()["preset"]
-    assert p["soft_inpaint"] is True and p["sag"] is False
-    assert p["controls"]["soft_inpaint"] is True and p["controls"]["sag"] is True
-
-    # the edit dialog prefills both checkboxes (the management list is
-    # still open from the save)
-    wait_until(lambda: page.locator(".preset-manage-row", has_text="Enable SAG").count() == 1)
-    page.locator(".preset-manage-row", has_text="Enable SAG") \
-        .locator(".mini").first.click()
-    wait_until(lambda: page.evaluate(
-        "document.getElementById('dialog-title').textContent") == "Edit preset")
-    # the edit dialog saves, so it keeps its Cancel button
-    assert page.locator("#dialog-cancel").is_visible()
-    box = page.locator(".preset-dialog")
-    srow = box.locator(".preset-row", has_text="soft inpainting")
-    assert srow.locator(".preset-cb").is_checked()
-    assert srow.locator(".preset-val").is_checked()
-    arow = box.locator(".preset-row", has_text="self attention guidance")
-    assert arow.locator(".preset-cb").is_checked()
-    assert not arow.locator(".preset-val").is_checked()
-    page.click("#dialog-cancel")
-    # cancelling also returns to the management list
-    wait_until(lambda: page.evaluate(
-        "document.getElementById('dialog-title').textContent") == "Setting presets")
+        p = c.get("/api/presets/soft-inpaint-off").json()["preset"]
+    assert p["soft_inpaint"] is False
+    assert p["controls"]["soft_inpaint"] is True
+    # the enabled flag is a model configuration setting, not a preset key
+    assert "sag" not in p["controls"]
     # close the management list to get back to the main UI
     page.click("#dialog-ok")
     wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
 
-    # applying toggles the sidebar checkboxes: SAG was actively disabled
-    # (checked -> off), soft inpainting enabled (off -> checked, even
-    # though it is disabled in "generate" mode)
-    page.check("#sag")
-    combo_pick(page, page.locator("#preset"), "Enable SAG")
-    wait_until(lambda: not page.is_checked("#sag"))
-    wait_until(lambda: page.is_checked("#soft-inpaint"))
+    # applying actively disables the sidebar checkbox (checked -> off,
+    # even though the checkbox is disabled in "generate" mode)
+    page.evaluate("document.getElementById('soft-inpaint').checked = true")
+    combo_pick(page, page.locator("#preset"), "Soft inpaint off")
+    wait_until(lambda: not page.is_checked("#soft-inpaint"))
 
 
 def test_preset_multiword_name_select(page, server):  

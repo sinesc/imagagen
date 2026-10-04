@@ -72,7 +72,7 @@ def test_models_lists_default_entry(client):
     assert e["model_id"] == MOCK_ID
     assert e["is_default"] is True
     assert e["t2i"] == {"sampler": None, "scheduler": None, "steps": None,
-                        "cfg": None, "loras": []}
+                        "cfg": None, "sag": False, "loras": []}
     assert body["current"] == MOCK_ID
 
 

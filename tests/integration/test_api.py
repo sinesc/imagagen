@@ -89,8 +89,8 @@ def test_models_endpoint(client):
         "model_id": "mock/mock.safetensors",
         "family": "sdxl",
         "distilled": True,
-        "t2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None, "loras": []},
-        "i2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None, "loras": []},
+        "t2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None, "sag": False, "loras": []},
+        "i2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None, "sag": False, "loras": []},
         "is_default": True,
     }]
     assert body["current"] == "mock/mock.safetensors"

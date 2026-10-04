@@ -98,12 +98,11 @@
         </label>
         <button id="soft-inpaint-cfg" class="mini icon" title="soft inpainting options">⚙</button>
       </div>
-      <div class="row sag-row">
-        <label class="soft-check" title="self attention guidance (Forge builtin extension): sharpens high-detail regions (faces, eyes, fine structures) by feeding the model's own self-attention back through an extra unconditional denoise (all modes, needs CFG &gt; 1)">
-          <input id="sag" type="checkbox">
-          <span>Self attention guidance</span>
-        </label>
-        <button id="sag-cfg" class="mini icon" title="self attention guidance options">⚙</button>
+      <div class="row sag-row" id="sag-row">
+        <span id="sag-note" class="soft-note" title="self attention guidance (Forge builtin extension): sharpens high-detail regions (faces, eyes, fine structures) by feeding the model's own self-attention back through an extra unconditional denoise (all modes, needs CFG &gt; 1). Enabled per direction in the model configuration (SDXL models only)">
+          Self attention guidance options
+        </span>
+        <button id="sag-cfg" class="mini icon" title="self attention guidance options (enable it per direction in the model configuration; SDXL models only)">⚙</button>
       </div>
       <div class="row actions">
         <button id="btn-generate" class="primary" title="Generate image (Ctrl+G)">Generate</button>

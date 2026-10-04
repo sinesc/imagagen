@@ -114,8 +114,10 @@ def build_parameters(
     * ``soft_inpainting`` / ``sag``: the enabled flag plus the option values
       under the legacy meta keys (``Soft inpainting enabled`` & co.,
       ``sag_enabled`` & co.). The enabled flags are written unconditionally
-      (like the Forge extension) so a dropped image can restore the
-      checkbox in BOTH states; absent = the option group was not used.
+      (like the Forge extension) in BOTH states; absent = the option group
+      was not used. (On import the soft-inpainting flag restores its
+      checkbox; the sag flag is a model-configuration setting, so only its
+      option values are imported.)
     * ``distilled``: Flux only (None = not a Flux model, key omitted);
       written in BOTH states like the SAG flags.
     """

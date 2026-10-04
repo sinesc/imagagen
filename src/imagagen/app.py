@@ -162,6 +162,16 @@ class LoraSettingsBody(BaseModel):
     notes: str = ""
 
 
+class SagOptions(BaseModel):
+    """SAG slider values in the generate body; same names/ranges/defaults
+    as the Forge sliders. The enabled flag is a model-configuration
+    setting (per t2i/i2i checkbox), not part of this body."""
+
+    scale: float = Field(default=0.5, ge=-2.0, le=5.0)
+    blur_sigma: float = Field(default=2.0, ge=0.0, le=10.0)
+    threshold: float = Field(default=1.0, ge=0.0, le=4.0)
+
+
 class GenerateBody(BaseModel):
     prompt: str
     negative_prompt: str = ""
@@ -190,10 +200,14 @@ class GenerateBody(BaseModel):
     # soft inpainting (Forge builtin extension); null = off. The UI only
     # sends it for inpaint modes (the backend requires an init mask anyway)
     soft_inpainting: SoftInpainting | None = None
-    # self attention guidance (Forge builtin extension); null = off.
-    # Works in all modes; needs cfg > 1 (the SDXL backend skips it, like
-    # Forge, when there is no unconditional pass)
-    sag: SelfAttentionGuidance | None = None
+    # self attention guidance (Forge builtin extension); null = no metadata.
+    # The UI always sends the options (enabled or not) so the PNG metadata
+    # carries them unconditionally (like the Forge extension); the ENABLED
+    # flag is NOT a client field -- it comes from the selected model
+    # configuration's per-direction sag checkbox (SDXL only). Needs cfg > 1
+    # (the SDXL backend skips it, like Forge, when there is no
+    # unconditional pass)
+    sag: SagOptions | None = None
     # context padding around the masked area (canvas px per side);
     # "inpaint_masked" only, capped at the mask's largest extent
     mask_padding: int = Field(default=INPAINT_PADDING, ge=0, le=2048)
@@ -563,14 +577,16 @@ def create_app(
                 return {"error": "no model available"}
             entry = app.state.config_store.resolve(cfg_id)
             app.state.last_config_id = entry.id
-            sampler, scheduler, cfg, rsteps, loras = resolve_settings(
-                entry,
-                body.mode,
-                body.cfg,
-                body.sampler,
-                body.scheduler,
-                body.loras,
-                body.steps,
+            sampler, scheduler, cfg, rsteps, loras, sag_enabled = (
+                resolve_settings(
+                    entry,
+                    body.mode,
+                    body.cfg,
+                    body.sampler,
+                    body.scheduler,
+                    body.loras,
+                    body.steps,
+                )
             )
         except ConfigError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -647,7 +663,12 @@ def create_app(
             scheduler=scheduler,
             loras=loras,
             soft_inpainting=body.soft_inpainting,
-            sag=body.sag,
+            # the enabled flag comes from the model configuration (per
+            # direction); the client supplies only the slider values
+            sag=(SelfAttentionGuidance(enabled=sag_enabled, scale=body.sag.scale,
+                                       blur_sigma=body.sag.blur_sigma,
+                                       threshold=body.sag.threshold)
+                 if body.sag is not None else None),
         )
         try:
             # inpaint modes snapshot the canvas and populate init image/mask;

@@ -59,8 +59,26 @@ def test_file_layout(tmp_path):
     assert on_disk["name"] == "My A tuned"
     assert on_disk["model"] == "sdxl/a.safetensors"
     assert on_disk["t2i"]["loras"] == [{"name": "sdxl/dmd2", "weight": 0.8}]
+    assert on_disk["t2i"]["sag"] is False
     assert on_disk["i2i"] == {"sampler": None, "scheduler": None,
-                              "steps": None, "cfg": None, "loras": []}
+                              "steps": None, "cfg": None, "sag": False,
+                              "loras": []}
+
+
+def test_sag_flag_per_direction(tmp_path):
+    # the enable flag is per direction (t2i/i2i) and round-trips through
+    # the configuration file
+    s = store(tmp_path)
+    s.save(ModelConfig(name="SAG on", model="sdxl/a.safetensors",
+                       t2i=ModeConfig(sag=True)))
+    e = s.resolve("sag-on")
+    assert e.t2i.sag is True and e.i2i.sag is False
+    on_disk = json.loads(
+        (tmp_path / "user" / "model-configs" / "sag-on.json").read_text())
+    assert on_disk["t2i"]["sag"] is True and on_disk["i2i"]["sag"] is False
+    # survives a reload from disk (the store reads the files fresh)
+    e2 = store(tmp_path).resolve("sag-on")
+    assert e2.t2i.sag is True and e2.i2i.sag is False
 
 
 def test_distilled_flag_default_and_roundtrip(tmp_path):
@@ -166,13 +184,14 @@ def test_corrupt_file_is_reported(tmp_path):
 # ---------------------------------------------------------- resolution ----
 
 
-def _entry(sampler=None, scheduler=None, cfg=None, loras=(), i2i=None, steps=None):
+def _entry(sampler=None, scheduler=None, cfg=None, loras=(), i2i=None, steps=None,
+           sag=False):
     from imagagen.model_configs import ConfigEntry
 
     i2i = i2i or ModeConfig()
     return ConfigEntry(id="x", name="x", model_id="m",
                        t2i=ModeConfig(sampler=sampler, scheduler=scheduler,
-                                      steps=steps, cfg=cfg,
+                                      steps=steps, cfg=cfg, sag=sag,
                                       loras=[LoraRef(name=t[0], weight=t[1])
                                               for t in loras]),
                        i2i=i2i, is_default=False)
@@ -180,48 +199,53 @@ def _entry(sampler=None, scheduler=None, cfg=None, loras=(), i2i=None, steps=Non
 
 def test_resolve_user_wins():
     e = _entry(sampler="Euler a", scheduler="Karras", cfg=4.0, loras=[("a", 1)], steps=12)
-    sampler, scheduler, cfg, steps, loras = resolve_settings(
+    sampler, scheduler, cfg, steps, loras, sag = resolve_settings(
         e, "generate", 7.5, "DPM++ 2M", "Polyexponential", [("b", 0.5)], 25)
     assert (sampler, scheduler, cfg, steps) == ("DPM++ 2M", "Polyexponential", 7.5, 25)
     # config loras are prepended to the user's list
     assert loras == [("a", 1.0), ("b", 0.5)]
+    assert sag is False
 
 
 def test_resolve_defaults_fall_to_config():
     e = _entry(sampler="Euler a", scheduler="Karras", cfg=4.0, loras=[("a", 1)], steps=12)
-    sampler, scheduler, cfg, steps, loras = resolve_settings(
+    sampler, scheduler, cfg, steps, loras, sag = resolve_settings(
         e, "generate", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
     assert (sampler, scheduler, cfg, steps) == ("Euler a", "Karras", 4.0, 12)
     assert loras == [("a", 1.0)]
+    assert sag is False
 
 
 def test_resolve_null_config_falls_to_backend_builtin():
     e = _entry()
-    sampler, scheduler, cfg, steps, loras = resolve_settings(
+    sampler, scheduler, cfg, steps, loras, sag = resolve_settings(
         e, "generate", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
-    assert (sampler, scheduler, cfg, steps, loras) == (None, None, None, None, [])
+    assert (sampler, scheduler, cfg, steps, loras, sag) == (None, None, None, None, [], False)
 
 
 def test_resolve_steps_sentinel_falls_to_config():
     # -1 in the main UI -> the configuration's steps; a null config value
     # falls through to the backend built-in (None), same logic as CFG
     e = _entry(steps=18)
-    _, _, _, steps, _ = resolve_settings(e, "generate", 7.0, None, None, [], STEPS_SENTINEL)
+    _, _, _, steps, _, _ = resolve_settings(e, "generate", 7.0, None, None, [], STEPS_SENTINEL)
     assert steps == 18
-    _, _, _, steps, _ = resolve_settings(e, "generate", 7.0, None, None, [], 30)
+    _, _, _, steps, _, _ = resolve_settings(e, "generate", 7.0, None, None, [], 30)
     assert steps == 30
     e_null = _entry()
-    _, _, _, steps, _ = resolve_settings(e_null, "generate", 7.0, None, None, [], STEPS_SENTINEL)
+    _, _, _, steps, _, _ = resolve_settings(e_null, "generate", 7.0, None, None, [], STEPS_SENTINEL)
     assert steps is None
 
 
 def test_resolve_mode_selects_section():
-    e = _entry(cfg=4.0, steps=10, i2i=ModeConfig(sampler="DPM++ 2M SDE", cfg=6.0, steps=14))
-    # inpaint modes use the i2i section
-    sampler, _, cfg, steps, _ = resolve_settings(e, "inpaint_masked", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
+    e = _entry(cfg=4.0, steps=10, sag=False,
+               i2i=ModeConfig(sampler="DPM++ 2M SDE", cfg=6.0, steps=14, sag=True))
+    # inpaint modes use the i2i section (including the SAG flag)
+    sampler, _, cfg, steps, _, sag = resolve_settings(e, "inpaint_masked", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
     assert (sampler, cfg, steps) == ("DPM++ 2M SDE", 6.0, 14)
-    _, _, cfg_t2i, steps_t2i, _ = resolve_settings(e, "generate", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
+    assert sag is True
+    _, _, cfg_t2i, steps_t2i, _, sag_t2i = resolve_settings(e, "generate", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
     assert (cfg_t2i, steps_t2i) == (4.0, 10)
+    assert sag_t2i is False
 
 
 def test_entry_id_sanitizes():

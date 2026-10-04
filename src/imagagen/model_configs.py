@@ -10,10 +10,12 @@ selector as at least one *configuration*:
   entry (id = model id, all settings null), so they are usable immediately.
 
 Each configuration stores, separately for text-to-image ("t2i") and
-image-to-image/inpaint ("i2i"): sampler, scheduler, CFG and a LoRA list.
-Null means "no override" -- the built-in backend default is used. The LoRA
-list is special: it is *always* prepended to the user-selected LoRAs
-(concept.md), it is not a default-override.
+image-to-image/inpaint ("i2i"): sampler, scheduler, steps, CFG, a LoRA
+list and the self-attention-guidance (SAG) enable flag. Null means "no
+override" -- the built-in backend default is used. The LoRA list is
+special: it is *always* prepended to the user-selected LoRAs
+(concept.md), it is not a default-override. SAG is implemented for the
+SDXL UNet only (inert for other families).
 
 File layout (one JSON per configuration, filename = sanitized name):
 
@@ -21,9 +23,10 @@ File layout (one JSON per configuration, filename = sanitized name):
       "name": "My SDXL Model + DMD2 Lora",
       "model": "whatever",  # model id: path within models/sdxl, no extension
       "distilled": true,  # Flux only: CFG = embedded guidance (see ModelConfig)
-      "t2i": {"sampler": null, "scheduler": null, "cfg": null,
+      "t2i": {"sampler": null, "scheduler": null, "cfg": null, "sag": false,
               "loras": [{"name": "dmd2", "weight": 0.8}]},  # rel. to loras/<type>/
-      "i2i": {"sampler": null, "scheduler": null, "cfg": null, "loras": []}
+      "i2i": {"sampler": null, "scheduler": null, "cfg": null, "sag": false,
+              "loras": []}
     }
 """
 
@@ -56,6 +59,9 @@ class ModeConfig(BaseModel):
     scheduler: str | None = None
     steps: int | None = Field(default=None, ge=1)
     cfg: float | None = Field(default=None, ge=0)
+    # self attention guidance (Forge builtin extension) enabled for this
+    # direction; SDXL only (inert for the other families)
+    sag: bool = False
     loras: list[LoraRef] = Field(default_factory=list)
 
 
@@ -267,12 +273,13 @@ def resolve_settings(
     ``mode`` picks the t2i section for "generate" and the i2i section for
     the inpaint modes.
 
-    Returns ``(sampler, scheduler, cfg, steps, loras)`` with cfg/steps
-    possibly None (= backend built-in)."""
+    Returns ``(sampler, scheduler, cfg, steps, loras, sag)`` with cfg/steps
+    possibly None (= backend built-in) and ``sag`` the configuration's
+    self-attention-guidance flag for the picked section."""
     section = entry.t2i if mode == "generate" else entry.i2i
     sampler = user_sampler if user_sampler else section.sampler
     scheduler = user_scheduler if user_scheduler else section.scheduler
     cfg = section.cfg if user_cfg == CFG_SENTINEL else user_cfg
     steps = section.steps if user_steps == STEPS_SENTINEL else user_steps
     loras = [(ref.name, ref.weight) for ref in section.loras] + list(user_loras or [])
-    return sampler, scheduler, cfg, steps, loras
+    return sampler, scheduler, cfg, steps, loras, section.sag
