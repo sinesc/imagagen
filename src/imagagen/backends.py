@@ -108,7 +108,7 @@ class GenerateRequest(BaseModel):
     # negative prompt (two passes per step) when False. Inert for SDXL.
     distilled: bool = True
     # Krea 2: True selects the turbo checkpoint class (8 steps, no CFG,
-    # mu pinned to 1.15) over the raw class (28 steps, standard CFG 5.5,
+    # mu pinned to 1.15) over the raw class (12 steps, standard CFG 1.5,
     # resolution-derived mu). Set from the model config entry, never from
     # JSON. Inert for every other family.
     turbo: bool = False
@@ -249,7 +249,7 @@ class MockBackend(ModelBackend):
         # the "model default" sentinel (steps/cfg <= 0) resolves to the
         # built-in values, as the real backends do (the PNG metadata
         # records the effective values the backend used)
-        steps = request.steps if request.steps > 0 else 25
+        steps = request.steps if request.steps > 0 else 20
         cfg = request.cfg if request.cfg > 0 else DEFAULT_CFG
         rng = np.random.default_rng(seed)
         h, w = request.height, request.width

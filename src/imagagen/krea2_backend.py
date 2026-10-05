@@ -32,8 +32,7 @@ the ``dev/smoke_krea2.py`` pattern).
 
 Checkpoint classes (the ``turbo`` flag on the model config entry,
 mirroring Flux's ``distilled``):
-- raw (default): 28 steps, standard CFG 5.5 (the reference's guidance
-  4.5 in standard terms: ``v = vu + cfg*(vc - vu)``), resolution-derived
+- raw (default): 12 steps, standard CFG 1.5, resolution-derived
   mu (linear in the image token count between (256, 0.5) and
   (6400, 1.15));
 - turbo: 8 steps, no CFG (effective 1.0, no negative encode), mu pinned
@@ -105,10 +104,9 @@ def _model_hash(path: str) -> str:
 log = logging.getLogger(__name__)
 
 # the "model default" parameters per checkpoint class:
-# raw: the reference's 28-step schedule, standard CFG 5.5 (= reference
-# guidance 4.5), resolution-derived mu
-DEFAULT_STEPS_RAW = 28
-DEFAULT_CFG_RAW = 5.5
+# raw: 12 steps, standard CFG 1.5, resolution-derived mu
+DEFAULT_STEPS_RAW = 12
+DEFAULT_CFG_RAW = 1.5
 # turbo: 8 steps, no CFG, mu pinned to 1.15 (reference --mu 1.15)
 DEFAULT_STEPS_TURBO = 8
 DEFAULT_CFG_TURBO = 1.0
@@ -601,7 +599,7 @@ class Krea2Backend(ModelBackend):
                 self.vae.tile_overlap_factor = 0.5
 
         # the "model default" sentinels (steps/cfg <= 0) resolve to the
-        # checkpoint class's built-ins: raw 28 steps / standard CFG 5.5 /
+        # checkpoint class's built-ins: raw 12 steps / standard CFG 1.5 /
         # resolution-derived mu, turbo 8 steps / no CFG / pinned mu
         turbo = request.turbo
         steps = request.steps if request.steps > 0 else (

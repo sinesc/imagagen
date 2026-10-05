@@ -110,8 +110,8 @@ DEFAULT_GUIDANCE = 3.5
 DEFAULT_CFG = 1.0
 # the "model default" step count, per checkpoint class: schnell-class
 # checkpoints (no guidance embedding, 4-step progressive distillation)
-# default to BFL's 4 steps; the dev class to 25
-DEFAULT_STEPS = 25
+# default to BFL's 4 steps; the dev class to 20
+DEFAULT_STEPS = 20
 DEFAULT_STEPS_SCHNELL = 4
 
 SAMPLERS = {"Euler": kdiff.sample_euler}
@@ -672,7 +672,7 @@ class FluxBackend(ModelBackend):
         # --- sigma schedule + noise ---
         # the "model default" sentinel (request.steps <= 0) resolves to the
         # built-in for the checkpoint class (schnell class: 4 steps, the
-        # BFL default for the 4-step distilled model; dev class: 25)
+        # BFL default for the 4-step distilled model; dev class: 20)
         steps = request.steps if request.steps > 0 else (
             DEFAULT_STEPS_SCHNELL if not self.supports_distilled
             else DEFAULT_STEPS

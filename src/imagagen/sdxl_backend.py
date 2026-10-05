@@ -914,7 +914,7 @@ class SdxlBackend(ModelBackend):
             # the "model default" sentinel (request.steps/cfg <= 0) resolves
             # to the built-in values (the PNG metadata records these
             # effective values via the result, not the raw request)
-            steps = request.steps if request.steps > 0 else 25
+            steps = request.steps if request.steps > 0 else 20
             cfg = request.cfg if request.cfg > 0 else DEFAULT_CFG
             # --- sampler / scheduler registries (Phase 5 grows these into plugins) ---
             sampler_name = request.sampler or self.default_sampler

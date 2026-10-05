@@ -1249,7 +1249,7 @@ function openConfigDialog(entry, prefill = null) {
         "unchecked: classic CFG with the negative prompt (two passes per " +
         "step, about 2x the time)." }, distilledIn, "Distilled model")] : []),
     ...(isKrea2 ? [el("label", { class: "cfg-distilled-row", title: "checked " +
-        "(default): the raw checkpoint class (28 steps, standard CFG 5.5, " +
+        "(default): the raw checkpoint class (12 steps, standard CFG 1.5, " +
         "resolution-derived noise schedule; the negative prompt is used). " +
         "unchecked: the turbo class (8 steps, no CFG, pinned noise schedule; " +
         "faster, tuned for 8-step sampling)." }, turboIn, "Turbo model")] : []),

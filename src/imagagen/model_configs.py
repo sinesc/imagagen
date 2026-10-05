@@ -84,7 +84,7 @@ class ModelConfig(BaseModel):
     distilled: bool = True
     # Krea 2 only (inert, always False for other families): True selects the
     # turbo checkpoint class (8 steps, no CFG, mu pinned to 1.15) over the
-    # raw class (28 steps, standard CFG 5.5, resolution-derived mu). The
+    # raw class (12 steps, standard CFG 1.5, resolution-derived mu). The
     # user's steps/cfg overrides still apply on top (sentinel -1 resolves to
     # the class's built-in).
     turbo: bool = False
