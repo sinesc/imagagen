@@ -518,11 +518,14 @@ class Krea2Backend(ModelBackend):
 
         Runtime additive deltas: the int8 block weights stay quantized and
         each affected :class:`~imagagen.krea2_transformer.Int8Linear`
-        computes ``base + (x_rot @ A.t()) @ B.t()`` per forward on the
-        ConvRot-ROTATED input (lossless, reversible; the deltas are
-        registered parameters so ``.to()``/``unload()`` moves them and
-        VRAM scales with them); the bf16 :class:`DeltaLinear` txtfusion
-        targets take the same deltas on the plain input.
+        computes ``base + (x_rot @ A'.t()) @ B.t()`` per forward on the
+        ConvRot-ROTATED input, with ``A' = A @ H`` rotated into the
+        ConvRot space at install (the LoRAs were trained on the
+        de-rotated weights, so this reproduces the plain-space delta
+        exactly; lossless, reversible; the deltas are registered
+        parameters so ``.to()``/``unload()`` moves them and VRAM scales
+        with them); the bf16 :class:`DeltaLinear` txtfusion targets take
+        the same deltas on the plain input.
 
         All-or-nothing: a set becomes ``_active_loras`` only once every
         module is patched: :meth:`_merge_lora_deltas` (parsing, mapping,

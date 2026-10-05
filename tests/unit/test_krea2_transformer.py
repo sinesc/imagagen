@@ -91,17 +91,33 @@ class TestInt8Linear:
         unrotated = x.float() @ (w.float() * scale.float()).T
         assert not torch.allclose(m(x).float(), unrotated, atol=1e-3)
 
-    def test_lora_deltas_run_on_the_rotated_input(self):
-        m, w, scale = _make_int8()
-        a = torch.randn(4, 256) * 0.1
-        b = torch.randn(64, 4) * 0.1
+    def test_lora_deltas_are_the_plain_space_deltas(self):
+        # the LoRA was trained on the DE-ROTATED weight
+        # (W_orig = W @ H); the runtime must reproduce
+        # x @ (W_orig + B A)^T, i.e. the A matrix is rotated into the
+        # ConvRot space at install (A' = A @ H, H^2 = I)
+        # zero base weight: the output IS the delta (exact extraction)
+        with quant_dtype_scope(torch.device("cpu"), torch.bfloat16):
+            m = Int8Linear(256, 64, bias=False)
+        m.load_state_dict({
+            "weight": nn.Parameter(
+                torch.zeros(64, 256, dtype=torch.int8), requires_grad=False),
+            "weight_scale": nn.Parameter(torch.ones(64, 1), requires_grad=False),
+        })
+        a = torch.randn(4, 256)
+        b = torch.randn(64, 4)
         m.set_lora_deltas([(a, b, 0, 64)])
         x = torch.randn(2, 256, dtype=torch.bfloat16)
-        out = m(x)
+        out = m(x).float()
+        # the emitted delta is the PLAIN-space one: x @ (B A)^T
+        expected = x.float() @ (b @ a).T
+        assert _rel_err(out, expected) < 0.01
+        # and NOT the old bug: the unrotated delta on the rotated input
+        # (x @ (B A H)^T) -- an H-scrambled delta of the same magnitude
+        # but a different direction (invisible at low LoRA weights)
         x_rot = _rotate(x.float(), 256)
-        expected = x_rot @ (w.float() * scale.float()).T \
-            + x_rot @ a.T @ b.T
-        assert _rel_err(out.float(), expected) < 0.01
+        wrong = x_rot @ a.T @ b.T
+        assert _rel_err(out, wrong) > 1.0
         m.clear_lora_deltas()
         assert m.lora_deltas == []
 

@@ -50,9 +50,9 @@ runtime deltas.
 
 The A/B pairs become runtime additive deltas exactly as Z-Image/Flux:
 :func:`flux_lora.merge_module_deltas` (one GEMM pair per module) and
-``Int8Linear.set_lora_deltas`` (ConvRot blocks -- the deltas run on the
-ROTATED input, matching the ConvRot weights) / ``DeltaLinear.set_lora_
-deltas`` (txtfusion). Everything is all-or-nothing: an unmappable key
+``Int8Linear.set_lora_deltas`` (ConvRot blocks -- the deltas are trained
+on the de-rotated weights, so the A matrices are rotated into the ConvRot
+space at install) / ``DeltaLinear.set_lora_deltas`` (txtfusion). Everything is all-or-nothing: an unmappable key
 raises :class:`ValueError` before any module is touched.
 """
 

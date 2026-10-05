@@ -151,9 +151,13 @@ class Int8Linear(QuantLinear):
     the stored weights are Hadamard-rotated along the input axis, so the
     forward rotates the activation by the same matrix before the GEMM
     (the rotations cancel, the GEMM runs on the rotated input). The
-    inherited runtime LoRA deltas are applied on the ROTATED input as
-    well -- the LoRAs were trained against the ConvRot weights, so the
-    deltas see exactly what the base weight sees.
+    inherited runtime LoRA deltas are installed on the PLAIN (unrotated)
+    input space instead: the LoRAs were trained against the de-rotated
+    weights (every trainer -- diffusers / ai-toolkit / kohya, and even
+    ComfyUI, which de-rotates ConvRot weights before merging a LoRA diff
+    -- operates on plain weights), so :meth:`set_lora_deltas` rotates the
+    A matrix by the same group Hadamard and the runtime path computes
+    ``(x H) (A H)^T B^T == x A^T B^T`` (H is symmetric, H^2 = I).
     """
 
     def __init__(self, in_features: int, out_features: int, bias: bool,
@@ -183,6 +187,17 @@ class Int8Linear(QuantLinear):
     def _dequantize(self, w):
         return w.to(self.computation_dtype) * \
             self.weight_scale.to(self.computation_dtype)
+
+    def set_lora_deltas(self, deltas) -> None:
+        """Install runtime LoRA deltas, rotating the A matrices into the
+        ConvRot space (see the class docstring): the deltas were trained
+        on the de-rotated weights, so A becomes ``A @ H`` and the
+        rotated-input runtime path reproduces the plain-space delta
+        exactly."""
+        if self._convrot_group is not None:
+            deltas = [(_rotate(a, self._convrot_group), b, r0, r1)
+                      for a, b, r0, r1 in deltas]
+        super().set_lora_deltas(deltas)
 
     def forward(self, x):
         if self._convrot_group is not None:
