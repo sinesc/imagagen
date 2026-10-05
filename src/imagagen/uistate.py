@@ -87,9 +87,11 @@ class UiState(BaseModel):
     negative_prompt: str = ""
     width: int = Field(default=1024, ge=64, le=4096)
     height: int = Field(default=1024, ge=64, le=4096)
-    # -1 = "use model default" (the model configuration's value, then built-in)
-    steps: int = Field(default=25, ge=-1, le=150)
-    cfg: float = Field(default=7.0, ge=-1)
+    # -1 = "use model default" (the model configuration's value, then built-in);
+    # the default IS the sentinel, so an unconfigured field rides on the
+    # resolution chain instead of hard-coding a value
+    steps: int = Field(default=-1, ge=-1, le=150)
+    cfg: float = Field(default=-1.0, ge=-1)
     seed: int = -1  # -1 = random (A1111 convention)
     batch: int = Field(default=1, ge=1, le=32)
     sampler: str | None = None  # null = "use model default"

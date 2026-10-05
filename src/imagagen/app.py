@@ -172,8 +172,11 @@ class GenerateBody(BaseModel):
     negative_prompt: str = ""
     width: int = Field(default=1024, ge=64, le=4096)
     height: int = Field(default=1024, ge=64, le=4096)
-    steps: int = 25  # -1 = use the model configuration's steps
-    cfg: float = 7.0  # -1 = use the model configuration's CFG
+    # -1 = "use model default": the model configuration's value, then the
+    # backend built-in (the default IS the sentinel, so callers that omit
+    # the fields get the per-model built-ins, not a hard-coded value)
+    steps: int = -1
+    cfg: float = -1.0
     seed: int = -1
     batch_size: int = 1
     sampler: str | None = None

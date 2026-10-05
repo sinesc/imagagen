@@ -29,8 +29,8 @@ def test_defaults_when_no_file(tmp_path):
     with _client(tmp_path) as c:
         state = c.get("/api/ui-state").json()["state"]
     assert state["prompt"] == ""
-    assert state["steps"] == 25
-    assert state["cfg"] == 7.0
+    assert state["steps"] == -1
+    assert state["cfg"] == -1.0
     assert state["model"] is None
     assert not (us(tmp_path)).exists()
 
@@ -177,7 +177,7 @@ def test_bad_value_falls_back_to_defaults(tmp_path):
     with _client(tmp_path) as c:
         state = c.get("/api/ui-state").json()["state"]
     assert state["prompt"] == ""
-    assert state["steps"] == 25
+    assert state["steps"] == -1
 
 
 def test_corrupt_file_falls_back_to_defaults(tmp_path):
@@ -185,7 +185,7 @@ def test_corrupt_file_falls_back_to_defaults(tmp_path):
     with _client(tmp_path) as c:
         state = c.get("/api/ui-state").json()["state"]
     assert state["prompt"] == ""
-    assert state["steps"] == 25
+    assert state["steps"] == -1
 
 
 def test_disabled_saving_skips_file(tmp_path):

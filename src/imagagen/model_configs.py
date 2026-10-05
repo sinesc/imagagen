@@ -285,7 +285,7 @@ def resolve_settings(
     user_sampler: str | None,
     user_scheduler: str | None,
     user_loras: list[tuple[str, float]] | None = None,
-    user_steps: int = 25,
+    user_steps: int = STEPS_SENTINEL,
 ) -> tuple[str | None, str | None, float | None, int | None, list[tuple[str, float]]]:
     """Resolve the effective generation settings.
 
