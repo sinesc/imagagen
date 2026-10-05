@@ -19,6 +19,7 @@ from imagagen.krea2_lora import (
 
 ROOT = "loras/krea2/rustic-ambience.safetensors"
 NATIVE_ROOT = "loras/krea2/Real3dKII1.0.safetensors"
+FLAT_ROOT = "loras/krea2/HyperspaceKII1.0.safetensors"
 
 
 class TestMapBaseKey:
@@ -56,6 +57,17 @@ class TestMapBaseKey:
             assert map_base_key(f"text_fusion.{group}.0.ff.down") == \
                 (f"txtfusion.{group}.0.mlp.down", 0, 2560)
 
+    def test_native_top_level_targets(self):
+        assert map_base_key("first") == ("first", 0, 6144)
+        assert map_base_key("last.linear") == ("last.linear", 0, 64)
+        assert map_base_key("tmlp.0") == ("tmlp.0", 0, 6144)
+        assert map_base_key("tmlp.2") == ("tmlp.2", 0, 6144)
+        assert map_base_key("txtmlp.1") == ("txtmlp.1", 0, 6144)
+        assert map_base_key("txtmlp.3") == ("txtmlp.3", 0, 6144)
+        assert map_base_key("tproj.1") == ("tproj.1", 0, 36864)
+        assert map_base_key("txtfusion.projector") == \
+            ("txtfusion.projector", 0, 1)
+
     def test_unknown_key_raises(self):
         with pytest.raises(ValueError):
             map_base_key("x_embedder")
@@ -63,6 +75,8 @@ class TestMapBaseKey:
             map_base_key("transformer_blocks.0.attn.to_rope")
         with pytest.raises(ValueError):
             map_base_key("text_fusion.other_blocks.0.attn.to_q")
+        with pytest.raises(ValueError):
+            map_base_key("tmlp.1")  # a GELU index, not a linear
 
 
 class TestParseKrea2Lora:
@@ -155,6 +169,63 @@ class TestParseKrea2Lora:
         assert by_mod["blocks.0.attn.wk"][0].B.shape == (1536, 1)
         assert by_mod["txtfusion.refiner_blocks.1.mlp.down"][0].B.shape == \
             (2560, 1)
+
+    def test_real_flat_native_asset(self):
+        """HyperspaceKII1.0 ships the ComfyUI flat native naming
+        (``lora_unet_*`` with underscores for dots): rank 32, alpha 32
+        (scale 1.0), and it also targets the top-level projections."""
+        specs = parse_krea2_lora(FLAT_ROOT)
+        assert len(specs) == 28 * 8 + 2 * 2 * 8 + 8
+        for s in specs:
+            assert s.A.shape[0] == 32
+            assert s.scale == 1.0
+            assert s.r0 == 0
+            assert s.swap is False
+            assert s.B.shape[0] == s.r1 - s.r0
+            assert s.B.shape[1] == 32
+        by_mod = {}
+        for s in specs:
+            by_mod.setdefault(s.module, []).append(s)
+        assert Counter(s.module for s in specs) == Counter(
+            f"blocks.{n}.{part}"
+            for n in range(28)
+            for part in ("attn.wq", "attn.wk", "attn.wv", "attn.gate",
+                         "attn.wo", "mlp.gate", "mlp.up", "mlp.down")
+        ) | Counter(
+            f"txtfusion.{g}.{n}.{part}"
+            for g in ("layerwise_blocks", "refiner_blocks")
+            for n in range(2)
+            for part in ("attn.wq", "attn.wk", "attn.wv", "attn.gate",
+                         "attn.wo", "mlp.gate", "mlp.up", "mlp.down")
+        ) | Counter(
+            ["first", "last.linear", "tmlp.0", "tmlp.2", "txtmlp.1",
+             "txtmlp.3", "tproj.1", "txtfusion.projector"]
+        )
+        # spot-check the flat->native conversion + A/B dims
+        assert by_mod["blocks.0.attn.wq"][0].A.shape == (32, 6144)
+        assert by_mod["blocks.0.attn.wk"][0].B.shape == (1536, 32)
+        assert by_mod["first"][0].A.shape == (32, 64)
+        assert by_mod["first"][0].B.shape == (6144, 32)
+        assert by_mod["last.linear"][0].A.shape == (32, 6144)
+        assert by_mod["last.linear"][0].B.shape == (64, 32)
+        assert by_mod["txtmlp.1"][0].A.shape == (32, 2560)
+        assert by_mod["txtmlp.3"][0].B.shape == (6144, 32)
+        assert by_mod["tproj.1"][0].B.shape == (36864, 32)
+        assert by_mod["txtfusion.projector"][0].A.shape == (32, 12)
+        assert by_mod["txtfusion.projector"][0].B.shape == (1, 32)
+
+    def test_flat_unknown_key_raises(self, tmp_path):
+        from safetensors.torch import save_file
+
+        p = tmp_path / "bad.safetensors"
+        save_file({
+            "lora_unet_bogus_module.lora_down.weight":
+                torch.zeros(32, 8, dtype=torch.bfloat16),
+            "lora_unet_bogus_module.lora_up.weight":
+                torch.zeros(8, 32, dtype=torch.bfloat16),
+        }, str(p))
+        with pytest.raises(ValueError, match="unknown Krea 2 LoRA key"):
+            parse_krea2_lora(p)
 
     def test_missing_pair_raises(self, tmp_path):
         from safetensors.torch import save_file

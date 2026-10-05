@@ -465,12 +465,14 @@ class Krea2Backend(ModelBackend):
         return specs
 
     def _module_for(self, path: str):
-        """Transformer submodule for a delta spec's module path."""
-        module = self.transformer
-        for part in path.split("."):
-            if not hasattr(module, part):
-                raise ValueError(f"no transformer module for LoRA path {path!r}")
-            module = getattr(module, part)
+        """Transformer submodule for a delta spec's module path.
+
+        Resolved via ``named_modules()`` (not ``getattr``) so numeric
+        ``nn.Sequential`` indices like ``txtmlp.1`` work.
+        """
+        module = dict(self.transformer.named_modules()).get(path)
+        if module is None:
+            raise ValueError(f"no transformer module for LoRA path {path!r}")
         return module
 
     def _merge_lora_deltas(self, loras: tuple[tuple[str, float], ...]):

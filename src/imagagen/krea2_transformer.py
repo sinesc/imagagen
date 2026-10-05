@@ -24,11 +24,11 @@ rotates the ACTIVATION by the same Hadamard matrix before the GEMM
 (:class:`Int8Linear`; the construction is ported from
 ``comfy_kitchen/tensor/int8_utils.py``). The int8 bytes stay resident
 (~13.5 GB) and dequantize to bf16 per op (``W.to(bf16) * scale``, the
-Forge pattern). Everything else (txtfusion, txtmlp, tmlp, tproj, first,
-last, all norms, the ``mod.lin`` modulation params) is plain bf16; the
-txtfusion projections are :class:`DeltaLinear` so the sample LoRA's
-``text_fusion.*`` targets accept the same runtime additive deltas as
-the int8 modules.
+Forge pattern). Everything else is plain bf16, and every projection
+(``first``, the ``blocks.N`` projections, the whole ``txtfusion``
+adapter incl. the ``projector``, ``txtmlp`` / ``tmlp`` / ``tproj``,
+``last.linear``) is a :class:`DeltaLinear` so ANY LoRA target accepts
+the same runtime additive deltas as the int8 modules.
 
 ``forward(x, sigma, context)`` takes the (1, 16, h, w) bf16 latent, the
 flow time ``sigma`` (1.0 = pure noise ... 0.0 = clean, passed raw to the
@@ -417,7 +417,7 @@ class TextFusionTransformer(nn.Module):
             [TextFusionBlock(txt_dim, heads, linear_cls, multiplier, bias,
                              kvheads) for _ in range(2)]
         )
-        self.projector = nn.Linear(num_txt_layers, 1, bias=False)
+        self.projector = DeltaLinear(num_txt_layers, 1, bias=False)
         self.refiner_blocks = nn.ModuleList(
             [TextFusionBlock(txt_dim, heads, linear_cls, multiplier, bias,
                              kvheads) for _ in range(2)]
@@ -444,10 +444,12 @@ class LastLayer(nn.Module):
     projection to ``patch * patch * channels`` (state-dict keys ``norm`` /
     ``linear`` / ``modulation``)."""
 
-    def __init__(self, features: int, patch: int, channels: int):
+    def __init__(self, features: int, patch: int, channels: int,
+                linear_cls=DeltaLinear):
         super().__init__()
         self.norm = RMSNorm(features)
-        self.linear = nn.Linear(features, patch * patch * channels, bias=True)
+        self.linear = linear_cls(features, patch * patch * channels,
+                                 bias=True)
         self.modulation = SimpleModulation(features)
 
     def forward(self, x, tvec):
@@ -465,9 +467,11 @@ class Krea2Transformer(nn.Module):
     128), multiplier 4 (MLP 16384), 28 blocks, patch 2, channels 16,
     12 text taps, RoPE theta 1e3 with 3-axis dims [32, 48, 48].
 
-    The block projections are :class:`Int8Linear` (int8 + ConvRot); the
-    txtfusion projections are :class:`DeltaLinear` (bf16, delta-capable);
-    everything else is plain bf16.
+    The block projections are :class:`Int8Linear` (int8 + ConvRot);
+    every other projection (``first``, txtfusion incl. the ``projector``,
+    ``txtmlp`` / ``tmlp`` / ``tproj`` linears, ``last.linear``) is a
+    :class:`DeltaLinear` (bf16, delta-capable); only the norms and the
+    modulation params are plain bf16.
 
     Construct under ``quant_dtype_scope(cpu, bf16)`` (the Int8Linear
     dummies are seeded from the scope; no ``nn.Linear`` replacement, the
@@ -496,29 +500,29 @@ class Krea2Transformer(nn.Module):
                 6 * (headdim // 16), 6 * (headdim // 16)]
         assert sum(axes) == headdim, f"axes {axes} sum != head dim {headdim}"
         self.pe_embedder = Krea2PositionalEncoding(axes, theta)
-        self.first = nn.Linear(channels * patch ** 2, features, bias=True)
+        self.first = DeltaLinear(channels * patch ** 2, features, bias=True)
         self.blocks = nn.ModuleList(
             [SingleStreamBlock(features, heads, Int8Linear, multiplier,
                                bias, kvheads) for _ in range(layers)]
         )
         self.tmlp = nn.Sequential(
-            nn.Linear(tdim, features, bias=True),
+            DeltaLinear(tdim, features, bias=True),
             nn.GELU(approximate="tanh"),
-            nn.Linear(features, features, bias=True),
+            DeltaLinear(features, features, bias=True),
         )
         self.txtfusion = TextFusionTransformer(
             txtlayers, txtdim, txtheads, DeltaLinear, multiplier, bias,
             txtkvheads)
         self.txtmlp = nn.Sequential(
             RMSNorm(txtdim),
-            nn.Linear(txtdim, features, bias=True),
+            DeltaLinear(txtdim, features, bias=True),
             nn.GELU(approximate="tanh"),
-            nn.Linear(features, features, bias=True),
+            DeltaLinear(features, features, bias=True),
         )
-        self.last = LastLayer(features, patch, channels)
+        self.last = LastLayer(features, patch, channels, DeltaLinear)
         self.tproj = nn.Sequential(
             nn.GELU(approximate="tanh"),
-            nn.Linear(features, features * 6, bias=True),
+            DeltaLinear(features, features * 6, bias=True),
         )
 
     def forward(self, x, sigma, context):

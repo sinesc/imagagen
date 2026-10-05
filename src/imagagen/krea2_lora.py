@@ -21,6 +21,15 @@ K2 LoRAs ship in two formats:
 ``txtfusion.layerwise_blocks.N.*`` / ``txtfusion.refiner_blocks.N.*``).
 These are identity-mapped (no renaming).
 
+**ComfyUI flat native naming** (e.g. ``HyperspaceKII1.0.safetensors``):
+the same native module names, but flat under a ``lora_unet_`` prefix
+with underscores standing in for dots
+(``lora_unet_blocks_0_attn_wq.lora_down.weight``). The underscores are
+turned back into dots, giving the identical native names (so this
+format also covers the non-block modules ``first``, ``last.linear``,
+``tmlp.0`` / ``tmlp.2``, ``txtmlp.1`` / ``txtmlp.3``, ``tproj.1`` and
+``txtfusion.projector``).
+
 The diffusers mapping (the inverse of ``comfy.utils.krea2_to_diffusers``'
 diffusers->native table, adapted to our module paths, which are relative
 to the transformer root):
@@ -31,6 +40,13 @@ to the transformer root):
 - ``ff.gate``/``ff.up``/``ff.down`` -> ``mlp.gate``/``mlp.up``/``mlp.down``
 - ``text_fusion.layerwise_blocks.N`` / ``text_fusion.refiner_blocks.N``
   -> ``txtfusion.layerwise_blocks.N`` / ``txtfusion.refiner_blocks.N``
+
+The diffusers-format LoRA targets only the 28 blocks + txtfusion
+attn/mlp; the flat native format additionally carries the top-level
+projections (``first``, ``last.linear``, ``tmlp`` / ``txtmlp`` /
+``tproj`` linears, ``txtfusion.projector``) -- every K2 projection is a
+:class:`~imagagen.krea2_transformer.DeltaLinear` so all of them accept
+runtime deltas.
 
 The A/B pairs become runtime additive deltas exactly as Z-Image/Flux:
 :func:`flux_lora.merge_module_deltas` (one GEMM pair per module) and
@@ -55,11 +71,26 @@ _KD = 1536     # blocks: k/v (GQA 12 kv heads x 128)
 _M = 16384     # blocks: mlp gate/up
 _TD = 2560     # txtfusion: q/k/v/gate/out, hidden
 _TM = 6912     # txtfusion: mlp gate/up
+_OUT = 64      # last.linear out: patch*patch*channels
 
 _LORA_KEY = re.compile(
     r"^(?:transformer|diffusion_model)\.(.+)\.lora_(A|B|down|up)\.weight$"
 )
+_LORA_KEY_UNET = re.compile(
+    r"^lora_unet_(.+)\.lora_(A|B|down|up)\.weight$"
+)
 _ALPHA_KEY = re.compile(r"^(?:transformer|diffusion_model)\.(.+)\.alpha$")
+_ALPHA_KEY_UNET = re.compile(r"^lora_unet_(.+)\.alpha$")
+
+#: native top-level (non-block) module -> row count of its weight
+_NATIVE_TOP = {
+    "first": _D,
+    "last.linear": _OUT,
+    "tmlp.0": _D, "tmlp.2": _D,
+    "txtmlp.1": _D, "txtmlp.3": _D,
+    "tproj.1": 6 * _D,
+    "txtfusion.projector": 1,
+}
 
 #: native-format module -> row count of its weight
 _NATIVE_ROWS = {
@@ -78,24 +109,45 @@ def _strip_dot0(base: str) -> str:
     return base[:-2] if base.endswith(".0") else base
 
 
+def _flat_to_native(name: str) -> str:
+    """ComfyUI flat name -> dotted native module name.
+
+    ``layerwise_blocks`` / ``refiner_blocks`` are themselves single tokens
+    with an underscore, so they are protected before the remaining
+    underscores (the dots) are restored.
+    """
+    for tok in ("layerwise_blocks", "refiner_blocks"):
+        name = name.replace(tok, tok.replace("_", "~"))
+    return name.replace("_", ".").replace("~", "_")
+
+
 def lora_key(key: str) -> tuple[str, str] | None:
     """Full tensor name -> ``(base key, 'A'/'B')``, or None.
 
     Accepts A1111/Kohya ``.lora_A.weight`` / ``.lora_B.weight`` and
     diffusers-style ``.lora_down.weight`` / ``.lora_up.weight`` (A == the
     down projection). A trailing ``.0`` on the base is stripped
-    (``attn.to_out.0`` == ``attn.to_out``)."""
+    (``attn.to_out.0`` == ``attn.to_out``). The flat ComfyUI
+    ``lora_unet_*`` keys are converted to the dotted native names
+    (underscores -> dots)."""
     m = _LORA_KEY.match(key)
-    if m is None:
-        return None
-    return _strip_dot0(m.group(1)), \
-        "A" if m.group(2) in ("A", "down") else "B"
+    if m is not None:
+        base = _strip_dot0(m.group(1))
+    else:
+        m = _LORA_KEY_UNET.match(key)
+        if m is None:
+            return None
+        base = _flat_to_native(m.group(1))
+    return base, "A" if m.group(2) in ("A", "down") else "B"
 
 
 def alpha_key(key: str) -> str | None:
     """Full tensor name -> its base key, or None (not an alpha scalar)."""
     m = _ALPHA_KEY.match(key)
-    return _strip_dot0(m.group(1)) if m is not None else None
+    if m is not None:
+        return _strip_dot0(m.group(1))
+    m = _ALPHA_KEY_UNET.match(key)
+    return _flat_to_native(m.group(1)) if m is not None else None
 
 
 def _map_block(base: str, n: int, rest: str, module_prefix: str) -> tuple[str, int, int]:
@@ -137,6 +189,8 @@ def map_base_key(base: str) -> tuple[str, int, int]:
     delta covers the whole module weight (``r0 = 0`` in every case). Raises
     :class:`ValueError` for keys with no mappable target.
     """
+    if base in _NATIVE_TOP:
+        return base, 0, _NATIVE_TOP[base]
     nm = re.match(
         r"^(blocks|txtfusion\.(?:layerwise_blocks|refiner_blocks))"
         r"\.\d+\.(.+)$",
