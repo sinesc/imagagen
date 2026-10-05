@@ -18,6 +18,7 @@ from imagagen.krea2_lora import (
 )
 
 ROOT = "loras/krea2/rustic-ambience.safetensors"
+NATIVE_ROOT = "loras/krea2/Real3dKII1.0.safetensors"
 
 
 class TestMapBaseKey:
@@ -123,7 +124,39 @@ class TestParseKrea2Lora:
         with pytest.raises(ValueError, match="incomplete"):
             parse_krea2_lora(p)
 
-    def test_unknown_key_raises(self, tmp_path):
+    def test_real_native_asset(self):
+        """Real3dKII1.0 ships ComfyUI native naming (diffusion_model.
+        prefix, module names already ours): identity-mapped."""
+        specs = parse_krea2_lora(NATIVE_ROOT)
+        assert len(specs) == 256  # 28*8 main + 2*2*8 txtfusion
+        for s in specs:
+            assert s.r0 == 0
+            assert s.scale == 1.0
+            assert s.swap is False
+            assert s.B.shape[0] > 0
+            assert s.B.shape[1] == s.A.shape[0]
+        by_mod = {}
+        for s in specs:
+            by_mod.setdefault(s.module, []).append(s)
+        assert Counter(s.module for s in specs) == Counter(
+            f"blocks.{n}.{part}"
+            for n in range(28)
+            for part in ("attn.wq", "attn.wk", "attn.wv", "attn.gate",
+                         "attn.wo", "mlp.gate", "mlp.up", "mlp.down")
+        ) | Counter(
+            f"txtfusion.{g}.{n}.{part}"
+            for g in ("layerwise_blocks", "refiner_blocks")
+            for n in range(2)
+            for part in ("attn.wq", "attn.wk", "attn.wv", "attn.gate",
+                         "attn.wo", "mlp.gate", "mlp.up", "mlp.down")
+        )
+        # native names are identity: module names match the source keys
+        assert by_mod["blocks.0.attn.wq"][0].A.shape == (1, 6144)
+        assert by_mod["blocks.0.attn.wk"][0].B.shape == (1536, 1)
+        assert by_mod["txtfusion.refiner_blocks.1.mlp.down"][0].B.shape == \
+            (2560, 1)
+
+    def test_missing_pair_raises(self, tmp_path):
         from safetensors.torch import save_file
 
         p = tmp_path / "bad.safetensors"
@@ -132,6 +165,19 @@ class TestParseKrea2Lora:
                 torch.zeros(16, 8, dtype=torch.bfloat16),
             "transformer.bogus_module.lora_B.weight":
                 torch.zeros(8, 16, dtype=torch.bfloat16),
+        }, str(p))
+        with pytest.raises(ValueError, match="unknown Krea 2 LoRA key"):
+            parse_krea2_lora(p)
+
+    def test_unknown_native_key_raises(self, tmp_path):
+        from safetensors.torch import save_file
+
+        p = tmp_path / "bad.safetensors"
+        save_file({
+            "diffusion_model.blocks.0.attn.to_q.lora_A.weight":
+                torch.zeros(16, 6144, dtype=torch.bfloat16),
+            "diffusion_model.blocks.0.attn.to_q.lora_B.weight":
+                torch.zeros(6144, 16, dtype=torch.bfloat16),
         }, str(p))
         with pytest.raises(ValueError, match="unknown Krea 2 LoRA key"):
             parse_krea2_lora(p)

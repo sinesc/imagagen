@@ -1,7 +1,9 @@
 """Krea 2 LoRA key mapping and checkpoint parsing.
 
-K2 LoRAs (e.g. ``loras/krea2/rustic-ambience.safetensors``) ship in the
-diffusers naming under a ``transformer.`` prefix:
+K2 LoRAs ship in two formats:
+
+**diffusers naming** (e.g. ``rustic-ambience.safetensors``): a
+``transformer.`` prefix:
 
 - ``transformer.transformer_blocks.N.attn.to_q|to_k|to_v|to_gate|
   to_out.0.lora_{A,B}.weight`` and ``transformer.transformer_blocks.N.
@@ -13,7 +15,13 @@ diffusers naming under a ``transformer.`` prefix:
   DeltaLinear` modules);
 - rank 16, bf16, no alpha tensors (scale 1.0).
 
-The mapping (the inverse of ``comfy.utils.krea2_to_diffusers``'
+**native/ComfyUI naming** (e.g. ``Real3dKII1.0.safetensors``): a
+``diffusion_model.`` prefix whose module names already match ours
+(``blocks.N.attn.wq|wk|wv|gate|wo``, ``blocks.N.mlp.gate|up|down``,
+``txtfusion.layerwise_blocks.N.*`` / ``txtfusion.refiner_blocks.N.*``).
+These are identity-mapped (no renaming).
+
+The diffusers mapping (the inverse of ``comfy.utils.krea2_to_diffusers``'
 diffusers->native table, adapted to our module paths, which are relative
 to the transformer root):
 
@@ -48,8 +56,22 @@ _M = 16384     # blocks: mlp gate/up
 _TD = 2560     # txtfusion: q/k/v/gate/out, hidden
 _TM = 6912     # txtfusion: mlp gate/up
 
-_LORA_KEY = re.compile(r"^transformer\.(.+)\.lora_(A|B|down|up)\.weight$")
-_ALPHA_KEY = re.compile(r"^transformer\.(.+)\.alpha$")
+_LORA_KEY = re.compile(
+    r"^(?:transformer|diffusion_model)\.(.+)\.lora_(A|B|down|up)\.weight$"
+)
+_ALPHA_KEY = re.compile(r"^(?:transformer|diffusion_model)\.(.+)\.alpha$")
+
+#: native-format module -> row count of its weight
+_NATIVE_ROWS = {
+    "blocks": {
+        "attn.wq": _D, "attn.wk": _KD, "attn.wv": _KD, "attn.gate": _D,
+        "attn.wo": _D, "mlp.gate": _M, "mlp.up": _M, "mlp.down": _D,
+    },
+    "txtfusion": {
+        "attn.wq": _TD, "attn.wk": _TD, "attn.wv": _TD, "attn.gate": _TD,
+        "attn.wo": _TD, "mlp.gate": _TM, "mlp.up": _TM, "mlp.down": _TD,
+    },
+}
 
 
 def _strip_dot0(base: str) -> str:
@@ -108,12 +130,24 @@ def _map_block(base: str, n: int, rest: str, module_prefix: str) -> tuple[str, i
 def map_base_key(base: str) -> tuple[str, int, int]:
     """Mapped K2 LoRA base key -> ``(module, r0, r1)``.
 
-    ``base`` is the LoRA key minus the ``transformer.`` prefix and the
-    ``.lora_*.weight`` suffix (trailing ``.0`` already stripped).
-    ``module`` is relative to the transformer root; the delta covers the
-    whole module weight (``r0 = 0`` in every case). Raises
+    ``base`` is the LoRA key minus the ``transformer.`` / ``diffusion_model.``
+    prefix and the ``.lora_*.weight`` suffix (trailing ``.0`` already
+    stripped). Native-format keys are identity-mapped (their names already
+    match our modules). ``module`` is relative to the transformer root; the
+    delta covers the whole module weight (``r0 = 0`` in every case). Raises
     :class:`ValueError` for keys with no mappable target.
     """
+    nm = re.match(
+        r"^(blocks|txtfusion\.(?:layerwise_blocks|refiner_blocks))"
+        r"\.\d+\.(.+)$",
+        base,
+    )
+    if nm is not None:
+        part = nm.group(2)
+        r1 = _NATIVE_ROWS[nm.group(1).split(".")[0]].get(part)
+        if r1 is None:
+            raise ValueError(f"unknown Krea 2 LoRA key: {base!r}")
+        return base, 0, r1
     m = re.match(
         r"^(transformer_blocks|text_fusion\.(layerwise_blocks|refiner_blocks))"
         r"\.(\d+)\.(.+)$",
