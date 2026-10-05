@@ -1,4 +1,4 @@
-"""Krea 2 (K2) backend: int8 SingleStreamDiT + Qwen3-VL-4B encoder +
+"""Krea 2 (K2) backend: int8/int4 SingleStreamDiT + Qwen3-VL-4B encoder +
 flow-matching Euler.
 
 Fourth model family alongside SDXL, Flux and Z-Image (see
@@ -14,7 +14,12 @@ Architecture:
   projections live as ``int8_tensorwise`` on the GPU (per-row fp32 scales,
   ConvRot Hadamard-rotated weights) and dequantize to bf16 per-op --
   ~12.5 GB resident instead of the ~25 GB a bf16 copy would need; the
-  txtfusion/txtmlp/tmlp/tproj/first/last sections are plain bf16;
+  txtfusion/txtmlp/tmlp/tproj/first/last sections are plain bf16. The
+  ``int4_convrot`` checkpoints (e.g. ``krea2_finetuned_int4``) quantize
+  the ``txtfusion`` projections too; :func:`_load_krea2_state_dict`
+  unpacks their nibble-packed int4 weights into the same int8 block
+  layout (~7 GB resident) and dequantizes/de-rotates the txtfusion
+  weights to plain bf16;
 - the text condition is a 12-layer TAP of the Qwen3-VL-4B text tower
   (``hidden_states[2, 5, 8, ..., 35]``), flattened to (1, seq, 12*2560)
   and fused by the DiT's internal ``txtfusion`` adapter; the encoder
@@ -118,23 +123,112 @@ SAMPLERS = {"Euler": kdiff.sample_euler}
 SCHEDULERS = {}
 
 
+def _unpack_int4_row_major(packed: torch.Tensor) -> torch.Tensor:
+    """The comfy_kitchen int4 codec (``_unpack_int4_row_major``): ``(out,
+    K/2)`` int8 -> ``(out, K)`` int8 with SIGNED nibbles ``[-8, 7]``, the
+    even input column in the low nibble of each byte."""
+    x32 = packed.to(torch.int32)
+    lo = x32 & 0x0F
+    hi = (x32 >> 4) & 0x0F
+    lo = torch.where(lo >= 8, lo - 16, lo)
+    hi = torch.where(hi >= 8, hi - 16, hi)
+    return (torch.stack([lo, hi], dim=-1)
+            .reshape(*packed.shape[:-1], -1).to(torch.int8))
+
+
 def _load_krea2_state_dict(path: str) -> dict:
-    """Read the K2 transformer checkpoint into ``{key: Parameter}``
-    (keys relative to the transformer root -- the checkpoint has no
-    prefix; the int8 tensors stay int8 and the per-row ``weight_scale``
-    tensors ride along; the ``*.comfy_quant`` U8 markers are skipped).
+    """Read the K2 transformer checkpoint into ``{key: Parameter}`` (keys
+    relative to the transformer root; the ``*.comfy_quant`` U8 markers are
+    skipped). Two checkpoint layouts are handled:
+
+    - ``int8_tensorwise`` (``krea2_Int8Extended``): the int8 tensors stay
+      int8 and the per-row ``weight_scale`` ``(out, 1)`` ride along;
+    - ``int4_convrot`` (``convrot_w4a4``, e.g. ``krea2_finetuned_int4``,
+      declared by the ``_quantization_metadata`` safetensors metadata
+      instead of the per-tensor ``comfy_quant`` markers): keys carry a
+      ``model.diffusion_model.`` prefix and every quantized projection is
+      packed two signed nibbles per byte (``weight`` ``(out, in/2)``,
+      per-row ``weight_scale`` ``(out,)``), Hadamard-rotated along the
+      input axis like the int8 checkpoint. The loader strips the prefix,
+      unpacks the nibbles back to int8 and reshapes the scales to
+      ``(out, 1)``, so the ``blocks.N`` sections load into the very same
+      Int8Linear modules (the runtime activation rotation still cancels
+      the stored weight rotation). The ``txtfusion`` projections are the
+      exception: their modules are plain bf16 DeltaLinears WITHOUT
+      ConvRot, so those weights are additionally dequantized and
+      de-rotated (H is symmetric, H^2 = I) to bf16 and their scales
+      dropped.
 
     Slow disk I/O; run OUTSIDE ``_PARAM_INIT_LOCK`` (it only reads
-    tensors, it does not register them in a module).
+    tensors, it does not register them in a module). The tensors are
+    fetched one at a time (``get_slice`` for the layout decisions), so
+    the peak RSS stays at the size of the returned dict instead of
+    holding the whole file twice during the int4 conversion.
     """
+    import json
+
     from safetensors import safe_open
 
-    sd: dict = {}
+    from .krea2_transformer import _rotate
+
     with safe_open(path, framework="pt") as f:
-        for key in f.keys():
-            if key.endswith(".comfy_quant"):
-                continue  # quantization metadata marker, no data
-            sd[key] = torch.nn.Parameter(f.get_tensor(key), requires_grad=False)
+        meta = f.metadata() or {}
+        names = {k: k for k in f.keys() if not k.endswith(".comfy_quant")}
+
+        # the int4 converter records the quantization only in the file
+        # metadata: {"format": "int4_convrot", "layers": {..:
+        # {"convrot_groupsize": 256, ...}}}; the int8 checkpoint has no
+        # such entry
+        fmt, group = "", 256
+        if qm := meta.get("_quantization_metadata"):
+            qm = json.loads(qm)
+            fmt = qm.get("format", "")
+            for layer in qm.get("layers", {}).values():
+                group = int(layer.get("convrot_groupsize", group))
+                break
+        int4 = "int4" in fmt
+
+        prefix = "model.diffusion_model."
+        if names and all(k.startswith(prefix) for k in names):
+            names = {k[len(prefix):]: k for k in names}
+
+        # the quantized projections of the int4 layout: int8 weight + a
+        # 1-D per-row scale (the int8 checkpoint's scales are (out, 1))
+        packed = set()
+        if int4:
+            for name in names:
+                if not name.endswith(".weight"):
+                    continue
+                scale = f"{name}_scale"
+                if (f.get_slice(names[name]).get_dtype() == "I8"
+                        and scale in names
+                        and len(f.get_slice(names[scale]).get_shape()) == 1):
+                    packed.add(name)
+
+        sd: dict = {}
+        for name, file_key in names.items():
+            if name.endswith(".weight_scale") and name.removesuffix(
+                    "_scale") in packed:
+                continue  # the scale is consumed (reshaped/folded) below
+            if name not in packed:
+                sd[name] = torch.nn.Parameter(
+                    f.get_tensor(file_key), requires_grad=False)
+                continue
+            w = _unpack_int4_row_major(f.get_tensor(file_key))
+            scale = f.get_tensor(names[f"{name}_scale"])
+            if name.removesuffix(".weight").startswith("txtfusion."):
+                # plain DeltaLinear target: fold the scale in and undo the
+                # ConvRot rotation, leaving a plain bf16 weight
+                w = _rotate(w.to(torch.float32) * scale.reshape(-1, 1),
+                            group)
+                sd[name] = torch.nn.Parameter(
+                    w.to(torch.bfloat16), requires_grad=False)
+            else:
+                # Int8Linear target: the unpacked int8 bytes and the
+                # (out, 1) scale load exactly like the int8 checkpoint
+                sd[name] = torch.nn.Parameter(w, requires_grad=False)
+                sd[f"{name}_scale"] = torch.nn.Parameter(
+                    scale.reshape(-1, 1), requires_grad=False)
     return sd
 
 
