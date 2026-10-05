@@ -293,6 +293,7 @@ def ensure_dirs(config: Config) -> None:
         config.models_dir / "sdxl",
         config.models_dir / "flux",
         config.models_dir / "zimage",
+        config.models_dir / "krea2",
         config.segmentation_models_dir,
         config.loras_dir,
         config.infra_dir,

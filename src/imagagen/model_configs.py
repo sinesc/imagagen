@@ -23,6 +23,7 @@ File layout (one JSON per configuration, filename = sanitized name):
       "name": "My SDXL Model + DMD2 Lora",
       "model": "whatever",  # model id: path within models/sdxl, no extension
       "distilled": true,  # Flux only: CFG = embedded guidance (see ModelConfig)
+      "turbo": false,  # Krea 2 only: the turbo checkpoint class (see ModelConfig)
       "t2i": {"sampler": null, "scheduler": null, "cfg": null, "sag": false,
               "sag_scale": 0.5, "sag_blur_sigma": 2.0, "sag_threshold": 1.0,
               "loras": [{"name": "dmd2", "weight": 0.8}]},  # rel. to loras/<type>/
@@ -79,7 +80,14 @@ class ModelConfig(BaseModel):
     # embedded guidance (distilled, one pass per step, no negative prompt);
     # False = classic CFG with the negative prompt (two passes per step). The
     # semantics apply to both directions, hence entry level, not ModeConfig.
+    # Inert for every other family (always False there).
     distilled: bool = True
+    # Krea 2 only (inert, always False for other families): True selects the
+    # turbo checkpoint class (8 steps, no CFG, mu pinned to 1.15) over the
+    # raw class (28 steps, standard CFG 5.5, resolution-derived mu). The
+    # user's steps/cfg overrides still apply on top (sentinel -1 resolves to
+    # the class's built-in).
+    turbo: bool = False
     t2i: ModeConfig = Field(default_factory=ModeConfig)
     i2i: ModeConfig = Field(default_factory=ModeConfig)
 
@@ -103,6 +111,7 @@ class ConfigEntry:
     i2i: ModeConfig
     is_default: bool
     distilled: bool = True
+    turbo: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -110,6 +119,7 @@ class ConfigEntry:
             "name": self.name,
             "model_id": self.model_id,
             "distilled": self.distilled,
+            "turbo": self.turbo,
             "t2i": self.t2i.model_dump(),
             "i2i": self.i2i.model_dump(),
             "is_default": self.is_default,
@@ -165,7 +175,7 @@ class ConfigStore:
                 raise ConfigError(f"duplicate configuration name(s): {sorted(dupes)}")
             out = [
                 ConfigEntry(id=file_ids[i], name=files[i].name, model_id=files[i].model,
-                            distilled=files[i].distilled,
+                            distilled=files[i].distilled, turbo=files[i].turbo,
                             t2i=files[i].t2i, i2i=files[i].i2i, is_default=False)
                 for i in range(len(files))
             ]
@@ -176,6 +186,7 @@ class ConfigStore:
                 out.append(
                     ConfigEntry(id=m["id"], name=m["name"], model_id=m["id"],
                                 distilled=True,  # = current Flux behavior
+                                turbo=False,  # = current Krea 2 behavior (raw)
                                 t2i=ModeConfig(), i2i=ModeConfig(), is_default=True)
                 )
             out.sort(key=lambda e: e.name.lower())
@@ -241,6 +252,7 @@ class ConfigStore:
         src = self.resolve(based_on)
         return self.save(
             ModelConfig(name=name, model=src.model_id, distilled=src.distilled,
+                        turbo=src.turbo,
                         t2i=src.t2i.model_copy(deep=True), i2i=src.i2i.model_copy(deep=True)),
         )
 

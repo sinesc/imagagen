@@ -95,6 +95,7 @@ def build_parameters(
     soft_inpainting: SoftInpainting | None = None,
     sag: SelfAttentionGuidance | None = None,
     distilled: bool | None = None,
+    turbo: bool | None = None,
 ) -> str:
     """Serialize the `parameters` text chunk as a JSON document.
 
@@ -120,6 +121,8 @@ def build_parameters(
       option values are imported.)
     * ``distilled``: Flux only (None = not a Flux model, key omitted);
       written in BOTH states like the SAG flags.
+    * ``turbo``: Krea 2 only (None = not a Krea 2 model, key omitted),
+      written in BOTH states like ``distilled``.
     """
     doc: dict[str, Any] = {
         "format": _FORMAT,
@@ -171,6 +174,10 @@ def build_parameters(
         # written unconditionally, so a dropped image records the mode in
         # BOTH states
         doc["Distilled"] = _bool_str(distilled)
+    if turbo is not None:
+        # written unconditionally, so a dropped image records the mode in
+        # BOTH states
+        doc["Turbo"] = _bool_str(turbo)
     if sag is not None:
         # written unconditionally, so a dropped image can restore the
         # checkbox in BOTH states

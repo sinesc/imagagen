@@ -107,6 +107,11 @@ class GenerateRequest(BaseModel):
     # step, negative prompt ignored) when True; classic CFG with the
     # negative prompt (two passes per step) when False. Inert for SDXL.
     distilled: bool = True
+    # Krea 2: True selects the turbo checkpoint class (8 steps, no CFG,
+    # mu pinned to 1.15) over the raw class (28 steps, standard CFG 5.5,
+    # resolution-derived mu). Set from the model config entry, never from
+    # JSON. Inert for every other family.
+    turbo: bool = False
     # inpainting
     init_image: np.ndarray | None = None  # HxWx3 uint8
     init_mask: np.ndarray | None = None  # HxW uint8, 0..255 (255 = inpaint here)
@@ -142,6 +147,9 @@ class GenerateResult:
     # distilled request to classic CFG, so this is not necessarily the
     # request's flag.
     distilled: bool | None = None
+    # Krea 2 only: the effective raw/turbo checkpoint class (None = the
+    # backend is not Krea 2).
+    turbo: bool | None = None
 
 
 ProgressCallback = Callable[[float, str], None]  # fraction 0..1, message
@@ -173,6 +181,8 @@ class ModelBackend(ABC):
     is_flux: bool = False
     #: the model is a Z-Image (single-pass: no CFG, effective cfg 1.0)
     is_zimage: bool = False
+    #: the model is a Krea 2 (the raw/turbo checkpoint-class flag applies)
+    is_krea2: bool = False
     #: whether the model can be moved out of VRAM (to RAM) after use
     #: (False: unload is a no-op and the model stays resident)
     can_park: bool = False

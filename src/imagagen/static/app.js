@@ -1201,8 +1201,13 @@ function openConfigDialog(entry, prefill = null) {
   // entry.family comes from /api/models, so it is correct even if the
   // user opens the dialog before the model finished loading.
   const isFlux = entry.family === "flux";
+  const isKrea2 = entry.family === "krea2";
   const distilledIn = el("input", { class: "cfg-distilled", type: "checkbox" });
   distilledIn.checked = prefill ? !!prefill.distilled : entry.distilled !== false;
+  // turbo model: Krea 2-only flag (the turbo checkpoint class: 8 steps,
+  // no CFG, pinned mu); hidden for every other family, where it is inert
+  const turboIn = el("input", { class: "cfg-turbo", type: "checkbox" });
+  turboIn.checked = prefill ? !!prefill.turbo : !!entry.turbo;
   // SAG is implemented for the SDXL UNet only: the per-direction checkbox
   // + options gear are offered for SDXL entries only
   const showSag = entry.family === "sdxl";
@@ -1214,6 +1219,7 @@ function openConfigDialog(entry, prefill = null) {
     const snap = {
       name: nameIn.value,
       distilled: distilledIn.checked,
+      turbo: turboIn.checked,
       t2i: readCfgSection(f1),
       i2i: readCfgSection(f2),
     };
@@ -1242,6 +1248,11 @@ function openConfigDialog(entry, prefill = null) {
         "(distilled CFG; one pass per step, the negative prompt is ignored). " +
         "unchecked: classic CFG with the negative prompt (two passes per " +
         "step, about 2x the time)." }, distilledIn, "Distilled model")] : []),
+    ...(isKrea2 ? [el("label", { class: "cfg-distilled-row", title: "checked " +
+        "(default): the raw checkpoint class (28 steps, standard CFG 5.5, " +
+        "resolution-derived noise schedule; the negative prompt is used). " +
+        "unchecked: the turbo class (8 steps, no CFG, pinned noise schedule; " +
+        "faster, tuned for 8-step sampling)." }, turboIn, "Turbo model")] : []),
     f1, f2);
   openDialog("Model configuration", box, async () => {
     const name = nameIn.value.trim();
@@ -1255,6 +1266,7 @@ function openConfigDialog(entry, prefill = null) {
         name,
         model: entry.model_id,
         distilled: isFlux ? distilledIn.checked : entry.distilled,
+        turbo: isKrea2 ? turboIn.checked : entry.turbo,
         t2i: readCfgSection(f1),
         i2i: readCfgSection(f2),
       });

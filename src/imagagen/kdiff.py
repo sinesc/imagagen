@@ -114,6 +114,33 @@ def get_sigmas_flux(n: int, image_seq_len: int, device,
     return torch.cat([t, torch.zeros(1, device=device, dtype=t.dtype)])
 
 
+def get_sigmas_krea2(n: int, image_seq_len: int, device,
+                     base_seq_len: int = 256, max_seq_len: int = 6400,
+                     base_shift: float = 0.5, max_shift: float = 1.15,
+                     mu: float | None = None) -> torch.Tensor:
+    """Krea 2 (flow-matching) sigma schedule with the resolution-dependent
+    shift (the reference ``sampling.py::timesteps``).
+
+    ``mu`` is a linear function of the image token count (``image_seq_len``
+    = ``(h // 16) * (w // 16)``, the reference's minres 256 px -> 256
+    tokens and maxres 1280 px -> 6400 tokens) and the exponential time
+    shift (``exp(mu) / (exp(mu) + (1/t - 1))``) redistributes the steps
+    (more steps spent at high noise). Pass an explicit ``mu`` to pin the
+    shift regardless of resolution (the reference's ``--mu``; the
+    distilled/turbo checkpoints were trained at the fixed ``mu = 1.15``).
+    A terminal 0 is appended (the sampler integrates down to sigma 0).
+    """
+    # the reference's uniform grid INCLUDES the terminal 0 (n + 1 points,
+    # n intervals); the shift maps 0 -> 0 (exp(mu) / (exp(mu) + inf))
+    t = torch.linspace(1.0, 0.0, n + 1, device=device)
+    if mu is None:
+        m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+        b = base_shift - m * base_seq_len
+        mu = image_seq_len * m + b
+    exp_mu = math.exp(mu)
+    return exp_mu / (exp_mu + (1.0 / t - 1.0))
+
+
 def get_sigmas_zimage(n: int, device: str = "cpu", shift: float = 3.0) -> torch.Tensor:
     """Z-Image (flow-matching) sigma schedule with the linear-SNR shift.
 

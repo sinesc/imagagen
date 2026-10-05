@@ -233,6 +233,7 @@ class ModelRegistry:
         ("sdxl", ".safetensors"),
         ("flux", ".gguf", ".safetensors"),
         ("zimage", ".safetensors"),
+        ("krea2", ".safetensors"),
     )
 
     def discover(self) -> list[ModelInfo]:
@@ -334,6 +335,10 @@ class ModelRegistry:
             from .zimage_backend import ZImageBackend
 
             return ZImageBackend(info, torch.device(device), config=self.config)
+        if info.family == "krea2":
+            from .krea2_backend import Krea2Backend
+
+            return Krea2Backend(info, torch.device(device), config=self.config)
         from .sdxl_backend import SdxlBackend
 
         return SdxlBackend(info, torch.device(device), config=self.config)

@@ -765,6 +765,11 @@ def _result_to_png(
         # distilled request to classic CFG, so not necessarily req.distilled)
         distilled=((result.distilled if result.distilled is not None
                     else req.distilled) if backend.is_flux else None),
+        # only Krea 2 records its raw/turbo checkpoint class (inert on the
+        # other families); it is the effective mode as reported by the
+        # backend
+        turbo=((result.turbo if result.turbo is not None
+                else req.turbo) if backend.is_krea2 else None),
     )
     img, pnginfo = metadata.attach_metadata(Image.fromarray(image), params)
     buf = BytesIO()

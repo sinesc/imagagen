@@ -377,6 +377,10 @@ def create_app(
             from .zimage_backend import SAMPLERS, SCHEDULERS
 
             return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
+        if family == "krea2":
+            from .krea2_backend import SAMPLERS, SCHEDULERS
+
+            return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
         from .sdxl_backend import SAMPLERS, SCHEDULERS
 
         return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
@@ -643,9 +647,11 @@ def create_app(
             # resolved here)
             steps=rsteps if rsteps is not None else -1,
             cfg=cfg if cfg is not None else -1,
-            # the distilled flag is a configuration property (not a user
-            # form field): it comes straight from the selected entry
+            # the distilled (Flux) / turbo (Krea 2) flags are configuration
+            # properties (not user form fields): they come straight from the
+            # selected entry (inert on the other families)
             distilled=entry.distilled,
+            turbo=entry.turbo,
             seed=body.seed,
             sampler=sampler,
             scheduler=scheduler,

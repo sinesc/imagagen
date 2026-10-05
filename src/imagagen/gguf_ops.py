@@ -641,6 +641,27 @@ def quant_linear_scope(kind, device, dtype, linear_cls=None):
 
 
 @contextlib.contextmanager
+def quant_dtype_scope(device, dtype):
+    """Seed the QuantLinear scope globals (``_DEVICE``/``_DTYPE``) WITHOUT
+    replacing ``nn.Linear``.
+
+    For modules that mix explicit ``QuantLinear`` subclasses with PLAIN
+    ``nn.Linear`` layers (e.g. the Krea 2 transformer: the ``Int8Linear``
+    block projections alongside the bf16 ``first``/``tmlp``/``txtmlp`` /...
+    linears): the subclass constructors read the scope globals for their
+    dummy parameter and computation dtype, while the plain layers ignore
+    them.
+    """
+    global _DEVICE, _DTYPE
+    prev_device, prev_dtype = _DEVICE, _DTYPE
+    _DEVICE, _DTYPE = device, dtype
+    try:
+        yield
+    finally:
+        _DEVICE, _DTYPE = prev_device, prev_dtype
+
+
+@contextlib.contextmanager
 def gguf_linear_scope(device, dtype):
     """:func:`quant_linear_scope` for the GGUF (Q4_K) format."""
     with quant_linear_scope("gguf", device, dtype):
