@@ -56,10 +56,11 @@ class GenerationError(Exception):
 
 #: default context padding (canvas px, each side) added to the inpaint box
 #: so the model sees and matches the surroundings (the A1111/Forge default
-#: is 256; the UI's "Mask padding" field overrides it per request).
+#: is 256; we use a much smaller default; the UI's "Mask padding" field
+#: overrides it per request).
 #: ``with_inpaint`` caps it at the mask's largest extent so tiny masks on
 #: small canvases do not get a degenerate box several times the canvas.
-INPAINT_PADDING = 256
+INPAINT_PADDING = 8
 
 #: the UI's rotation dropdown values (user degrees, positive = clockwise)
 ROTATIONS = (-180, -135, -90, -45, 0, 45, 90, 135, 180)

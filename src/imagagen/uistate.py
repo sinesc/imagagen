@@ -99,7 +99,7 @@ class UiState(BaseModel):
     denoise: float = Field(1.0, ge=0.0, le=1.0)
     # context padding around the masked area (canvas px per side),
     # "inpaint masked" only; same limits as the HTML input
-    mask_padding: int = Field(default=256, ge=0, le=2048)
+    mask_padding: int = Field(default=8, ge=0, le=2048)
     # rotate the source before generating (UI dropdown; 0 = default)
     rotation: int = Field(default=0, ge=-180, le=180)
 
