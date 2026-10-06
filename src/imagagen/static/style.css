@@ -89,9 +89,14 @@ body.resizing-sidebar, body.resizing-sidebar * {
    slots (same width); batch (flex: 1) absorbs the remainder, so the new
    field takes its space from the batch slot */
 .row > label.rotate { flex: 0 0 72px; }
-/* flex-end (not center): the row's height includes the Width/Height label
-   captions, so bottom align is what puts the button in line with the inputs */
-#swap-dims, #seed-from-image { align-self: flex-end; }
+/* the seed slot is a third wider than the old equal thirds (seeds are long
+   10-digit numbers); CFG and steps only ever hold short values, so they give
+   up the space (5 + 5 + 8 = the same three slots) */
+.row > label.cfg-slot, .row > label.steps-slot { flex: 5; }
+.row > label.seed-slot { flex: 8; }
+/* flex-end (not center): the row's height includes the CFG/Steps/Seed label
+   captions, so bottom align is what puts the buttons in line with the inputs */
+#swap-dims, #seed-reset, #seed-from-image { align-self: flex-end; }
 /* the mode/denoise row: mode keeps its original half width, the new
    "mask pad" field and denoise share the other half */
 .row > label.mode-label { flex: 2; }
@@ -545,6 +550,21 @@ button.danger:hover { background: #a33; }
   justify-content: space-between;
   gap: 0.5rem;
 }
+/* list dialogs (setting presets, LoRA configuration, style configuration;
+   openDialog marks them with .list when they have the quick-filter): the box
+   itself never scrolls, the item list takes the remaining height and scrolls
+   (.preset-manage-wrap), so the title/filter row stays pinned at the top and
+   the "+ New …" button + actions at the bottom. The box still grows with its
+   content up to max-height. */
+#dialog-box.list { overflow: hidden; }
+#dialog-box.list #dialog-title-row, #dialog-box.list .dialog-actions { flex: none; }
+#dialog-box.list #dialog-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 /* quick-filter in the title row of the list dialogs
    (setting presets, LoRA configuration, style configuration) */
 .dialog-filter {
@@ -680,7 +700,18 @@ button.danger:hover { background: #a33; }
 .style-dialog { display: flex; flex-direction: column; gap: 0.55rem; }
 
 /* preset management list */
-.preset-manage { display: flex; flex-direction: column; gap: 0.35rem; }
+.preset-manage-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.preset-manage {
+  /* the scrollable item list of the list dialogs (see #dialog-box.list) */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.preset-manage-wrap > button { flex: none; }
 
 /* person mask generation dialog: one checkbox per body-part class.
    #dialog-body label is flex-column (label-over-control for the config

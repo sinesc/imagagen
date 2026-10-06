@@ -361,6 +361,9 @@ function makeFilterInput(onFilter, initial = "") {
   return el("div", { class: "dialog-filter" }, input, clear);
 }
 function openDialog(title, body, onOk, okText = "Save", onClose = null, onFilter = null, initialFilter = "") {
+  // list dialogs (they have the quick-filter) pin the title row and the
+  // actions and scroll only their item list (.list in style.css)
+  $("dialog-box").classList.toggle("list", !!onFilter);
   $("dialog-title").textContent = title;
   const f = $("dialog-filter");
   f.innerHTML = "";
@@ -644,11 +647,11 @@ function openStyleManage() {
       };
       list.append(el("div", { class: "preset-manage-row" }, nameEl, edit, del));
     });
-    list.append(newBtn);
   };
   render();
   newBtn.onclick = () => { closeDialog(); openStyleDialog(null, openStyleManage); };
-  openDialog("Style configuration", el("div", { class: "preset-manage-wrap" }, list), null, "Close",
+  // the new-style button stays below the list (outside the scrollable area)
+  openDialog("Style configuration", el("div", { class: "preset-manage-wrap" }, list, newBtn), null, "Close",
     null, (q) => { filter = styleManageFilter = q; render(); }, styleManageFilter);
 }
 
@@ -1443,11 +1446,24 @@ function presetValueInput(kind, value, emptyLabel = "—") {
   return input;
 }
 
-function openPresetDialog(existing, onClose = null) {
+// clone prefill: "<name> copy" (then "copy 2", "copy 3", ...) so saving the
+// clone cannot silently overwrite the source preset
+function uniquePresetName(base) {
+  const names = new Set(state.presets.map((p) => p.name.toLowerCase()));
+  if (!names.has(base.toLowerCase())) return base;
+  for (let i = 2; ; i++) {
+    const cand = `${base} ${i}`;
+    if (!names.has(cand.toLowerCase())) return cand;
+  }
+}
+
+// isClone: the fields come from `existing` but the dialog creates a NEW
+// preset (no old_name, so the source is kept and the name is made unique)
+function openPresetDialog(existing, onClose = null, isClone = false) {
   const p = existing || {};
   const controls = p.controls || {};
   const nameIn = el("input", { type: "text", maxlength: "120" });
-  nameIn.value = p.name || "";
+  nameIn.value = isClone ? uniquePresetName(`${p.name} copy`) : (p.name || "");
   const groupIn = el("input", { type: "text", maxlength: "120",
     placeholder: "optional — presets in the same group are listed together" });
   groupIn.value = p.group || "";
@@ -1497,13 +1513,13 @@ function openPresetDialog(existing, onClose = null) {
     el("label", {}, "Group", groupIn),
     el("div", { class: "muted" }, "checked settings are applied when the preset is selected"),
     rows);
-  openDialog(existing ? "Edit preset" : "New preset", box, async () => {
+  openDialog(existing && !isClone ? "Edit preset" : "New preset", box, async () => {
     const name = nameIn.value.trim();
     if (!name) { dialogError("name is required"); return false; }
     const body = { name, group: groupIn.value.trim() || null, controls: {} };
     // editing an existing preset: the server renames it (deletes the old
     // file) when the name changed; creating a new preset omits old_name
-    if (existing) body.old_name = existing.name;
+    if (existing && !isClone) body.old_name = existing.name;
     for (const row of rows.children) {
       const input = row.querySelector("[data-preset-key]");
       const key = input.dataset.presetKey;
@@ -1547,16 +1563,20 @@ function openPresetManage() {
       const name = p.name;
       const nameEl = el("span", { class: "preset-manage-name" }, name);
       const edit = el("button", { class: "mini icon", type: "button", title: "edit" }, "✎");
+      const clone = el("button", { class: "mini icon", type: "button", title: "clone" }, "⧉");
       const del = el("button", { class: "mini icon", type: "button", title: "delete" }, "✗");
-      edit.onclick = async () => {
+      // both edit and clone fetch the full preset, then reopen the dialog
+      // (saving/cancelling returns to this management list)
+      const openEditor = async (isClone) => {
         closeDialog();
         let preset;
         try {
           preset = (await (await fetch(`/api/presets/${encodeURIComponent(name)}`)).json()).preset;
         } catch (e) { setStatus(e.message, true); return; }
-        // saving/cancelling returns to this management list
-        openPresetDialog(preset, openPresetManage);
+        openPresetDialog(preset, openPresetManage, isClone);
       };
+      edit.onclick = () => openEditor(false);
+      clone.onclick = () => openEditor(true);
       del.onclick = async () => {
         if (!confirm(`Delete preset "${name}"?`)) return;
         try {
@@ -1565,13 +1585,13 @@ function openPresetManage() {
         await loadPresets();
         render();
       };
-      list.append(el("div", { class: "preset-manage-row" }, nameEl, edit, del));
+      list.append(el("div", { class: "preset-manage-row" }, nameEl, edit, clone, del));
     });
-    list.append(newBtn);
   };
   render();
   newBtn.onclick = () => { closeDialog(); openPresetDialog(null, openPresetManage); };
-  openDialog("Setting presets", el("div", { class: "preset-manage-wrap" }, list), null, "Close",
+  // the new-preset button stays below the list (outside the scrollable area)
+  openDialog("Setting presets", el("div", { class: "preset-manage-wrap" }, list, newBtn), null, "Close",
     null, (q) => { filter = presetManageFilter = q; render(); }, presetManageFilter);
 }
 
@@ -2582,6 +2602,12 @@ document.addEventListener(
 $("prompt").addEventListener("input", schedulePromptTokens);
 // the mask bbox outline is grown by this field: redraw as it changes
 $("mask-padding").addEventListener("input", viewRedraw);
+$("seed-reset").onclick = () => {
+  // -1 = the form's "new random seed for every image" state
+  $("seed").value = "-1";
+  onUserFieldChange("seed");
+  scheduleSaveUiState();
+};
 $("seed-from-image").onclick = () => {
   const t = state.thumbs[state.currentThumb];
   // no image selected, or the selected image has no known seed

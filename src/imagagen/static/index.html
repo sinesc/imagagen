@@ -25,9 +25,10 @@
         </span>
       </div>
       <div class="row">
-        <label title="-1 = use the model default (the configuration's value, then the model built-in)">CFG <input id="cfg" type="number" value="-1" min="-1" step="0.1"></label>
-        <label title="-1 = use the model default (the configuration's value, then the model built-in)">Steps <input id="steps" type="number" value="-1" min="-1" max="150"></label>
-        <label>Seed <input id="seed" type="number" value="-1" title="-1 = random"></label>
+        <label class="cfg-slot" title="-1 = use the model default (the configuration's value, then the model built-in)">CFG <input id="cfg" type="number" value="-1" min="-1" step="0.1"></label>
+        <label class="steps-slot" title="-1 = use the model default (the configuration's value, then the model built-in)">Steps <input id="steps" type="number" value="-1" min="-1" max="150"></label>
+        <label class="seed-slot">Seed <input id="seed" type="number" value="-1" title="-1 = random"></label>
+        <button id="seed-reset" class="mini icon" title="reset the seed to -1 (a new random seed for every image)">↺</button>
         <button id="seed-from-image" class="mini icon" title="copy the seed of the currently selected image into the seed field">⚄</button>
       </div>
       <div class="row">

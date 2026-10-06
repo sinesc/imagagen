@@ -347,6 +347,114 @@ def test_preset_manage_filter_survives_edit(page, server):
     page.click("#dialog-ok")
 
 
+def test_preset_clone_prefills_new_preset(page, server):
+    # the clone button between edit and delete opens the create dialog with
+    # the source's fields prefilled (name made unique, group/values/checkboxes
+    # copied) and saving leaves the source untouched
+    base, _ = server
+    with httpx.Client(base_url=base, timeout=10) as c:
+        r = c.post("/api/presets", json={
+            "name": "Src", "group": "Grp", "width": 768, "sampler": "Euler a",
+            "controls": {"width": True, "sampler": True}})
+        assert r.status_code == 200, r.text
+        r = c.post("/api/presets", json={"name": "Src copy", "width": 512,
+                                         "controls": {"width": True}})
+        assert r.status_code == 200, r.text
+    _open(page, base, "state.presets.length >= 2")
+
+    page.click("#preset-manage")
+    wait_until(lambda: page.locator(".preset-manage-row").count() == 2)
+    # find the "Src" row by its exact name ("Src copy" also matches "Src")
+    idx = page.evaluate(
+        "[...document.querySelectorAll('.preset-manage-name')]"
+        ".findIndex(e => e.textContent === 'Src')")
+    row = page.locator(".preset-manage-row").nth(idx)
+    assert row.locator(".preset-manage-name").inner_text() == "Src"
+    assert [b.get_attribute("title") for b in row.locator("button").all()] == [
+        "edit", "clone", "delete"]
+    row.locator("button[title=clone]").click()
+
+    # a new-preset dialog (not "Edit preset") prefilled from the source.
+    # "Src copy" already exists, so the name becomes "Src copy 2"
+    wait_until(lambda: page.locator("#dialog-title").inner_text() == "New preset")
+    box = page.locator(".preset-dialog")
+    name_in = box.locator("label input").first
+    assert name_in.input_value() == "Src copy 2"
+    assert box.locator("label").nth(1).locator("input").input_value() == "Grp"
+    wrow = box.locator(".preset-row", has_text="width").first
+    assert wrow.locator(".preset-cb").is_checked()
+    assert wrow.locator(".preset-val").input_value() == "768"
+    srow = box.locator(".preset-row", has_text="sampler").first
+    assert srow.locator(".preset-cb").is_checked()
+    assert srow.locator(".preset-val").input_value() == "Euler a"
+    # unchecked/unset fields stay at their defaults
+    assert not box.locator(".preset-row", has_text="height").first.locator(".preset-cb").is_checked()
+
+    # editing the clone's width leaves the source alone
+    wrow.locator(".preset-val").fill("832")
+    page.click("#dialog-ok")
+    wait_until(lambda: page.locator("#dialog-title").inner_text() == "Setting presets")
+    with httpx.Client(base_url=base, timeout=10) as c:
+        clone = c.get("/api/presets/src-copy-2").json()["preset"]
+        src = c.get("/api/presets/src").json()["preset"]
+        copy = c.get("/api/presets/src-copy").json()["preset"]
+    assert clone["name"] == "Src copy 2" and clone["group"] == "Grp"
+    assert clone["width"] == 832 and clone["sampler"] == "Euler a"
+    assert clone["controls"]["width"] and clone["controls"]["sampler"]
+    assert not clone["controls"]["height"]
+    assert src["width"] == 768 and copy["width"] == 512
+
+    page.click("#dialog-ok")
+    wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+
+
+def test_manage_dialogs_scroll_only_their_list(page, server):
+    # long lists must not scroll the whole dialog: the title + filter stay
+    # pinned at the top, the "+ New …" button and the actions at the bottom,
+    # only .preset-manage scrolls (and the box still grows to its 88vh cap)
+    base, _ = server
+    with httpx.Client(base_url=base, timeout=10) as c:
+        for i in range(40):
+            r = c.post("/api/presets", json={
+                "name": f"P{i:02d}", "width": 512, "controls": {"width": True}})
+            assert r.status_code == 200, r.text
+            r = c.post("/api/styles", json={"name": f"S{i:02d}", "prompt": "x"})
+            assert r.status_code == 200, r.text
+    _open(page, base, "state.presets.length >= 40 && state.styles.length >= 40")
+
+    def check(open_selector, new_btn):
+        page.click(open_selector)
+        wait_until(lambda: page.locator(".preset-manage-row").count() >= 40)
+        box = page.locator("#dialog-box")
+        # the box itself never scrolls, its list does
+        assert box.evaluate("e => e.scrollHeight <= e.clientHeight")
+        lst = page.locator(".preset-manage")
+        assert lst.evaluate("e => e.scrollHeight > e.clientHeight")
+        # the dialog grew to its height cap but stays inside the viewport
+        bb = box.bounding_box()
+        assert bb["height"] > 0.8 * 800 and bb["y"] > 0 and bb["y"] + bb["height"] < 800
+        # title row, filter, new button and Close are all inside the box
+        for sel in ("#dialog-title-row", ".dialog-actions") + ((new_btn,) if new_btn else ()):
+            r = page.locator(sel).bounding_box()
+            assert r["y"] >= bb["y"] and r["y"] + r["height"] <= bb["y"] + bb["height"] + 1, sel
+        # scrolling the list moves the rows but not the pinned parts
+        btn_bb = new_btn and page.locator(new_btn).bounding_box()
+        page.locator(".preset-manage").evaluate("e => e.scrollTop = e.scrollHeight")
+        wait_until(lambda: page.locator(".preset-manage").evaluate("e => e.scrollTop") > 0)
+        assert box.evaluate("e => e.scrollHeight <= e.clientHeight")
+        if new_btn:
+            assert page.locator(new_btn).bounding_box() == btn_bb
+        assert page.locator("#dialog-title-row").bounding_box()["y"] >= bb["y"]
+        page.click("#dialog-ok")  # Close
+        wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+
+    check("#preset-manage", "text=+ New preset")
+    check("#style-manage", "text=+ New style")
+    # the LoRA list has no new button, so only the actions are pinned
+    page.evaluate("state.loras = Array.from({length: 40}, (_, i) => 'lora' + i)")
+    check("#lora-manage", None)
+
+
 def test_preset_soft_inpaint_checkbox_row(page, server):
     # the dialog has a soft inpainting row with the usual controls
     # checkbox PLUS a second checkbox that is the enable/disable value
@@ -443,8 +551,9 @@ def test_preset_groups_in_dropdown_and_dialog(page, server):
     wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
     box = page.locator(".preset-dialog")
     labels = box.locator("label").all_inner_texts()
-    assert labels[0].strip().startswith("name")
-    assert labels[1].strip().startswith("group")
+    # (case-insensitive: dialog labels are capitalised)
+    assert labels[0].strip().lower().startswith("name")
+    assert labels[1].strip().lower().startswith("group")
     box.locator("label").nth(0).locator("input").fill("New grouped")
     box.locator("label").nth(1).locator("input").fill("Outpaint 1440p")
     page.click("#dialog-ok")
