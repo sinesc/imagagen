@@ -35,7 +35,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .gguf_ops import Fp8Linear
+from ...gguf_ops import Fp8Linear
 
 
 class ScaledFp8Linear(Fp8Linear):

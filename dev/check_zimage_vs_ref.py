@@ -24,7 +24,7 @@ import comfy_ref_stub  # noqa: E402
 ref = comfy_ref_stub.load_reference(
     str(ROOT / "dev" / "implementations" / "ComfyUI" / "comfy" / "ldm" / "lumina" / "model.py"))
 
-from imagagen.zimage_transformer import ZImageTransformer  # noqa: E402
+from imagagen.backends.zimage.transformer import ZImageTransformer  # noqa: E402
 
 # a small but structurally faithful config (axes_dims sum == dim // n_heads,
 # ffn = int(8/3 * dim) rounded up to a multiple of 256). dim must be >= 256:
@@ -95,7 +95,7 @@ def compare(ours, reference, hw=20, ncap=37, sigma=0.63, tag=""):
 def stage_probe(ours, reference):
     """Compare the reference's own intermediate tensors with ours (the rope
     position ids and the padded/refined streams) to locate a divergence."""
-    from imagagen import zimage_transformer as zt
+    from imagagen.backends.zimage import transformer as zt
 
     torch.manual_seed(1)
     x = torch.randn(1, 16, 20, 20)

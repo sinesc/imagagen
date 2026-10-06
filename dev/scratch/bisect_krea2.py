@@ -58,7 +58,7 @@ del sd
 
 from imagagen.config import load_config
 from imagagen.models import ModelRegistry
-from imagagen import krea2_transformer as k2t
+from imagagen.backends.krea2 import transformer as k2t
 
 icfg = load_config(ROOT)
 reg = ModelRegistry(icfg, gpus=[1])

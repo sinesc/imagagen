@@ -46,9 +46,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .flux_transformer import timestep_embedding
-from .gguf_ops import QuantLinear
-
+from ...flux_transformer import timestep_embedding
+from ...gguf_ops import QuantLinear
 
 # ---------------------------------------------------------- hadamard ----
 # Ported from comfy_kitchen/tensor/int8_utils.py (the ConvRot rotation

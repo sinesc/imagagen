@@ -1,4 +1,4 @@
-"""The Krea 2 VAE key remap (imagagen.krea2_vae).
+"""The Krea 2 VAE key remap (imagagen.backends.krea2.vae).
 
 The full 194-key mapping is verified against BOTH the real checkpoint
 (``infra/qwen_image_vae.safetensors``, ComfyUI/Wan naming) and the default
@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from safetensors import safe_open
 
-from imagagen.krea2_vae import (
+from imagagen.backends.krea2.vae import (
     comfy_wan_to_diffusers_key,
     remap_krea2_vae_state_dict,
 )

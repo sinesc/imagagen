@@ -11,7 +11,7 @@ K2 LoRAs ship in two formats:
 - ``transformer.text_fusion.layerwise_blocks.N.*`` / ``transformer.
   text_fusion.refiner_blocks.N.*`` (the txtfusion adapter, same
   ``attn.*`` / ``ff.*`` sub-keys) -- these are the LoRA's only
-  NON-quantized targets (the bf16 :class:`imagagen.krea2_transformer.
+  NON-quantized targets (the bf16 :class:`imagagen.backends.krea2.transformer.
   DeltaLinear` modules);
 - rank 16, bf16, no alpha tensors (scale 1.0).
 
@@ -45,7 +45,7 @@ The diffusers-format LoRA targets only the 28 blocks + txtfusion
 attn/mlp; the flat native format additionally carries the top-level
 projections (``first``, ``last.linear``, ``tmlp`` / ``txtmlp`` /
 ``tproj`` linears, ``txtfusion.projector``) -- every K2 projection is a
-:class:`~imagagen.krea2_transformer.DeltaLinear` so all of them accept
+:class:`~imagagen.backends.krea2.transformer.DeltaLinear` so all of them accept
 runtime deltas.
 
 The A/B pairs become runtime additive deltas exactly as Z-Image/Flux:
@@ -63,7 +63,7 @@ from pathlib import Path
 
 import torch
 
-from .flux_lora import FluxLoraSpec
+from ...flux_lora import FluxLoraSpec
 
 #: main-block / txtfusion projection widths (rows of each module's weight)
 _D = 6144      # blocks: q/gate/out, hidden

@@ -1,4 +1,4 @@
-"""Key mapping for Z-Image LoRAs (imagagen.zimage_lora).
+"""Key mapping for Z-Image LoRAs (imagagen.backends.zimage.lora).
 
 Two on-disk formats are tested:
 - the *official naming* asset ``loras/zimage/ZIT shiny latex bodysuit.
@@ -19,7 +19,7 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from imagagen.zimage_lora import (
+from imagagen.backends.zimage.lora import (
     DIM,
     FFN,
     OUT,

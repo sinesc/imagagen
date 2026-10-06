@@ -10,7 +10,7 @@ checkout (``comfy/ldm/krea2/model.py``, ``comfy/text_encoders/krea2.py``).
 
 Architecture:
 - the transformer is a 12B-ish SingleStreamDiT
-  (:class:`~imagagen.krea2_transformer.Krea2Transformer`) whose ``blocks``
+  (:class:`~imagagen.backends.krea2.transformer.Krea2Transformer`) whose ``blocks``
   projections live as ``int8_tensorwise`` on the GPU (per-row fp32 scales,
   ConvRot Hadamard-rotated weights) and dequantize to bf16 per-op --
   ~12.5 GB resident instead of the ~25 GB a bf16 copy would need; the
@@ -27,7 +27,7 @@ Architecture:
   per-op (:mod:`imagagen.encoders.krea2`);
 - the VAE is the Qwen-Image VAE (Wan architecture, 16 channels, 8x
   downsample; ``infra/qwen_image_vae.safetensors`` remapped to diffusers'
-  ``AutoencoderKLQwenImage``, :mod:`imagagen.krea2_vae`); the latent
+  ``AutoencoderKLQwenImage``, :mod:`imagagen.backends.krea2.vae`); the latent
   normalization is per-channel mean/std (NOT scaling/shift).
 
 Sampling is plain flow-matching Euler (``kdiff.sample_euler``) over the
@@ -73,19 +73,16 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .. import kdiff
-from ..encoders.krea2 import (
+from ... import kdiff
+from ...encoders.krea2 import (
     krea2_prompt_template,
     load_krea2_encoder,
     template_prefix_cut,
 )
-from ..flux_lora import FluxLoraSpec, merge_module_deltas
-from ..gguf_ops import QuantLinear, quant_dtype_scope
-from ..krea2_lora import parse_krea2_lora
-from ..krea2_transformer import DeltaLinear, Int8Linear, Krea2Transformer
-from ..krea2_vae import denormalize_latent, load_krea2_vae, normalize_latent
-from ..soft_inpaint import adaptive_change_alpha, latent_blend
-from . import (
+from ...flux_lora import FluxLoraSpec, merge_module_deltas
+from ...gguf_ops import QuantLinear, quant_dtype_scope
+from ...soft_inpaint import adaptive_change_alpha, latent_blend
+from .. import (
     _PARAM_INIT_LOCK,
     GenerateRequest,
     GenerateResult,
@@ -93,6 +90,9 @@ from . import (
     format_loras,
     shared_enc_cache,
 )
+from .lora import parse_krea2_lora
+from .transformer import DeltaLinear, Int8Linear, Krea2Transformer
+from .vae import denormalize_latent, load_krea2_vae, normalize_latent
 
 
 def _model_hash(path: str) -> str:
@@ -169,7 +169,7 @@ def _load_krea2_state_dict(path: str) -> dict:
 
     from safetensors import safe_open
 
-    from ..krea2_transformer import _rotate
+    from .transformer import _rotate
 
     with safe_open(path, framework="pt") as f:
         meta = f.metadata() or {}
@@ -609,7 +609,7 @@ class Krea2Backend(ModelBackend):
         before the sampling loop, as in the Z-Image backend).
 
         Runtime additive deltas: the int8 block weights stay quantized and
-        each affected :class:`~imagagen.krea2_transformer.Int8Linear`
+        each affected :class:`~imagagen.backends.krea2.transformer.Int8Linear`
         computes ``base + (x_rot @ A'.t()) @ B.t()`` per forward on the
         ConvRot-ROTATED input, with ``A' = A @ H`` rotated into the
         ConvRot space at install (the LoRAs were trained on the
@@ -896,7 +896,7 @@ class Krea2Backend(ModelBackend):
 
 def from_config(config) -> ModelBackend | None:
     """Load the first discovered Krea 2 model, or None when nothing exists."""
-    from ..models import ModelRegistry
+    from ...models import ModelRegistry
 
     registry = ModelRegistry(config)
     krea2 = [m for m in registry.models if m.family == "krea2"]

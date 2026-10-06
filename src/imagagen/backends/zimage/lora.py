@@ -5,7 +5,7 @@ Two on-disk formats are supported, both keyed under ``diffusion_model.``:
 - *official naming* (``diffusion_model.layers.N.attention.to_q.lora_A.weight``
   and friends; rank 32; bf16; no alpha tensors -> scale 1.0): q/k/v are
   *separate* modules, so each of those keys maps to the row slice of the
-  fused ``qkv`` GEMM our transformer (:mod:`imagagen.zimage_transformer`)
+  fused ``qkv`` GEMM our transformer (:mod:`imagagen.backends.zimage.transformer`)
   uses (the Flux LoRA pattern: ``to_q``/``to_k``/``to_v`` own the three
   thirds of ``qkv``). Only the 30 main blocks are LoRA-able in this format.
 - *export naming* (``diffusion_model.layers.N.attention.qkv.lora_down.weight``
@@ -32,7 +32,7 @@ from pathlib import Path
 
 import torch
 
-from .flux_lora import FluxLoraSpec
+from ...flux_lora import FluxLoraSpec
 
 #: transformer hidden size (qkv output rows per q/k/v)
 DIM = 3840

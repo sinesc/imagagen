@@ -7,7 +7,7 @@ reference: the ComfyUI checkout in ``dev/implementations/ComfyUI`` (Z-Image
 is a ``Lumina2``/``NextDiT`` model there with a Qwen3-4B text encoder).
 
 Architecture:
-- the transformer is a 6.6B NextDiT (:class:`~imagagen.zimage_transformer.
+- the transformer is a 6.6B NextDiT (:class:`~imagagen.backends.zimage.transformer.
   ZImageTransformer`) whose ``nn.Linear`` weights live as ``F8_E4M3`` on the
   GPU and are dequantized to bf16 per-op (:mod:`imagagen.gguf_ops`
   ``Fp8Linear`` pattern, the same as Flux FP8), so ~6.2 GB of fp8 bytes stay
@@ -50,14 +50,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .. import kdiff
-from ..encoders.qwen3 import load_zit_encoder, zimage_prompt_template
-from ..flux_lora import FluxLoraSpec, merge_module_deltas
-from ..gguf_ops import QuantLinear, quant_linear_scope
-from ..soft_inpaint import adaptive_change_alpha, latent_blend
-from ..zimage_lora import ParamDelta, parse_zimage_lora
-from ..zimage_transformer import RMSNorm, ScaledFp8Linear, ZImageTransformer
-from . import (
+from ... import kdiff
+from ...encoders.qwen3 import load_zit_encoder, zimage_prompt_template
+from ...flux_lora import FluxLoraSpec, merge_module_deltas
+from ...gguf_ops import QuantLinear, quant_linear_scope
+from ...soft_inpaint import adaptive_change_alpha, latent_blend
+from .. import (
     _PARAM_INIT_LOCK,
     GenerateRequest,
     GenerateResult,
@@ -65,6 +63,8 @@ from . import (
     format_loras,
     shared_enc_cache,
 )
+from .lora import ParamDelta, parse_zimage_lora
+from .transformer import RMSNorm, ScaledFp8Linear, ZImageTransformer
 
 
 def _model_hash(path: str) -> str:
@@ -786,7 +786,7 @@ class ZImageBackend(ModelBackend):
 
 def from_config(config) -> ModelBackend | None:
     """Load the first discovered Z-Image model, or None when nothing exists."""
-    from ..models import ModelRegistry
+    from ...models import ModelRegistry
 
     registry = ModelRegistry(config)
     zimage = [m for m in registry.models if m.family == "zimage"]

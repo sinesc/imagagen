@@ -1,4 +1,4 @@
-"""Key mapping for Krea 2 LoRAs (imagagen.krea2_lora).
+"""Key mapping for Krea 2 LoRAs (imagagen.backends.krea2.lora).
 
 The on-disk asset ``loras/krea2/rustic-ambience.safetensors`` ships the
 diffusers naming under a ``transformer.`` prefix: 256 rank-16 bf16 pairs
@@ -12,7 +12,7 @@ from collections import Counter
 import pytest
 import torch
 
-from imagagen.krea2_lora import (
+from imagagen.backends.krea2.lora import (
     map_base_key,
     parse_krea2_lora,
 )

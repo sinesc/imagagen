@@ -54,7 +54,7 @@ cfg = SingleMMDiTConfig(
     txtheads=20, txtkvheads=20, txtlayers=12)
 
 # ---- dequantize my checkpoint to bf16 -------------------------------------
-from imagagen import krea2_transformer as k2t
+from imagagen.backends.krea2 import transformer as k2t
 
 sd = {}
 with safe_open(CKPT, framework="pt") as f:

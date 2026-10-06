@@ -18,7 +18,7 @@ from imagagen.backends.krea2 import (
     _load_krea2_state_dict,
     _unpack_int4_row_major,
 )
-from imagagen.krea2_transformer import (
+from imagagen.backends.krea2.transformer import (
     DeltaLinear,
     Int8Linear,
     Krea2Transformer,

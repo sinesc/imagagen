@@ -3,10 +3,10 @@ full 12B checkpoint (the end-to-end numeric check is dev/smoke_krea2.py).
 
 - the Hadamard rotation (ConvRot, group 256): orthogonality and the
   rotate-twice-is-identity property;
-- :class:`~imagagen.krea2_transformer.Int8Linear`: the int8 load path
+- :class:`~imagagen.backends.krea2.transformer.Int8Linear`: the int8 load path
   (weight + per-row weight_scale), the dequantized GEMM on the
   rotated input, and the runtime LoRA deltas on the rotated input;
-- :class:`~imagagen.krea2_transformer.DeltaLinear`: the plain-bf16
+- :class:`~imagagen.backends.krea2.transformer.DeltaLinear`: the plain-bf16
   delta contract (same shape/dtype rules as the int8 path).
 """
 
@@ -14,7 +14,7 @@ import torch
 from torch import nn
 
 from imagagen.gguf_ops import quant_dtype_scope
-from imagagen.krea2_transformer import (
+from imagagen.backends.krea2.transformer import (
     DeltaLinear,
     Int8Linear,
     _build_hadamard,

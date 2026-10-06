@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
 import torch
 from torch import nn
@@ -130,8 +129,7 @@ class ImageVAE(nn.Module):
     def encode(self, x):
         # the frame dim compresses 1 -> 1; squeeze it out of the latent
         # distribution too, so the backend sees 4D images end-to-end
-        from diffusers.models.autoencoders.autoencoder_kl import (
-            AutoencoderKLOutput)
+        from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKLOutput
         from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 
         dist = self.vae.encode(x.unsqueeze(2)).latent_dist
@@ -178,9 +176,9 @@ def load_krea2_vae(config, device):
     4D image I/O) on ``device`` (architecture from the committed
     ``res/qwen_image_vae.config.json`` — the class defaults, so nothing
     is fetched)."""
-    from safetensors import safe_open
     from diffusers import AutoencoderKLQwenImage
     from diffusers.utils.logging import disable_progress_bar
+    from safetensors import safe_open
 
     disable_progress_bar()
 
