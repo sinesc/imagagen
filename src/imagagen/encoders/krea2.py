@@ -245,7 +245,7 @@ def template_prefix_cut(token_ids: list[int]) -> int:
 
 def krea2_prompt_template() -> str:
     """The Krea 2 chat prompt template (local copy in
-    :mod:`imagagen.krea2_prompt` of the ComfyUI reference's
+    :mod:`imagagen.encoders.krea2_prompt` of the ComfyUI reference's
     ``KREA2_TEMPLATE``)."""
     from .krea2_prompt import KREA2_PROMPT_TEMPLATE
 

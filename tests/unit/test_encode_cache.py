@@ -15,8 +15,8 @@ import threading
 import torch
 
 from imagagen.backends import EncCache, _ENC_CACHE_MAX
-from imagagen.flux_backend import FluxBackend
-from imagagen.zimage_backend import ZImageBackend
+from imagagen.backends.flux import FluxBackend
+from imagagen.backends.zimage import ZImageBackend
 
 
 def _stub(cls):

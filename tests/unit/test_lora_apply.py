@@ -16,7 +16,7 @@ until the server was restarted.
 
 import pytest
 
-from imagagen.sdxl_backend import SdxlBackend
+from imagagen.backends.sdxl import SdxlBackend
 
 A = "DMD2fp16XL1.0"
 B = "DMD2fp32XL1.0"

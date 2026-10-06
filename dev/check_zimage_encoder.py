@@ -18,8 +18,8 @@ import torch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from imagagen.qwen3_encoder import load_zit_encoder, COMPUTE_DTYPE  # noqa: E402
-from imagagen.qwen3_encoder import zimage_prompt_template  # noqa: E402
+from imagagen.encoders.qwen3 import load_zit_encoder, COMPUTE_DTYPE  # noqa: E402
+from imagagen.encoders.qwen3 import zimage_prompt_template  # noqa: E402
 
 DEVICE = torch.device(sys.argv[1] if len(sys.argv) > 1 else "cuda:0")
 ENC = ROOT / "infra" / "zit_encoder.safetensors"

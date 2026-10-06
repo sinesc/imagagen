@@ -373,18 +373,18 @@ def create_app(
             if info is not None:
                 family = info.family
         if family == "flux":
-            from .flux_backend import SAMPLERS, SCHEDULERS
+            from .backends.flux import SAMPLERS, SCHEDULERS
 
             return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
         if family == "zimage":
-            from .zimage_backend import SAMPLERS, SCHEDULERS
+            from .backends.zimage import SAMPLERS, SCHEDULERS
 
             return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
         if family == "krea2":
-            from .krea2_backend import SAMPLERS, SCHEDULERS
+            from .backends.krea2 import SAMPLERS, SCHEDULERS
 
             return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
-        from .sdxl_backend import SAMPLERS, SCHEDULERS
+        from .backends.sdxl import SAMPLERS, SCHEDULERS
 
         return {"samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS)}
 

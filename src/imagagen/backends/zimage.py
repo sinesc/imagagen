@@ -1,66 +1,43 @@
-"""Krea 2 (K2) backend: int8/int4 SingleStreamDiT + Qwen3-VL-4B encoder +
+"""Z-Image (Turbo) backend: fp8 NextDiT transformer + Qwen3-4B encoder +
 flow-matching Euler.
 
-Fourth model family alongside SDXL, Flux and Z-Image (see
-:mod:`imagagen.zimage_backend` for the closest sibling). Plan:
-``dev/plans/krea2-backend-plan.md``; references: the official
-implementation in ``dev/implementations/krea-2`` (inference.py /
-mmdit.py / sampling.py / encoder.py / autoencoder.py) and the ComfyUI
-checkout (``comfy/ldm/krea2/model.py``, ``comfy/text_encoders/krea2.py``).
+Third model family alongside SDXL and Flux (see :mod:`imagagen.backends.sdxl`,
+:mod:`imagagen.backends.flux`). Plan: ``dev/plans/zimage-backend-plan.md``;
+reference: the ComfyUI checkout in ``dev/implementations/ComfyUI`` (Z-Image
+is a ``Lumina2``/``NextDiT`` model there with a Qwen3-4B text encoder).
 
 Architecture:
-- the transformer is a 12B-ish SingleStreamDiT
-  (:class:`~imagagen.krea2_transformer.Krea2Transformer`) whose ``blocks``
-  projections live as ``int8_tensorwise`` on the GPU (per-row fp32 scales,
-  ConvRot Hadamard-rotated weights) and dequantize to bf16 per-op --
-  ~12.5 GB resident instead of the ~25 GB a bf16 copy would need; the
-  txtfusion/txtmlp/tmlp/tproj/first/last sections are plain bf16. The
-  ``int4_convrot`` checkpoints (e.g. ``krea2_finetuned_int4``) quantize
-  the ``txtfusion`` projections too; :func:`_load_krea2_state_dict`
-  unpacks their nibble-packed int4 weights into the same int8 block
-  layout (~7 GB resident) and dequantizes/de-rotates the txtfusion
-  weights to plain bf16;
-- the text condition is a 12-layer TAP of the Qwen3-VL-4B text tower
-  (``hidden_states[2, 5, 8, ..., 35]``), flattened to (1, seq, 12*2560)
-  and fused by the DiT's internal ``txtfusion`` adapter; the encoder
-  keeps its plain fp8 projections (~4.8 GB resident) and casts to bf16
-  per-op (:mod:`imagagen.krea2_encoder`);
-- the VAE is the Qwen-Image VAE (Wan architecture, 16 channels, 8x
-  downsample; ``infra/qwen_image_vae.safetensors`` remapped to diffusers'
-  ``AutoencoderKLQwenImage``, :mod:`imagagen.krea2_vae`); the latent
-  normalization is per-channel mean/std (NOT scaling/shift).
+- the transformer is a 6.6B NextDiT (:class:`~imagagen.zimage_transformer.
+  ZImageTransformer`) whose ``nn.Linear`` weights live as ``F8_E4M3`` on the
+  GPU and are dequantized to bf16 per-op (:mod:`imagagen.gguf_ops`
+  ``Fp8Linear`` pattern, the same as Flux FP8), so ~6.2 GB of fp8 bytes stay
+  resident instead of the ~12.7 GB a bf16 copy would need;
+- the text condition is the Qwen3-4B penultimate hidden state (1, L, 2560)
+  of the chat-templated prompt; the encoder keeps its scaled-fp8 projections
+  (~4.4 GB resident) and casts to bf16 per-op
+  (:mod:`imagagen.encoders.qwen3`);
+- the VAE is the FLUX AE: ``infra/ae.safetensors`` is byte-identical for
+  Z-Image and Flux, and loads with the committed
+  ``res/ae.config.json`` (16 channels, 8x downsample, scaling 0.3611 /
+  shift 0.1159, same 2-MP tiling threshold as Flux);
+- sampling is plain flow-matching Euler (``kdiff.sample_euler``) over the
+  shift-3 linear-SNR schedule (``kdiff.get_sigmas_zimage``).
 
-Sampling is plain flow-matching Euler (``kdiff.sample_euler``) over the
-resolution-dependent mu schedule (``kdiff.get_sigmas_krea2``). The model
-returns the flow velocity: ``x0 = x - sigma * v`` (verified empirically,
-the ``dev/smoke_krea2.py`` pattern).
+Z-Image-Turbo is an NFE-1 (single-pass) model: there is no guidance
+embedding and no CFG, so the request's ``cfg`` / ``distilled`` are ignored
+(one transformer pass per step, negative prompt not encoded); the effective
+CFG recorded in the PNG metadata is 1.0.
 
-Checkpoint classes (the ``turbo`` flag on the model config entry,
-mirroring Flux's ``distilled``):
-- raw (default): 12 steps, standard CFG 1.5, resolution-derived
-  mu (linear in the image token count between (256, 0.5) and
-  (6400, 1.15));
-- turbo: 8 steps, no CFG (effective 1.0, no negative encode), mu pinned
-  to 1.15 (the reference's ``--mu`` recommendation for the distilled
-  checkpoint).
-cfg <= 1.0 skips the unconditional pass (and the negative encode),
-exactly as Flux classic.
+Precision: the transformer and VAE run in bf16, the solver state ``x`` runs
+in fp32 (the model output is cast to fp32 before the
+``x0 = x - sigma * v`` conversion), mirroring the Flux backend.
 
-Precision: transformer and VAE in bf16, the solver state ``x`` in fp32
-(the model output is cast to fp32 before the ``x0 = x - sigma * v``
-conversion), mirroring the Flux/Z-Image backends.
-
-VRAM (16 GB cards): transformer (~12.5 GB) + VAE (~0.25 GB) leaves no
-room for the ~4.8 GB encoder, so the encoder NEVER co-resides by default:
-the transformer is parked on the CPU while the encoder runs (and back
-again afterwards) -- Forge's memory-manager swap, the Z-Image
-``_encode_prompts`` path (the prompt cache makes it once per batch, not
-per image). ``text-encoder-device = cpu`` keeps the encoder in system RAM
-permanently. The parked (RAM) footprint is ~18 GB (transformer +
-encoder + VAE) -- comfortable on the 62 GB host, but note that the park
-policy bounds ONE parked model per GPU. ``empty_cache()`` after load and
-after every generate (the VAE decode OOM-retry also parks the
-transformer, the Flux pattern).
+VRAM strategy: transformer (~6.2 GB) + encoder (~4.4 GB) + VAE (~0.67 GB)
+is ~11.3 GB resident. The encoder co-resides on the GPU only when a
+measured byte count fits next to the transformer (``mem_get_info`` at load,
+the Flux pattern); otherwise the transformer is swapped to the CPU while
+the encoder runs (and back again afterwards) -- Forge's memory-manager
+swap. ``text-encoder-device = cpu`` keeps the encoder in system RAM.
 """
 
 from __future__ import annotations
@@ -73,8 +50,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from . import kdiff
-from .backends import (
+from .. import kdiff
+from ..encoders.qwen3 import load_zit_encoder, zimage_prompt_template
+from ..flux_lora import FluxLoraSpec, merge_module_deltas
+from ..gguf_ops import QuantLinear, quant_linear_scope
+from ..soft_inpaint import adaptive_change_alpha, latent_blend
+from ..zimage_lora import ParamDelta, parse_zimage_lora
+from ..zimage_transformer import RMSNorm, ScaledFp8Linear, ZImageTransformer
+from . import (
     _PARAM_INIT_LOCK,
     GenerateRequest,
     GenerateResult,
@@ -82,17 +65,6 @@ from .backends import (
     format_loras,
     shared_enc_cache,
 )
-from .flux_lora import FluxLoraSpec, merge_module_deltas
-from .gguf_ops import QuantLinear, quant_dtype_scope
-from .krea2_encoder import (
-    krea2_prompt_template,
-    load_krea2_encoder,
-    template_prefix_cut,
-)
-from .krea2_lora import parse_krea2_lora
-from .krea2_transformer import DeltaLinear, Int8Linear, Krea2Transformer
-from .krea2_vae import denormalize_latent, load_krea2_vae, normalize_latent
-from .soft_inpaint import adaptive_change_alpha, latent_blend
 
 
 def _model_hash(path: str) -> str:
@@ -108,136 +80,70 @@ def _model_hash(path: str) -> str:
 
 log = logging.getLogger(__name__)
 
-# the "model default" parameters per checkpoint class:
-# raw: 12 steps, standard CFG 1.5, resolution-derived mu
-DEFAULT_STEPS_RAW = 12
-DEFAULT_CFG_RAW = 1.5
-# turbo: 8 steps, no CFG, mu pinned to 1.15 (reference --mu 1.15)
-DEFAULT_STEPS_TURBO = 8
-DEFAULT_CFG_TURBO = 1.0
-TURBO_MU = 1.15
+# the "model default" step count: Z-Image-Turbo's official 8-step schedule
+DEFAULT_STEPS = 8
+# the "model default" CFG: the model is single-pass (no CFG), so the
+# effective value is always 1.0
+DEFAULT_CFG = 1.0
 
 SAMPLERS = {"Euler": kdiff.sample_euler}
-# Krea 2 has no scheduler concept: the mu schedule is computed internally
-# (kdiff.get_sigmas_krea2).
+# Z-Image has no scheduler concept: the shifted sigma schedule is computed
+# internally (kdiff.get_sigmas_zimage).
 SCHEDULERS = {}
 
-
-def _unpack_int4_row_major(packed: torch.Tensor) -> torch.Tensor:
-    """The comfy_kitchen int4 codec (``_unpack_int4_row_major``): ``(out,
-    K/2)`` int8 -> ``(out, K)`` int8 with SIGNED nibbles ``[-8, 7]``, the
-    even input column in the low nibble of each byte."""
-    x32 = packed.to(torch.int32)
-    lo = x32 & 0x0F
-    hi = (x32 >> 4) & 0x0F
-    lo = torch.where(lo >= 8, lo - 16, lo)
-    hi = torch.where(hi >= 8, hi - 16, hi)
-    return (torch.stack([lo, hi], dim=-1)
-            .reshape(*packed.shape[:-1], -1).to(torch.int8))
+#: state-dict prefix of the transformer section in the checkpoint
+_SD_PREFIX = "model.diffusion_model."
 
 
-def _load_krea2_state_dict(path: str) -> dict:
-    """Read the K2 transformer checkpoint into ``{key: Parameter}`` (keys
-    relative to the transformer root; the ``*.comfy_quant`` U8 markers are
-    skipped). Two checkpoint layouts are handled:
+def _load_zimage_state_dict(path: str) -> tuple[dict, bool]:
+    """Read the transformer section of a Z-Image checkpoint into
+    ``{module path: tensor}`` (keys relative to the transformer root, fp8
+    tensors kept fp8 as Parameters -- the Flux FP8 loading pattern).
 
-    - ``int8_tensorwise`` (``krea2_Int8Extended``): the int8 tensors stay
-      int8 and the per-row ``weight_scale`` ``(out, 1)`` ride along;
-    - ``int4_convrot`` (``convrot_w4a4``, e.g. ``krea2_finetuned_int4``,
-      declared by the ``_quantization_metadata`` safetensors metadata
-      instead of the per-tensor ``comfy_quant`` markers): keys carry a
-      ``model.diffusion_model.`` prefix and every quantized projection is
-      packed two signed nibbles per byte (``weight`` ``(out, in/2)``,
-      per-row ``weight_scale`` ``(out,)``), Hadamard-rotated along the
-      input axis like the int8 checkpoint. The loader strips the prefix,
-      unpacks the nibbles back to int8 and reshapes the scales to
-      ``(out, 1)``, so the ``blocks.N`` sections load into the very same
-      Int8Linear modules (the runtime activation rotation still cancels
-      the stored weight rotation). The ``txtfusion`` projections are the
-      exception: their modules are plain bf16 DeltaLinears WITHOUT
-      ConvRot, so those weights are additionally dequantized and
-      de-rotated (H is symmetric, H^2 = I) to bf16 and their scales
-      dropped.
+    Two on-disk formats are supported:
+    - A1111/Forge-style all-in-one files: the transformer keys carry the
+      ``model.diffusion_model.`` prefix (``vae.`` / ``text_encoders.``
+      siblings are skipped) and hold *plain* fp8 weights;
+    - Kijai-style transformer-only files: no key prefix, a ``scaled_fp8``
+      marker key, and per-GEMM ``scale_weight`` / ``scale_input`` tensors
+      (the scales ride along in the same state dict).
 
-    Slow disk I/O; run OUTSIDE ``_PARAM_INIT_LOCK`` (it only reads
-    tensors, it does not register them in a module). The tensors are
-    fetched one at a time (``get_slice`` for the layout decisions), so
-    the peak RSS stays at the size of the returned dict instead of
-    holding the whole file twice during the int4 conversion.
+    Returns ``(state_dict, scaled_fp8)``.
+
+    Slow disk I/O; run OUTSIDE ``_PARAM_INIT_LOCK`` (it only reads tensors,
+    it does not register them in a module).
     """
-    import json
-
     from safetensors import safe_open
 
-    from .krea2_transformer import _rotate
-
+    sd: dict = {}
+    scaled = False
     with safe_open(path, framework="pt") as f:
-        meta = f.metadata() or {}
-        names = {k: k for k in f.keys() if not k.endswith(".comfy_quant")}
-
-        # the int4 converter records the quantization only in the file
-        # metadata: {"format": "int4_convrot", "layers": {..:
-        # {"convrot_groupsize": 256, ...}}}; the int8 checkpoint has no
-        # such entry
-        fmt, group = "", 256
-        if qm := meta.get("_quantization_metadata"):
-            qm = json.loads(qm)
-            fmt = qm.get("format", "")
-            for layer in qm.get("layers", {}).values():
-                group = int(layer.get("convrot_groupsize", group))
-                break
-        int4 = "int4" in fmt
-
-        prefix = "model.diffusion_model."
-        if names and all(k.startswith(prefix) for k in names):
-            names = {k[len(prefix):]: k for k in names}
-
-        # the quantized projections of the int4 layout: int8 weight + a
-        # 1-D per-row scale (the int8 checkpoint's scales are (out, 1))
-        packed = set()
-        if int4:
-            for name in names:
-                if not name.endswith(".weight"):
-                    continue
-                scale = f"{name}_scale"
-                if (f.get_slice(names[name]).get_dtype() == "I8"
-                        and scale in names
-                        and len(f.get_slice(names[scale]).get_shape()) == 1):
-                    packed.add(name)
-
-        sd: dict = {}
-        for name, file_key in names.items():
-            if name.endswith(".weight_scale") and name.removesuffix(
-                    "_scale") in packed:
-                continue  # the scale is consumed (reshaped/folded) below
-            if name not in packed:
-                sd[name] = torch.nn.Parameter(
-                    f.get_tensor(file_key), requires_grad=False)
-                continue
-            w = _unpack_int4_row_major(f.get_tensor(file_key))
-            scale = f.get_tensor(names[f"{name}_scale"])
-            if name.removesuffix(".weight").startswith("txtfusion."):
-                # plain DeltaLinear target: fold the scale in and undo the
-                # ConvRot rotation, leaving a plain bf16 weight
-                w = _rotate(w.to(torch.float32) * scale.reshape(-1, 1),
-                            group)
-                sd[name] = torch.nn.Parameter(
-                    w.to(torch.bfloat16), requires_grad=False)
+        keys = list(f.keys())
+        prefixed = any(k.startswith(_SD_PREFIX) for k in keys)
+        for key in keys:
+            if prefixed:
+                if not key.startswith(_SD_PREFIX):
+                    continue  # vae. / text_encoders.: the infra components
+                name = key[len(_SD_PREFIX):]
             else:
-                # Int8Linear target: the unpacked int8 bytes and the
-                # (out, 1) scale load exactly like the int8 checkpoint
-                sd[name] = torch.nn.Parameter(w, requires_grad=False)
-                sd[f"{name}_scale"] = torch.nn.Parameter(
-                    scale.reshape(-1, 1), requires_grad=False)
-    return sd
+                if key == "scaled_fp8":
+                    scaled = True
+                    continue  # format marker, no data
+                name = key
+            sd[name] = torch.nn.Parameter(f.get_tensor(key), requires_grad=False)
+        if not prefixed and not scaled:
+            # bare transformer keys without the marker: still scaled-fp8 if
+            # scale keys are present (the marker is only a convenience)
+            scaled = any(k.endswith(("scale_weight", "scale_input")) for k in keys)
+    return sd, scaled
 
 
-class Krea2Backend(ModelBackend):
+class ZImageBackend(ModelBackend):
     can_park = True  # transformer, VAE and encoder all move cleanly
     default_sampler = "Euler"
     default_scheduler = "Flow"
     supports_loras = True  # runtime additive deltas (see _apply_loras)
-    is_krea2 = True
+    is_zimage = True
 
     def __init__(self, info, device, config=None) -> None:
         self.model_id = info.id
@@ -260,67 +166,66 @@ class Krea2Backend(ModelBackend):
         # wildcard batch (queue.py) is a hit on every GPU; see _get_context
         self._enc_cache = shared_enc_cache(info.family, info.id)
 
+        from diffusers import AutoencoderKL
         from diffusers.utils.logging import disable_progress_bar
         from transformers import Qwen2Tokenizer
 
         disable_progress_bar()
 
+        infra = config.infra_dir
         # --- checkpoint: read the transformer state dict. This is slow disk
         #     I/O (it BUILDS tensors on the CPU but does not register them in
         #     a module), so it runs OUTSIDE _PARAM_INIT_LOCK to avoid blocking
         #     concurrent parameter work on another GPU for the whole read.
-        sd = _load_krea2_state_dict(self.model_path)
+        sd, scaled_fp8 = _load_zimage_state_dict(self.model_path)
 
         # Every step below CREATES or MOVES module parameters (VAE,
-        # transformer, text encoder). The .to() device moves route through
-        # the globally monkey-patched nn.Module.register_parameter (see
-        # _PARAM_INIT_LOCK).
+        # transformer, text encoder). diffusers' from_single_file and the
+        # .to() device moves route through the globally monkey-patched
+        # nn.Module.register_parameter (see _PARAM_INIT_LOCK).
         with _PARAM_INIT_LOCK:
-            # --- VAE (bf16; Qwen-Image VAE, per-channel mean/std) ---
-            self.vae = load_krea2_vae(config, device)
+            # --- VAE (bf16): shared with Flux (byte-identical AE) ---
+            vae_path = infra / "ae.safetensors"
+            # ae.safetensors is the FLUX AE (verified byte-identical to the
+            # Z-Image checkpoint's VAE, same md5), so the committed AE
+            # config is the correct architecture description
+            vae_cfg = config.root / "res" / "ae.config.json"
+            self.vae = AutoencoderKL.from_single_file(
+                str(vae_path), config=str(vae_cfg), torch_dtype=torch.bfloat16
+            )
+            self.vae = self.vae.to(device)
             self.vae.enable_slicing()
 
-            # --- transformer (int8 -> per-op bf16) ---
-            # build on CPU: the Int8Linear dummies are seeded from the
-            # dtype scope (no nn.Linear replacement -- the transformer
-            # mixes Int8Linear block projections with plain bf16 linears);
-            # the int8 bytes load on CPU and move to the GPU with .to(device)
-            with quant_dtype_scope(torch.device("cpu"), torch.bfloat16):
-                self.transformer = Krea2Transformer()
+            # --- transformer (fp8 -> per-op bf16) ---
+            # build on CPU (the dummy weights are small); the fp8 bytes load
+            # on CPU and move to the GPU with .to(device)
+            with quant_linear_scope(
+                "fp8", torch.device("cpu"), torch.bfloat16,
+                linear_cls=ScaledFp8Linear if scaled_fp8 else None,
+            ):
+                self.transformer = ZImageTransformer()
             result = self.transformer.load_state_dict(sd, strict=False)
             missing = list(result.missing_keys)
             unexpected = list(result.unexpected_keys)
             del sd
             if missing or unexpected:
                 raise ValueError(
-                    f"Krea 2 checkpoint mismatch for {info.name}: "
+                    f"Z-Image checkpoint mismatch for {info.name}: "
                     f"missing={missing[:5]} unexpected={unexpected[:5]}")
-            # construction left the plain (non-quantized) linears/norms in
-            # fp32 while the Int8Linear weights are int8 with bf16 dummies:
-            # cast only the parameters outside the Int8Linear submodules so
-            # the quantized weights keep their dtype (a module-level .to()
-            # would recurse into the Int8Linear children)
-            int8_prefixes = {
-                name + "." for name, mod in self.transformer.named_modules()
-                if isinstance(mod, Int8Linear)}
-            for name, p in list(self.transformer.named_parameters()):
-                if not any(name.startswith(pref) for pref in int8_prefixes):
-                    p.data = p.data.to(torch.bfloat16)
             self.transformer.to(device)
             self.transformer.eval()
 
-            # --- text encoder (Qwen3-VL-4B, plain fp8) ---
+            # --- text encoder (Qwen3-4B, scaled fp8) ---
             # `te_device` (GPU by default) is where the encoder runs during a
             # generation. It loads on the CPU first and only moves to the
             # GPU when it fits next to the transformer; otherwise it is
             # brought to the GPU per generation, swapping the transformer
-            # out while it runs (see _generate_impl). With
-            # text_encoder_device=cpu it never leaves the CPU.
+            # out while it runs (see _generate_impl, the Flux/Forge pattern).
+            # With text_encoder_device=cpu it never leaves the CPU.
             self.te_device = "cpu" if config.text_encoder_device == "cpu" else device
-            self.te = load_krea2_encoder(
-                str(config.infra_dir / "qwen_3vl_4b.safetensors"), "cpu")
+            self.te = load_zit_encoder(str(infra / "qwen_3_4b.safetensors"), "cpu")
             self.te_tok = Qwen2Tokenizer.from_pretrained(
-                str(config.res_dir / "tokenizer_krea2"))
+                str(config.res_dir / "tokenizer_zimage"))
             # resident bytes of the encoder; the fit check below and the
             # per-generate swap decision compare this against the free VRAM
             self._encoder_bytes = sum(
@@ -329,8 +234,6 @@ class Krea2Backend(ModelBackend):
             if self.te_device != "cpu" and self._encoder_bytes + (1 << 30) \
                     <= torch.cuda.mem_get_info(device)[0]:
                 # fits next to the transformer: co-resident, no swaps
-                # (never the case on a 16 GB card -- the transformer alone
-                # takes ~12.5 GiB)
                 self._text_to(self.te_device)
 
         # all weights are resident now; release the transient VRAM the load
@@ -340,32 +243,25 @@ class Krea2Backend(ModelBackend):
     # ------------------------------------------------------------- text ----
 
     def _encode_prompt(self, prompt: str):
-        """Tokenize + encode ``prompt`` -> the (1, seq, 12*2560) bf16
-        12-tap conditioning (chat-templated, the system + user-opening
-        prefix stripped, the reference ``Krea2TEModel.encode_token_
-        weights``). The encoder must be on ``self.te_device`` (call
-        :meth:`_text_to`)."""
+        """Tokenize + encode ``prompt`` -> the (1, L, 2560) bf16 Qwen3-4B
+        penultimate hidden state (chat-templated, the reference
+        Z-Image text-encoder target). The encoder must be on
+        ``self.te_device`` (call :meth:`_text_to`)."""
         device = self.te_device
-        text = krea2_prompt_template().format(prompt)
+        text = zimage_prompt_template().format(prompt)
         ids = self.te_tok(
             text, add_special_tokens=False, return_tensors="pt"
-        ).input_ids
-        cut = template_prefix_cut(ids[0].tolist())
-        ids = ids[:, cut:].to(device)
-        # (1, 12, seq, 2560) -> (1, seq, 12*2560): the DiT's txtfusion
-        # unpacks the tap axis again
-        taps = self.te(ids)
-        return taps.permute(0, 2, 1, 3).reshape(1, -1, 12 * 2560).to(
-            torch.bfloat16)
+        ).input_ids.to(device)
+        return self.te(ids).to(torch.bfloat16)
 
     def _get_context(self, prompt: str):
-        """The encoded (1, seq, 12*2560) bf16 context for ``prompt`` on the
+        """The encoded (1, L, 2560) bf16 context for ``prompt`` on the
         model's device.
 
         Encodings are cached on the CPU (LRU, a few MB each, shared across
         this model's per-GPU instances): the encoding is deterministic, so
         a batch of identical prompts -- or any later repeat of the same
-        prompt -- reuses the first encoding instead of running the ~4.8 GiB
+        prompt -- reuses the first encoding instead of running the ~4.4 GiB
         encoder again. A cache hit also skips the transformer swap that an
         uncached encode would trigger.
         """
@@ -373,10 +269,11 @@ class Krea2Backend(ModelBackend):
         if cached is not None:
             self._enc_cache.move_to_end(prompt)
             # A hit skips the encode, so the post-encode offload in
-            # _encode_prompts never runs: if the co-resident fit check
-            # (cold load / parked restore) left the encoder on the GPU,
-            # drop it now, or its ~4.8 GiB sits next to the transformer
-            # through sampling and starves the VAE decode
+            # _encode_prompts never runs: if the co-resident fit check (cold
+            # load / parked restore) left the encoder on the GPU, drop it
+            # now, or its ~4.1 GiB sits next to the transformer through
+            # sampling and starves the VAE decode (the untiled 1024x1280
+            # decode alone wants ~3 GiB)
             if (self.te_device != "cpu"
                     and next(self.te.parameters()).device == self.device):
                 self._text_offload()
@@ -389,16 +286,17 @@ class Krea2Backend(ModelBackend):
         """Bring the encoder to ``te_device`` ONCE, encode every prompt not
         yet in the shared cache, and park the encoder again.
 
-        The ~4.8 GiB encoder crosses the bus at most once per call, however
+        The ~4.4 GiB encoder crosses the bus at most once per call, however
         many prompts it encodes: the generation queue pre-encodes a whole
         wildcard batch here (via :meth:`pre_encode`) instead of every task
         of the batch triggering its own transformer swap. With the GPU
-        text-encoder default, the resident transformer (~12.5 GiB) and the
-        encoder (~4.8 GiB) never fit on a 16 GiB card; Forge's memory
-        manager unloads the unet while the text encoders run. We do the
-        same swap when the encoder is parked on the CPU for this reason
-        (see __init__): park the transformer on the CPU for the encode,
-        then bring it back after the encoder is parked again.
+        text-encoder default, the resident transformer (~6.2 GiB) and the
+        encoder (~4.4 GiB) may not leave room for the sampling working set
+        on a 16 GiB card; Forge's memory manager unloads the unet while the
+        text encoders run. We do the same swap when the encoder is parked
+        on the CPU for this reason (see __init__): park the transformer on
+        the CPU for the encode, then bring it back after the encoder is
+        parked again.
 
         ``reserve`` is the number of cache entries the caller expects to be
         resident afterwards: the LRU cap is raised to it so a pre-encoded
@@ -437,12 +335,10 @@ class Krea2Backend(ModelBackend):
 
     def pre_encode(self, pairs: list[tuple[str, str]],
                    reserve: int | None = None) -> None:
-        """One encoder session for a whole batch (see ModelBackend): the
-        K2 classic path encodes the negative prompt as well (CFG), so
-        both sides of every pair are encoded."""
+        """One encoder session for a whole batch (see ModelBackend). Z-Image
+        ignores the negative prompt: only the prompts are encoded."""
         with self._lock:
-            self._encode_prompts(
-                [p for p, _ in pairs] + [n for _, n in pairs if n], reserve)
+            self._encode_prompts([prompt for prompt, _ in pairs], reserve)
 
     def _text_to(self, device) -> None:
         self.te.to(device)
@@ -451,26 +347,12 @@ class Krea2Backend(ModelBackend):
         self.te.to("cpu")
         torch.cuda.empty_cache()
 
-    def _transformer_out(self) -> bool:
-        """Park the transformer on the CPU to free its VRAM for the VAE
-        (encode/decode). Returns True when it was swapped and must be
-        brought back with :meth:`_transformer_in`."""
-        if next(self.transformer.parameters()).device == self.device:
-            self.transformer.to("cpu")
-            torch.cuda.empty_cache()
-            return True
-        return False
-
-    def _transformer_in(self) -> None:
-        self.transformer.to(self.device)
-
     # ------------------------------------------------------------- ctrl ----
 
     def _encode_init(self, arr: np.ndarray, device, size: tuple[int, int]):
         """VAE-encode an HxWx3 uint8 image to its solver-space latent
         (the deterministic ``latent_dist.mode()`` -- A1111's "Full" encode),
-        normalized to solver space by the VAE's per-channel mean/std:
-        ``z = (vae_latent - mean) / std``.
+        the inverse of the decode transform ``x / scaling + shift``.
 
         ``size`` is the snapped ``(w, h)`` generation size; the init image
         arrives at the un-snapped request size, so it is LANCZOS-resized
@@ -487,7 +369,7 @@ class Krea2Backend(ModelBackend):
         # entire encoder's activation tensors for the whole generate call
         with torch.inference_mode():
             lat = self.vae.encode(t.to(self.vae.dtype)).latent_dist.mode().float()
-        return normalize_latent(self.vae, lat)
+        return (lat - self.vae.config.shift_factor) * self.vae.config.scaling_factor
 
     def cancel(self) -> None:
         self._cancel = True
@@ -531,7 +413,7 @@ class Krea2Backend(ModelBackend):
     # -------------------------------------------------------------- lora ----
 
     def _lora_path(self, name: str) -> str | None:
-        """LoRA name (no extension) -> path under ``loras/krea2/``.
+        """LoRA name (no extension) -> path under ``loras/zimage/``.
 
         The suffix is *appended*, never ``Path.with_suffix``: names may
         themselves contain dots, and with_suffix would replace the last one
@@ -539,53 +421,56 @@ class Krea2Backend(ModelBackend):
         """
         if self.config is None:
             return None
-        p = self.config.loras_dir / "krea2" / (name + ".safetensors")
+        p = self.config.loras_dir / "zimage" / (name + ".safetensors")
         return str(p) if p.is_file() else None
 
-    def _parse_lora(self, path: str) -> list[FluxLoraSpec]:
-        """Read + key-map a Krea 2 LoRA (cached by ``(path, mtime)``).
+    def _parse_lora(self, path: str) -> tuple[list[FluxLoraSpec], list[ParamDelta]]:
+        """Read + key-map a Z-Image LoRA (cached by ``(path, mtime)``).
 
-        Raises ``ValueError`` (unknown/unmappable keys, incomplete pairs,
-        see krea2_lora) on files this transformer cannot consume.
+        Returns ``(lora_pairs, param_deltas)``. Raises ``ValueError``
+        (unknown/unmappable keys, see zimage_lora) on files this
+        transformer cannot consume.
         """
         cached = self._lora_cache.get(path)
         mtime = Path(path).stat().st_mtime
         if cached is not None and cached[0] == mtime:
-            return cached[1]
-        specs = parse_krea2_lora(path)
-        self._lora_cache[path] = (mtime, specs)
-        return specs
+            return cached[1], cached[2]
+        specs, deltas = parse_zimage_lora(path)
+        self._lora_cache[path] = (mtime, specs, deltas)
+        return specs, deltas
 
     def _module_for(self, path: str):
-        """Transformer submodule for a delta spec's module path.
-
-        Resolved via ``named_modules()`` (not ``getattr``) so numeric
-        ``nn.Sequential`` indices like ``txtmlp.1`` work.
-        """
-        module = dict(self.transformer.named_modules()).get(path)
-        if module is None:
-            raise ValueError(f"no transformer module for LoRA path {path!r}")
+        """Transformer submodule for a delta spec's module path."""
+        module = self.transformer
+        for part in path.split("."):
+            if not hasattr(module, part):
+                raise ValueError(f"no transformer module for LoRA path {path!r}")
+            module = getattr(module, part)
         return module
 
     def _merge_lora_deltas(self, loras: tuple[tuple[str, float], ...]):
         """Resolve + map + merge a LoRA set into per-module delta specs.
 
-        Pure: returns ``{module path: [(A, B, r0, r1), ...]}`` (CPU tensors;
-        the LoRA *weight scale factor is pre-folded into A, and deltas
-        covering adjacent row slices of one module are merged so each
-        module costs ONE extra GEMM pair). Raises ``ValueError`` on a
-        missing file, an unmappable key, or a shape mismatch -- nothing is
-        mutated here, so a failing set leaves no partial state.
+        Pure: returns ``({module path: [(A, B, r0, r1), ...]},
+        {(module path, attr): delta tensor})`` (CPU tensors; the weight *
+        scale factor is pre-folded into A, and deltas covering adjacent row
+        slices of one module are merged so each module costs ONE extra
+        GEMM pair; the direct deltas are summed per target). Raises
+        ``ValueError`` on a missing file, an unmappable key, or a shape
+        mismatch -- nothing is mutated here, so a failing set leaves no
+        partial state.
         """
         per_module: dict[str, dict[tuple[int, int], list[tuple[torch.Tensor, torch.Tensor]]]] = {}
+        param: dict[tuple[str, str], torch.Tensor] = {}
         for name, weight in loras:
             if weight == 0.0:  # zero-weight LoRA: no delta at all
                 continue
             path = self._lora_path(name)
             if path is None:
                 raise ValueError(
-                    f"Krea 2 LoRA not found: {name!r} (looked in loras/krea2/)")
-            for spec in self._parse_lora(path):
+                    f"Z-Image LoRA not found: {name!r} (looked in loras/zimage/)")
+            specs, deltas = self._parse_lora(path)
+            for spec in specs:
                 rank = spec.A.shape[0]
                 if spec.B.shape[1] != rank:
                     raise ValueError(
@@ -600,27 +485,28 @@ class Krea2Backend(ModelBackend):
                 a = spec.A * (weight * spec.scale)
                 per_module.setdefault(spec.module, {}) \
                     .setdefault((spec.r0, spec.r1), []).append((a, spec.B))
-        return merge_module_deltas(per_module)
+            for d in deltas:
+                key = (d.module, d.attr)
+                param[key] = param.get(key, torch.zeros_like(d.delta)) + \
+                    d.delta * weight
+        return merge_module_deltas(per_module), param
 
     def _apply_loras(self, loras: list[tuple[str, float]]) -> None:
         """Attach the requested LoRAs to the transformer (cached per set).
 
         Must run under ``self._lock`` (called from ``_generate_impl``
-        before the sampling loop, as in the Z-Image backend).
+        before the sampling loop, as in the Flux backend).
 
-        Runtime additive deltas: the int8 block weights stay quantized and
-        each affected :class:`~imagagen.krea2_transformer.Int8Linear`
-        computes ``base + (x_rot @ A'.t()) @ B.t()`` per forward on the
-        ConvRot-ROTATED input, with ``A' = A @ H`` rotated into the
-        ConvRot space at install (the LoRAs were trained on the
-        de-rotated weights, so this reproduces the plain-space delta
-        exactly; lossless, reversible; the deltas are registered
-        parameters so ``.to()``/``unload()`` moves them and VRAM scales
-        with them); the bf16 :class:`DeltaLinear` txtfusion targets take
-        the same deltas on the plain input.
+        Runtime additive deltas: the fused fp8 weights stay quantized and
+        each affected :class:`~imagagen.gguf_ops.QuantLinear` computes
+        ``base + (x @ A.t()) @ B.t()`` per forward (lossless, reversible;
+        the deltas are registered parameters so ``.to()``/``unload()`` moves
+        them and VRAM scales with them). The direct ``.diff``/``.diff_b``
+        deltas ride the same way: ``QuantLinear.set_lora_bias`` for biases
+        and ``RMSNorm.set_lora_weight`` for the norm scales.
 
         All-or-nothing: a set becomes ``_active_loras`` only once every
-        module is patched: :meth:`_merge_lora_deltas` (parsing, mapping,
+        module is patched; :meth:`_merge_lora_deltas` (parsing, mapping,
         validation) runs before ANY module is touched, and every target is
         resolved + shape-checked BEFORE the first mutation, with parameter
         registration under the shared ``_PARAM_INIT_LOCK``.
@@ -628,29 +514,63 @@ class Krea2Backend(ModelBackend):
         key = tuple((n, float(w)) for n, w in loras)
         if key == self._active_loras:
             return  # identical set: no-op
-        merged = self._merge_lora_deltas(key)  # may raise
+        merged, param_deltas = self._merge_lora_deltas(key)  # may raise
         with _PARAM_INIT_LOCK:
             # resolve + validate every target BEFORE mutating anything
-            plan: list[tuple[object, object]] = []
+            plan: list[tuple[object, str, object]] = []
             for path, deltas in merged.items():
                 module = self._module_for(path)
-                if not isinstance(module, (QuantLinear, DeltaLinear)):
+                if not isinstance(module, QuantLinear):
                     raise TypeError(
-                        f"{path!r} is not a delta-capable Linear "
-                        f"({type(module).__name__})")
+                        f"{path!r} is not a QuantLinear ({type(module).__name__})"
+                    )
                 for a, _b, _r0, _r1 in deltas:
                     if a.shape[1] != module.in_features:
                         raise ValueError(
                             f"{path!r}: LoRA input dim {a.shape[1]} != "
                             f"module in_features {module.in_features}"
                         )
-                plan.append((module, deltas))
+                plan.append((module, "deltas", deltas))
+            for (path, attr), t in param_deltas.items():
+                module = self._module_for(path)
+                if attr == "bias":
+                    b = getattr(module, "bias", None)
+                    if not isinstance(module, QuantLinear) or b is None:
+                        raise ValueError(
+                            f"{path!r} has no bias for a LoRA bias delta"
+                        )
+                    if tuple(b.shape) != tuple(t.shape):
+                        raise ValueError(
+                            f"{path!r}: bias delta {tuple(t.shape)} != "
+                            f"bias {tuple(b.shape)}"
+                        )
+                elif attr == "weight":
+                    w = getattr(module, "weight", None)
+                    if not isinstance(module, RMSNorm) or w is None:
+                        raise ValueError(
+                            f"{path!r} is not an RMSNorm (weight-delta target)"
+                        )
+                    if tuple(w.shape) != tuple(t.shape):
+                        raise ValueError(
+                            f"{path!r}: weight delta {tuple(t.shape)} != "
+                            f"weight {tuple(w.shape)}"
+                        )
+                else:
+                    raise ValueError(
+                        f"{path!r}: unknown LoRA delta attribute {attr!r}"
+                    )
+                plan.append((module, attr, t))
             # drop whatever is currently applied, then install the new set
             self._unload_loras()
-            for module, deltas in plan:
-                module.set_lora_deltas(deltas)
+            for module, kind, payload in plan:
+                if kind == "deltas":
+                    module.set_lora_deltas(payload)
+                elif kind == "bias":
+                    module.set_lora_bias(payload)
+                else:
+                    module.set_lora_weight(payload)
         self._active_loras = key
-        log.info("Krea 2 LoRA load: %s", format_loras(list(key)))
+        log.info("Z-Image LoRA load: %s", format_loras(list(key)))
 
     def _unload_loras(self) -> None:
         """Clear every module's delta state (no cache bookkeeping).
@@ -661,7 +581,9 @@ class Krea2Backend(ModelBackend):
         """
         for module in self.transformer.modules():
             if getattr(module, "lora_deltas", None):
-                module.clear_lora_deltas()
+                module.clear_lora_deltas()  # also clears a bias delta
+            if getattr(module, "lora_weight", None) is not None:
+                module.clear_lora_weight()
 
     # ----------------------------------------------------------- generate ----
 
@@ -681,10 +603,10 @@ class Krea2Backend(ModelBackend):
         lh, lw = h // 8, w // 8
 
         # VAE tiling: vae-tiling=true in imagagen.ini forces it; otherwise
-        # automatic above 2 MP. The VAE is the (non-local) Wan decoder, so
-        # the threshold and tile sizes are the measured Flux values: below
-        # 2 MP tiling changes the image, not just the seams, and a crash
-        # above it is the floor.
+        # automatic above 2 MP. The VAE is the (strongly non-local) Flux
+        # decoder, so the threshold and tile sizes are the measured Flux
+        # values: below 2 MP tiling changes the image, not just the seams,
+        # and a crash above it is the floor.
         if self.config is not None:
             self.vae.use_tiling = self.config.vae_tiling or w * h > 2_000_000
             if self.vae.use_tiling:
@@ -692,30 +614,18 @@ class Krea2Backend(ModelBackend):
                 self.vae.tile_latent_min_size = 64
                 self.vae.tile_overlap_factor = 0.5
 
-        # the "model default" sentinels (steps/cfg <= 0) resolve to the
-        # checkpoint class's built-ins: raw 12 steps / standard CFG 1.5 /
-        # resolution-derived mu, turbo 8 steps / no CFG / pinned mu
-        turbo = request.turbo
-        steps = request.steps if request.steps > 0 else (
-            DEFAULT_STEPS_TURBO if turbo else DEFAULT_STEPS_RAW)
+        # the "model default" sentinel (request.steps <= 0) resolves to the
+        # built-in 8-step Turbo schedule; cfg is always the effective 1.0
+        # (single-pass model, no CFG / guidance embedding)
+        steps = request.steps if request.steps > 0 else DEFAULT_STEPS
         steps = max(1, steps)
-        cfg = request.cfg if request.cfg > 0 else (
-            DEFAULT_CFG_TURBO if turbo else DEFAULT_CFG_RAW)
-        do_cfg = cfg > 1.0
 
         # --- text encode --- deterministic per prompt: identical prompts
-        # (negative too, on the classic path) reuse the cached encoding
-        # (no encoder run, no transformer swap)
+        # reuse the cached encoding (no encoder run, no transformer swap)
         context = self._get_context(request.prompt)
-        uncond_context = None
-        if do_cfg:
-            uncond_context = self._get_context(request.negative_prompt)
 
         # --- sigma schedule + noise ---
-        seq_len = (h // 16) * (w // 16)  # image tokens (the mu variable)
-        sigmas = kdiff.get_sigmas_krea2(
-            steps, seq_len, device,
-            mu=TURBO_MU if turbo else None)
+        sigmas = kdiff.get_sigmas_zimage(steps, device)
         gen = torch.Generator(device=device).manual_seed(request.resolved_seed())
         noise = torch.randn(
             (1, 16, lh, lw), device=device, dtype=torch.float32, generator=gen
@@ -736,15 +646,7 @@ class Krea2Backend(ModelBackend):
             soft = None  # a disabled object behaves exactly like absent
         sigma_sched = sigmas
         if request.init_image is not None:
-            # the VAE encoder's fp32-normalize working set does not fit
-            # next to the resident transformer: park it for the encode
-            swapped = self._transformer_out()
-            try:
-                init_latent = self._encode_init(
-                    request.init_image, device, (w, h))
-            finally:
-                if swapped:
-                    self._transformer_in()
+            init_latent = self._encode_init(request.init_image, device, (w, h))
             # A1111: t_enc = int(min(strength, 0.999) * steps); the schedule
             # starts at sigmas[steps - 1 - t_enc] (strength 1.0 -> full)
             t_enc = int(min(request.denoise, 0.999) * steps)
@@ -764,10 +666,10 @@ class Krea2Backend(ModelBackend):
                 m = torch.nn.functional.interpolate(
                     m, size=(lh, lw), mode="bilinear")
                 # Sampling mask = the 50%-level BINARY mask, not the
-                # feathered brush: the (Wan) VAE decoder is non-local, so
-                # it rings a feathered latent blend into a visible halo
-                # along the feather. The feather is applied only by the
-                # final pixel composite (InpaintPlan).
+                # feathered brush: the (Flux) VAE decoder is strongly
+                # non-local, so it rings a feathered latent blend into a
+                # visible halo along the feather. The feather is applied
+                # only by the final pixel composite (InpaintPlan).
                 m_lock = (m > 0.5).float()
                 mask_t = 1.0 - m_lock
                 # only the inpaint region starts re-noised; the protected
@@ -796,19 +698,16 @@ class Krea2Backend(ModelBackend):
                     + (sigma * torch.randn_like(x)
                        + (1.0 - sigma) * init_latent) * mask_t
             x_bf = xwork.to(torch.bfloat16)
-            sigma_bf = sigma.to(torch.bfloat16)
-            out = transformer(x_bf, sigma_bf, context)
-            if do_cfg:
-                out_u = transformer(x_bf, sigma_bf, uncond_context)
-                # standard CFG in the x0 domain: x0 = x0u + cfg*(x0c - x0u);
-                # in velocity form v = vu + cfg*(vc - vu) (the reference's
-                # guidance g maps to cfg = g + 1)
-                v = out_u.float() + cfg * (out.float() - out_u.float())
-            else:
-                v = out.float()
-            # The transformer returns the flow velocity (reference FLOW /
-            # CONST convention): x0 = x - sigma * v. Verified empirically
-            # (dev/smoke_krea2.py).
+            out = transformer(x_bf, sigma.to(torch.bfloat16), context)
+            # The transformer returns the raw NextDiT output, which under
+            # the reference (ComfyUI FLOW / CONST convention) IS the flow
+            # velocity: x0 = x - sigma * out. Verified empirically against
+            # the known velocity of a noised clean latent
+            # (dev/smoke_zimage.py).
+            v = out.float()
+            if progress and self._step <= self._steps_total:
+                progress(self._step / self._steps_total,
+                         f"step {self._step}/{self._steps_total}")
             x0 = xwork - sigma * v
             if mask_t is not None:
                 if soft is not None:
@@ -825,17 +724,10 @@ class Krea2Backend(ModelBackend):
                     # hard lock: the protected x0 estimate is locked back to
                     # the init latent
                     x0 = x0 * (1.0 - mask_t) + init_latent * mask_t
-            if progress and self._step <= self._steps_total:
-                progress(self._step / self._steps_total,
-                         f"step {self._step}/{self._steps_total}")
             return x0
 
         self._step = 0
         self._steps_total = max(1, len(sigma_sched) - 1)
-
-        # the first forward peaks on the cold allocator and the transformer
-        # nearly fills the card: hand it every reserved byte before sampling
-        torch.cuda.empty_cache()
 
         with torch.inference_mode():
             x = kdiff.sample_euler(model_fn, noise, sigma_sched, extra_args={})
@@ -846,29 +738,25 @@ class Krea2Backend(ModelBackend):
                 # adaptive pixel composite below instead)
                 x = x * (1.0 - mask_t) + init_latent * mask_t
 
-            # --- VAE decode (kept under inference_mode so the result has no
-            #     grad): solver space -> pixels space via the per-channel
-            #     mean/std ---
-            latents = denormalize_latent(self.vae, x).to(torch.bfloat16)
-            # the decode's working set (up to ~4 GiB untiled at 1024px) does
-            # not fit next to the resident transformer: park it (Forge's
-            # memory manager unloads the unet for the VAE too)
-            swapped = self._transformer_out()
+            # --- VAE decode (kept under inference_mode so the result has no grad) ---
+            latents = (x / self.vae.config.scaling_factor) + self.vae.config.shift_factor
+            latents = latents.to(torch.bfloat16)
             try:
                 image = self.vae.decode(latents, return_dict=False)[0].float()
             except torch.cuda.OutOfMemoryError:
-                # even the tiled working set did not fit (extreme sizes): a
-                # full GC + cache flush leaves only the VAE on the card
+                # the untiled decode's working set does not fit next to the
+                # resident transformer; Forge's memory manager unloads the
+                # unet for the VAE -- we do the same
                 log.warning(
-                    "%s: VAE decode OOMed, retrying after a full GC", self.name)
+                    "%s: untiled VAE decode OOMed, retrying with the "
+                    "transformer on the CPU", self.name)
                 import gc
 
                 gc.collect()
+                self.transformer.to("cpu")
                 torch.cuda.empty_cache()
                 image = self.vae.decode(latents, return_dict=False)[0].float()
-            finally:
-                if swapped:
-                    self._transformer_in()
+                self.transformer.to(self.device)
             image = (image / 2 + 0.5).clamp(0, 1)
         arr = (image.cpu().numpy()[0].transpose(1, 2, 0) * 255).astype(np.uint8)
         if soft is not None and mask_t is not None:
@@ -891,15 +779,17 @@ class Krea2Backend(ModelBackend):
         torch.cuda.empty_cache()
         return GenerateResult(
             image=arr, seed=request.seed,
-            steps=steps, cfg=cfg, turbo=turbo)
+            steps=steps,
+            # the single-pass model has no CFG: the effective value is 1.0
+            cfg=DEFAULT_CFG)
 
 
 def from_config(config) -> ModelBackend | None:
-    """Load the first discovered Krea 2 model, or None when nothing exists."""
-    from .models import ModelRegistry
+    """Load the first discovered Z-Image model, or None when nothing exists."""
+    from ..models import ModelRegistry
 
     registry = ModelRegistry(config)
-    krea2 = [m for m in registry.models if m.family == "krea2"]
-    if not krea2 or not registry.gpus:
+    zimage = [m for m in registry.models if m.family == "zimage"]
+    if not zimage or not registry.gpus:
         return None
-    return registry.backend_for(krea2[0].id)
+    return registry.backend_for(zimage[0].id)

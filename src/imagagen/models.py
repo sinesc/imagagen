@@ -328,18 +328,18 @@ class ModelRegistry:
         import torch
 
         if info.family == "flux":
-            from .flux_backend import FluxBackend
+            from .backends.flux import FluxBackend
 
             return FluxBackend(info, torch.device(device), config=self.config)
         if info.family == "zimage":
-            from .zimage_backend import ZImageBackend
+            from .backends.zimage import ZImageBackend
 
             return ZImageBackend(info, torch.device(device), config=self.config)
         if info.family == "krea2":
-            from .krea2_backend import Krea2Backend
+            from .backends.krea2 import Krea2Backend
 
             return Krea2Backend(info, torch.device(device), config=self.config)
-        from .sdxl_backend import SdxlBackend
+        from .backends.sdxl import SdxlBackend
 
         return SdxlBackend(info, torch.device(device), config=self.config)
 

@@ -24,7 +24,7 @@ GPU with a per-op bf16 cast, via :mod:`imagagen.gguf_ops`'
 ``sigma`` (1.0 = pure noise ... 0.0 = clean) and the (1, L, 2560) text
 context, and returns ``-img`` -- the raw final-layer output, negated,
 EXACTLY as the reference ``NextDiT._forward`` does. The backend converts it
-to the k-diffusion x0 contract (see :mod:`imagagen.zimage_backend`).
+to the k-diffusion x0 contract (see :mod:`imagagen.backends.zimage`).
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class ScaledFp8Linear(Fp8Linear):
     ``W_fp8 * scale_weight``, folded into the per-op dequantize here.
     ``scale_input``, when a file carries one, is the reference's ACTIVATION
     quantization step -- it cancels against the fp8 input quantization and
-    must NOT scale the matmul output (see :mod:`imagagen.qwen3_encoder`,
+    must NOT scale the matmul output (see :mod:`imagagen.encoders.qwen3`,
     where the wrong reading made the whole conditioning meaningless); it is
     loaded but deliberately unused. Checkpoints without the scale keys behave
     exactly like :class:`Fp8Linear` (identity scale)."""

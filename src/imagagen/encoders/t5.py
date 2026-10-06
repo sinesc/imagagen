@@ -20,10 +20,10 @@ scale 1), with the shared bidirectional relative-position bias as the mask.
 from __future__ import annotations
 
 import math
+
 import torch
 from torch import nn
 from torch.nn import functional as F
-
 
 COMPUTE_DTYPE = torch.bfloat16
 

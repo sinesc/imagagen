@@ -1,7 +1,7 @@
 """FLUX.1 backend: quantized transformer + dual text encoders + flow-matching
 Euler.
 
-Second model family alongside SDXL (see :mod:`imagagen.sdxl_backend`).
+Second model family alongside SDXL (see :mod:`imagagen.backends.sdxl`).
 
 Architecture (FLUX.1-dev):
 - the transformer is a MMDiT (:class:`~imagagen.flux_transformer.
@@ -47,8 +47,20 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from . import kdiff
-from .backends import (
+from .. import kdiff
+from ..encoders.clip import clip_pooled, load_clip_l
+from ..encoders.t5 import load_t5_encoder
+from ..flux_lora import FluxLoraSpec, merge_module_deltas, parse_lora
+from ..flux_transformer import FluxTransformer2DModel
+from ..gguf_ops import (
+    QuantLinear,
+    bake_gguf_model,
+    load_flux_state_dict,
+    quant_linear_scope,
+    sniff_flux_checkpoint,
+)
+from ..soft_inpaint import adaptive_change_alpha, latent_blend
+from . import (
     _PARAM_INIT_LOCK,
     GenerateRequest,
     GenerateResult,
@@ -56,18 +68,6 @@ from .backends import (
     format_loras,
     shared_enc_cache,
 )
-from .clip_encoder import clip_pooled, load_clip_l
-from .flux_lora import FluxLoraSpec, merge_module_deltas, parse_lora
-from .flux_transformer import FluxTransformer2DModel
-from .gguf_ops import (
-    QuantLinear,
-    bake_gguf_model,
-    load_flux_state_dict,
-    quant_linear_scope,
-    sniff_flux_checkpoint,
-)
-from .soft_inpaint import adaptive_change_alpha, latent_blend
-from .t5_encoder import load_t5_encoder
 
 
 def _model_hash(path: str) -> str:
@@ -887,7 +887,7 @@ class FluxBackend(ModelBackend):
 
 def from_config(config) -> ModelBackend | None:
     """Load the first discovered Flux model, or None when nothing exists."""
-    from .models import ModelRegistry
+    from ..models import ModelRegistry
 
     registry = ModelRegistry(config)
     flux = [m for m in registry.models if m.family == "flux"]

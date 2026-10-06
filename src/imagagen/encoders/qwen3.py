@@ -227,6 +227,6 @@ from .zimage_prompt import ZIMAGE_PROMPT_TEMPLATE
 
 def zimage_prompt_template() -> str:
     """The Z-Image chat prompt template (local copy in
-    :mod:`imagagen.zimage_prompt` of the ComfyUI reference's
+    :mod:`imagagen.encoders.zimage_prompt` of the ComfyUI reference's
     ``llama_template``)."""
     return ZIMAGE_PROMPT_TEMPLATE

@@ -12,7 +12,7 @@ import types
 
 import torch
 
-from imagagen.sdxl_backend import SdxlBackend
+from imagagen.backends.sdxl import SdxlBackend
 
 DIM_L, DIM_G = 8, 4
 

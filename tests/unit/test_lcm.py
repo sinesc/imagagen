@@ -9,7 +9,7 @@ nearest-slot quantization in log space.
 import torch
 
 from imagagen import kdiff
-from imagagen.sdxl_backend import _LcmSchedule
+from imagagen.backends.sdxl import _LcmSchedule
 
 
 def _sdxl_alphas_cumprod(n: int = 1000) -> torch.Tensor:

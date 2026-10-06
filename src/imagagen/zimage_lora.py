@@ -17,7 +17,7 @@ Two on-disk formats are supported, both keyed under ``diffusion_model.``:
   ``x_embedder``/``cap_embedder``/``t_embedder`` and the ``final_layer``.
 
 LoRA pairs become runtime additive merges (see
-:meth:`imagagen.zimage_backend.ZImageBackend._apply_loras` using
+:meth:`imagagen.backends.zimage.ZImageBackend._apply_loras` using
 :func:`flux_lora.merge_module_deltas` and ``QuantLinear.set_lora_deltas``);
 direct deltas are added to the target parameter (``QuantLinear.set_lora_
 bias`` / ``RMSNorm.set_lora_weight``). Everything is all-or-nothing: an

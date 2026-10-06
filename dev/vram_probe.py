@@ -1,6 +1,6 @@
 """Probe: measure peak VRAM of each stage of an SDXL generation at 3440x1440.
 
-Mimics sdxl_backend exactly (fp16 UNet, bf16 VAE, slicing + attention
+Mimics backends/sdxl exactly (fp16 UNet, bf16 VAE, slicing + attention
 slicing) and reports per-stage torch.cuda.max_memory_allocated so we can
 see where imagagen exceeds what Forge (partial offload + 'GPU weights'
 reserve) needs.

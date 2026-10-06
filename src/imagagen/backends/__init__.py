@@ -7,18 +7,17 @@ environments without a GPU.
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 
-import threading
-
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from .sag import SelfAttentionGuidance
-from .soft_inpaint import SoftInpainting
+from ..sag import SelfAttentionGuidance
+from ..soft_inpaint import SoftInpainting
 
 # Serializes every operation that CREATES torch parameters across ALL
 # backends (one per GPU, each on its own worker thread): model init

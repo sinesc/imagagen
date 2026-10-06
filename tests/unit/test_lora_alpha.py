@@ -8,7 +8,7 @@ nearest-beta-sigma-index, not the ComfyUI-style sigma formula.
 
 import torch
 
-from imagagen.sdxl_backend import scale_lora_alphas, sigma_to_timestep
+from imagagen.backends.sdxl import scale_lora_alphas, sigma_to_timestep
 
 
 class TestScaleLoraAlphas:

@@ -1,12 +1,12 @@
-"""Pure parts of the Z-Image Qwen3 encoder (imagagen.qwen3_encoder): the
-prompt template (local copy in imagagen.zimage_prompt) and the scaled-fp8
+"""Pure parts of the Z-Image Qwen3 encoder (imagagen.encoders.qwen3): the
+prompt template (local copy in imagagen.encoders.zimage_prompt) and the scaled-fp8
 linear / rotary math, without loading the 4.4 GB checkpoint.
 """
 
 import torch
 from torch.nn import functional as F
 
-from imagagen.qwen3_encoder import (
+from imagagen.encoders.qwen3 import (
     COMPUTE_DTYPE,
     Qwen3Model,
     ScaledFp8Linear,

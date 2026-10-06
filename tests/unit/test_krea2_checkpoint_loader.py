@@ -14,7 +14,7 @@ import torch
 from safetensors.torch import save_file
 
 from imagagen.gguf_ops import quant_dtype_scope  # noqa: F401
-from imagagen.krea2_backend import (
+from imagagen.backends.krea2 import (
     _load_krea2_state_dict,
     _unpack_int4_row_major,
 )

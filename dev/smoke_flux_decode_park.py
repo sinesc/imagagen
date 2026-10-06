@@ -20,7 +20,7 @@ import torch  # noqa: E402
 
 from imagagen.backends import GenerateRequest  # noqa: E402
 from imagagen.config import load_config  # noqa: E402
-from imagagen.flux_backend import FluxBackend  # noqa: E402
+from imagagen.backends.flux import FluxBackend  # noqa: E402
 from imagagen.models import ModelInfo  # noqa: E402
 
 config = load_config(ROOT)

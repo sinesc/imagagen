@@ -1,10 +1,10 @@
 """Tests for the Krea 2 chat-template prefix cut
-(imagen.krea2_encoder.template_prefix_cut).
+(imagagen.encoders.krea2.template_prefix_cut).
 
 The reference encodes the fully chat-templated prompt and feeds the DiT
 only the tokens from the SECOND im_start on (the user-turn opening),
 skipping the following ``user`` + newline tokens when present. The
-template text itself (``imagagen.krea2_prompt.KREA2_PROMPT_TEMPLATE``) is
+template text itself (``imagagen.encoders.krea2_prompt.KREA2_PROMPT_TEMPLATE``) is
 never printed by these tests -- it carries special tokens; only token-id
 arithmetic on its tokenization is checked.
 """
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from imagagen.krea2_encoder import krea2_prompt_template, template_prefix_cut
+from imagagen.encoders.krea2 import krea2_prompt_template, template_prefix_cut
 from transformers import Qwen2Tokenizer
 
 ROOT = Path(__file__).resolve().parents[2]

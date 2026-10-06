@@ -115,18 +115,18 @@ import warnings
 
 import numpy as np
 
-from . import kdiff
-from .backends import (
+from .. import kdiff
+from ..sag import SagRecorder, compute_sag_mask, create_blur_map, install_sag_hooks
+from ..soft_inpaint import adaptive_change_alpha, latent_blend
+from . import (
+    _PARAM_INIT_LOCK,
     DEFAULT_CFG,
     GenerateRequest,
     GenerateResult,
     ModelBackend,
-    _PARAM_INIT_LOCK,
     format_loras,
     shared_enc_cache,
 )
-from .sag import SagRecorder, compute_sag_mask, create_blur_map, install_sag_hooks
-from .soft_inpaint import SoftInpainting, adaptive_change_alpha, latent_blend
 
 # fp16 pipelines are intentionally offloaded to CPU between generations to
 # free VRAM; diffusers warns that fp16 does not compute on CPU -- it does not
@@ -522,7 +522,7 @@ class SdxlBackend(ModelBackend):
         """
         import torch
 
-        from .token_weights import clean_prompt, parse_prompt_weights
+        from ..token_weights import clean_prompt, parse_prompt_weights
 
         pipe = self.pipe
         chunk_len = 75  # 77 total per window incl. BOS/EOS
@@ -1170,7 +1170,7 @@ class SdxlBackend(ModelBackend):
 
 def from_config(config) -> ModelBackend | None:
     """Load the first discovered SDXL model, or None when nothing usable exists."""
-    from .models import ModelRegistry
+    from ..models import ModelRegistry
 
     registry = ModelRegistry(config)
     if not registry.models or not registry.gpus:
