@@ -561,7 +561,7 @@ class SdxlBackend(ModelBackend):
             # empty prompt -> a single empty window ([BOS] + [EOS] + pad),
             # identical to diffusers encoding ""
             windows = (
-                ([], []) if not content
+                [([], [])] if not content
                 else [(content[i:i + chunk_len], weights[i:i + chunk_len])
                       for i in range(0, len(content), chunk_len)]
             )
