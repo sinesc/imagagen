@@ -436,6 +436,25 @@ def test_with_inpaint_inpaint_masked_rotation_box_on_rotated_mask():
     assert (rest == 100).all()
 
 
+def test_with_inpaint_inpaint_masked_rotation_rotates_box_aspect():
+    # a sideways face: on screen the mask is wider than tall, so the user
+    # picks a landscape W×H; +90 makes the face upright (taller than wide),
+    # so the box must rotate with it - an unrotated AR left most of the crop
+    # to edge context and cut the resolution the face actually gets
+    c = _canvas(160, 120)  # fill 100
+    m = np.zeros((120, 160), dtype=np.uint8)
+    m[45:85, 50:100] = 255  # on screen: 50 wide x 40 tall -> landscape blob
+    c.set_mask(m)
+    req = GenerateRequest(prompt="x", width=96, height=64)
+    plan = with_inpaint(req, "inpaint_masked", c, 1.0, rotation=90, padding=0)
+    x0, y0, w, h = plan.bbox
+    # in the working frame the blob is 50 wide x 40 tall; the box follows the
+    # rotated (portrait) AR, so it hugs the blob instead of growing sideways
+    assert w < h
+    assert (w - 50) < (h - 40)  # grown along the blob's short side only
+    assert req.init_image.shape == (96, 64, 3)  # H x W == the rotated 64x96
+
+
 def test_with_inpaint_inpaint_masked_rotation_mismatched_request_size():
     # regression: in "inpaint masked" the final canvas is the SOURCE canvas
     # size (the requested W×H only sizes the generation); counter-rotating to
@@ -447,6 +466,12 @@ def test_with_inpaint_inpaint_masked_rotation_mismatched_request_size():
     req = GenerateRequest(prompt="x", width=96, height=64)
     plan = with_inpaint(req, "inpaint_masked", c, 1.0, rotation=90,
                         padding=0)
+    # the user's W×H is the display frame; the generation runs at the rotated
+    # size, the plan still records the user's W×H (plus rotation) for the
+    # PNG metadata, so an import does not rotate it a second time
+    assert (req.width, req.height) == (64, 96)
+    assert req.init_image.shape == (96, 64, 3)
+    assert req.init_mask.shape == (96, 64)
     assert plan.requested_size == (96, 64)
     out = plan.postprocess(np.full((96, 64, 3), 250, dtype=np.uint8))
     # the canvas keeps its own size (64x48), not the requested 96x64

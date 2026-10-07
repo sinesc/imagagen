@@ -313,10 +313,14 @@ def with_inpaint(
 
     ``rotation`` (degrees, positive = clockwise, one of ``ROTATIONS``) rotates
     the source into an upright working frame before generation; the output is
-    counter-rotated back to the requested size afterwards. For generate and
-    inpaint_not_masked the generation size is extended so the rotated image
-    fits (``rotation_size``); inpaint_masked keeps the requested size (the box
-    on the rotated mask already covers the rotated content).
+    counter-rotated back afterwards. The user's W×H always refers to the
+    *display* frame (what is on screen), so the generation size in the working
+    frame is ``rotation_size(W, H, rotation)`` in every mode: for generate and
+    inpaint_not_masked that also grows the frame so the rotated result fits,
+    for inpaint_masked it rotates the crop's aspect ratio so it stays aligned
+    with the rotated mask (an unrotated AR around a rotated mask wastes most
+    of the frame on context). ``requested_size`` always keeps the user's W×H
+    (it is what the PNG metadata records, alongside ``rotation``).
 
     ``padding`` is the context ring around the mask box for "inpaint
     masked" (see ``INPAINT_PADDING``), capped at the mask's largest extent."""
@@ -347,15 +351,21 @@ def with_inpaint(
         rows = np.where((work_mask > 0).any(axis=1))[0]
         cols = np.where((work_mask > 0).any(axis=0))[0]
         extent = int(max(cols[-1] - cols[0] + 1, rows[-1] - rows[0] + 1))
-        x0, y0, w, h = masked_bbox(work_mask, request.width, request.height,
+        # the generation size is the user's W×H rotated into the working
+        # frame, so the box's aspect ratio matches the rotated mask; the plan
+        # keeps the user's W×H (the metadata records it alongside `rotation`,
+        # so an import must not see an already-rotated size)
+        fw, fh = request.width, request.height
+        gw, gh = rotation_size(fw, fh, rotation)
+        x0, y0, w, h = masked_bbox(work_mask, gw, gh,
                                    padding=min(padding, extent))
+        request.width, request.height = gw, gh
         request.init_image = resize_image(
-            crop_padded(work_image, x0, y0, w, h), request.width,
-            request.height)
+            crop_padded(work_image, x0, y0, w, h), gw, gh)
         request.init_mask = resize_image(
-            crop_mask(work_mask, x0, y0, w, h), request.width, request.height)
+            crop_mask(work_mask, x0, y0, w, h), gw, gh)
         return InpaintPlan("inpaint_masked",
-                           requested_size=(request.width, request.height),
+                           requested_size=(fw, fh),
                            rotation=rotation, bbox=(x0, y0, w, h),
                            work_image=work_image, work_mask=work_mask,
                            canvas_size=(image.shape[1], image.shape[0]))
