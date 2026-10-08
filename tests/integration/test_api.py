@@ -89,6 +89,7 @@ def test_models_endpoint(client):
         "model_id": "mock/mock.safetensors",
         "family": "sdxl",
         "distilled": True,
+        "turbo": False,  # Krea 2 only (inert here, key always present)
         "t2i": {"sampler": None, "scheduler": None, "steps": None, "cfg": None,
                 "sag": False, "sag_scale": 0.5, "sag_blur_sigma": 2.0,
                 "sag_threshold": 1.0, "loras": []},

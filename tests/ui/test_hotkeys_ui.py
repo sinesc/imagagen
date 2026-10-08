@@ -124,4 +124,5 @@ def test_hotkey_buttons_show_their_character_underlined(page, server):
     ]:
         btn = page.locator(sel)
         assert btn.evaluate("e => e.querySelector('u').textContent").isalpha()
-        assert btn.evaluate("e => e.textContent") == text
+        # labels are capitalised ("Draw", "Fit", ...)
+        assert btn.evaluate("e => e.textContent").lower() == text

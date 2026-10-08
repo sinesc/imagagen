@@ -135,19 +135,22 @@ def test_nf4param_to_moves_data_and_aux():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_nf4param_to_moves_aux_to_cuda():
-    # a near-full GPU OOMs even the context init: skip when that happens
-    # (the move itself is a few KB, but the context is ~hundreds of MB)
+    # a near-full GPU OOMs the context init (~hundreds of MB) or the cuBLAS
+    # handle (~the remaining headroom the linear needs): skip when that
+    # happens. The probe therefore runs a tiny matmul, not just a tensor
+    # allocation, so a GPU that can allocate memory but not run a linear
+    # (CUBLAS_STATUS_ALLOC_FAILED) is skipped instead of failing the test.
     dev = None
     for i in range(torch.cuda.device_count()):
         try:
-            probe = torch.zeros(1, device=f"cuda:{i}")
-            del probe
-        except torch.AcceleratorError:
+            probe = torch.zeros(8, 8, device=f"cuda:{i}")
+            (probe @ probe).sum().item()
+        except (torch.AcceleratorError, RuntimeError):
             continue
         dev = f"cuda:{i}"
         break
     if dev is None:
-        pytest.skip("no CUDA device with room for a context")
+        pytest.skip("no CUDA device with room for a context + cuBLAS")
     W = _rand_bf16(128, 64, seed=4)
     packed, qs = _quantize(W, nested=True)
     d, meta = _as_file_pieces(packed, qs)

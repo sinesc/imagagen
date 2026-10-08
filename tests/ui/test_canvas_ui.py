@@ -225,8 +225,10 @@ def test_mask_bbox_outline(page, server):
         ox1, oy1 = min(W, x1 + pad), min(H, y1 + pad)
         return {"x": ox0, "y": oy0, "w": ox1 - ox0, "h": oy1 - oy0}
 
+    pad0 = page.evaluate(
+        "parseInt(document.getElementById('mask-padding').value, 10)")
     assert wait_until(
-        lambda: page.evaluate("maskOutlineBox()") == expected(256))
+        lambda: page.evaluate("maskOutlineBox()") == expected(pad0))
 
     # the outline is actually drawn: a grey line on the backing store at
     # the box's top edge (measured as lift of the red channel above the
@@ -250,9 +252,9 @@ def test_mask_bbox_outline(page, server):
     assert lift > 10, f"no faint grey line at the box top edge: lift={lift}"
 
     # the "Mask pad" field rescales the ring (redraws at once)
-    set_input(page, "#mask-padding", "8")
+    set_input(page, "#mask-padding", "40")
     assert wait_until(
-        lambda: page.evaluate("maskOutlineBox()") == expected(8))
+        lambda: page.evaluate("maskOutlineBox()") == expected(40))
 
     # clearing the mask removes the outline again
     page.click("#mask-clear")
@@ -417,8 +419,8 @@ def test_zoom_wheel_fit_pan(page, server):
     assert page.evaluate("view.scale") > fit_scale * 1.3
     assert page.evaluate("view.scale") < fit_scale * 4  # sane growth
 
-    # double-click refits (it also stamps two harmless dots)
-    page.mouse.dblclick(cx, cy)
+    # F refits (double-click no longer does: it fired during rapid strokes)
+    page.keyboard.press("f")
     assert abs(page.evaluate("view.scale") - fit_scale) < 0.01 * fit_scale
 
     # middle-button drag pans
@@ -671,13 +673,13 @@ def test_clone_toolbar_button_and_shortcut(page, server):
         "document.getElementById('tool-clone').classList.contains('active')")
 
 
-def test_clone_shift_click_picks_source(page, server):
+def test_clone_ctrl_click_picks_source(page, server):
     base, _ = server
     _open(page, base)
     _show(page, base)
     page.keyboard.press("c")
-    # shift+click picks the source; it is NOT a stroke (nothing committed)
-    dot(page, 40, 75, shift=True)
+    # ctrl+click picks the source; it is NOT a stroke (nothing committed)
+    dot(page, 40, 75, ctrl=True)
     assert page.evaluate("view.cloneSource") == pytest.approx([40, 75], abs=0.5)
     assert canvas_px(base, 40, 75) == BG
     # the crosshair is rendered at the source point
@@ -717,8 +719,8 @@ def test_clone_shift_click_picks_source(page, server):
         }"""
     )
     assert ring_bright > 300  # ring at the source point
-    # shift+click again moves the source
-    dot(page, 55, 80, shift=True)
+    # ctrl+click again moves the source
+    dot(page, 55, 80, ctrl=True)
     assert page.evaluate("view.cloneSource") == pytest.approx([55, 80], abs=0.5)
     assert canvas_px(base, 55, 80) == BG
 
@@ -730,7 +732,7 @@ def test_clone_drag_without_source_shows_hint(page, server):
     page.keyboard.press("c")
     # plain drag without a picked source: hint shown, nothing committed
     stroke(page, [(40, 75), (60, 75)])
-    assert "shift-click" in page.text_content("#status-line").lower()
+    assert "ctrl-click" in page.text_content("#status-line").lower()
     assert canvas_px(base, 60, 75) == BG
     assert page.evaluate("view.stroke") is None
 
@@ -742,7 +744,7 @@ def test_clone_drag_copies_pixels(page, server):
     page.evaluate("viewRefresh()")
     page.wait_for_function("document.getElementById('canvas').hidden === false")
     page.keyboard.press("c")
-    dot(page, 30, 75, shift=True)  # source S in the left band
+    dot(page, 30, 75, ctrl=True)  # source S in the left band
     assert page.evaluate("view.cloneSource") == pytest.approx([30, 75], abs=0.5)
 
     # drag on the right band: the offset S-D0 = (-110, 0) maps the cursor
@@ -797,7 +799,7 @@ def test_clone_opacity_is_not_stacked(page, server):
     page.wait_for_function("document.getElementById('canvas').hidden === false")
     page.keyboard.press("c")
     set_input(page, "#brush-opacity", "0.4")
-    dot(page, 30, 75, shift=True)
+    dot(page, 30, 75, ctrl=True)
     page.mouse.move(*screen_pos(page, 140, 75))
     page.mouse.down()
     page.mouse.move(*screen_pos(page, 160, 75), steps=5)
@@ -812,21 +814,21 @@ def test_clone_opacity_is_not_stacked(page, server):
         f"committed stroke stacked: {canvas_px(base, 150, 75)}, want ~{exp}"
 
 
-def test_clone_ctrl_moves_source_relative(page, server):
-    # CTRL gesture: with a source S set, holding CTRL makes the source
-    # follow the cursor 1:1, at the relative offset frozen when CTRL went
+def test_clone_shift_moves_source_relative(page, server):
+    # SHIFT gesture: with a source S set, holding SHIFT makes the source
+    # follow the cursor 1:1, at the relative offset frozen when SHIFT went
     # down. Strokes pressed during the gesture use the moved source, and
-    # the source reverts to S when CTRL is released (after the stroke).
+    # the source reverts to S when SHIFT is released (after the stroke).
     base, _ = server
     _open(page, base)
     _two_band(base)
     page.evaluate("viewRefresh()")
     page.wait_for_function("document.getElementById('canvas').hidden === false")
     page.keyboard.press("c")
-    dot(page, 30, 75, shift=True)  # source S
+    dot(page, 30, 75, ctrl=True)  # source S
 
     page.mouse.move(*screen_pos(page, 140, 75))
-    page.keyboard.down("Control")
+    page.keyboard.down("Shift")
     assert page.evaluate("view.cloneGesture") == pytest.approx([-110, 0])
     # moving the cursor moves the source 1:1 with it
     page.mouse.move(*screen_pos(page, 150, 75))
@@ -836,7 +838,7 @@ def test_clone_ctrl_moves_source_relative(page, server):
     page.mouse.move(*screen_pos(page, 170, 75), steps=5)
     assert _screen_px(page, 160, 75) == list(LEFT), "live preview (moved source)"
     page.mouse.up()
-    # CTRL still held: the gesture continues; the next click stamps at the
+    # SHIFT still held: the gesture continues; the next click stamps at the
     # same relative offset: (180..190) <- (70..80) LEFT
     page.mouse.move(*screen_pos(page, 180, 75))
     assert page.evaluate("cloneSourcePoint()") == pytest.approx([70, 75], abs=0.5)
@@ -844,16 +846,16 @@ def test_clone_ctrl_moves_source_relative(page, server):
     page.mouse.move(*screen_pos(page, 190, 75), steps=3)
     page.mouse.up()
     page.evaluate("forceSync()")  # push the local commits to the store
-    # releasing CTRL reverts the source to the picked S
-    page.keyboard.up("Control")
+    # releasing SHIFT reverts the source to the picked S
+    page.keyboard.up("Shift")
     assert page.evaluate("view.cloneGesture") is None
     assert page.evaluate("cloneSourcePoint()") == pytest.approx([30, 75], abs=0.5)
     assert canvas_px(base, 160, 75) == LEFT
     assert canvas_px(base, 180, 75) == LEFT
 
 
-def test_clone_ctrl_release_mid_stroke_reverts_after(page, server):
-    # releasing CTRL during a clone stroke only takes effect after the
+def test_clone_shift_release_mid_stroke_reverts_after(page, server):
+    # releasing SHIFT during a clone stroke only takes effect after the
     # stroke ends: the source reverts at mouseup, not mid-stroke
     base, _ = server
     _open(page, base)
@@ -861,13 +863,13 @@ def test_clone_ctrl_release_mid_stroke_reverts_after(page, server):
     page.evaluate("viewRefresh()")
     page.wait_for_function("document.getElementById('canvas').hidden === false")
     page.keyboard.press("c")
-    dot(page, 30, 75, shift=True)
+    dot(page, 30, 75, ctrl=True)
     page.mouse.move(*screen_pos(page, 140, 75))
-    page.keyboard.down("Control")
+    page.keyboard.down("Shift")
     page.mouse.move(*screen_pos(page, 150, 75))
     page.mouse.down()
     page.mouse.move(*screen_pos(page, 170, 75), steps=5)
-    page.keyboard.up("Control")  # mid-stroke
+    page.keyboard.up("Shift")  # mid-stroke
     assert page.evaluate("view.cloneGesture") is not None
     assert _screen_px(page, 160, 75) == list(LEFT)
     page.mouse.up()
@@ -875,7 +877,7 @@ def test_clone_ctrl_release_mid_stroke_reverts_after(page, server):
     assert page.evaluate("cloneSourcePoint()") == pytest.approx([30, 75], abs=0.5)
 
 
-def test_clone_ctrl_without_source_is_inert(page, server):
+def test_clone_shift_without_source_is_inert(page, server):
     base, _ = server
     _open(page, base)
     _two_band(base)
@@ -883,15 +885,15 @@ def test_clone_ctrl_without_source_is_inert(page, server):
     page.wait_for_function("document.getElementById('canvas').hidden === false")
     page.keyboard.press("c")
     page.mouse.move(*screen_pos(page, 100, 75))
-    page.keyboard.down("Control")
+    page.keyboard.down("Shift")
     page.mouse.move(*screen_pos(page, 120, 75))
     assert page.evaluate("view.cloneGesture") is None
     assert page.evaluate("view.cloneSource") is None
-    page.keyboard.up("Control")
+    page.keyboard.up("Shift")
 
 
-def test_clone_shift_click_reanchors_ctrl_gesture(page, server):
-    # shift-clicking during the gesture re-picks S and lands the moved
+def test_clone_ctrl_click_reanchors_shift_gesture(page, server):
+    # ctrl-clicking during the SHIFT gesture re-picks S and lands the moved
     # source on it (the relative offset resets to zero)
     base, _ = server
     _open(page, base)
@@ -899,13 +901,13 @@ def test_clone_shift_click_reanchors_ctrl_gesture(page, server):
     page.evaluate("viewRefresh()")
     page.wait_for_function("document.getElementById('canvas').hidden === false")
     page.keyboard.press("c")
-    dot(page, 30, 75, shift=True)
+    dot(page, 30, 75, ctrl=True)
     page.mouse.move(*screen_pos(page, 140, 75))
-    page.keyboard.down("Control")
-    dot(page, 40, 75, shift=True)  # new S, cursor on it
+    page.keyboard.down("Shift")
+    dot(page, 40, 75, ctrl=True)  # new S, cursor on it
     assert page.evaluate("view.cloneSource") == pytest.approx([40, 75], abs=0.5)
     assert page.evaluate("cloneSourcePoint()") == pytest.approx([40, 75], abs=0.5)
-    page.keyboard.up("Control")
+    page.keyboard.up("Shift")
 
 
 # ---------------- smudge tool ----------------
@@ -1024,7 +1026,7 @@ def test_smudge_state_persists_across_reload(page, server):
     _show(page, base)
 
     page.keyboard.press("s")  # smudge tool
-    set_input(page, "#brush-size", "0.342")  # 32 px (log scale)
+    set_input(page, "#brush-size", "0.2973")  # 32 px (log scale, 10..500)
     set_input(page, "#brush-opacity", "0.4")
     # the ui-state save is debounced: make sure it lands before reloading
     wait_until(lambda: (_saved_tools(root) or {}).get("smudge", {}).get("size") == 32)
@@ -1045,7 +1047,7 @@ def test_tool_state_persists_across_reload(page, server):
     _show(page, base)
 
     page.keyboard.press("m")  # mask tool
-    set_input(page, "#brush-size", "0.342")  # 32 px (log scale)
+    set_input(page, "#brush-size", "0.2973")  # 32 px (log scale, 10..500)
     set_input(page, "#brush-opacity", "0.4")
     set_input(page, "#brush-color", "#00ff00")  # remembered by the brush tool
     # the ui-state save is debounced: make sure it lands before reloading
@@ -1247,7 +1249,7 @@ def test_inpaint_source_thumbnail(page, server):
         f"centre after source restore: {canvas_px(base, 100, 75)}"
 
 
-def test_inpaint_without_mask_shows_server_error(page, server):
+def test_inpaint_without_mask_disables_generate(page, server):
     base, root = server
     _open(page, base)
     _show(page, base, 200, 150)
@@ -1255,14 +1257,22 @@ def test_inpaint_without_mask_shows_server_error(page, server):
     dot(page, 100, 75)
     assert wait_until(lambda: canvas_px(base, 100, 75) != BG)
 
-    # inpaint masked without a mask: the server rejects, and the message
-    # (not a bare status code) shows up in the status line
+    # inpaint masked without a mask is a server-side no-op ("mask is empty"),
+    # so the client keeps the Generate button off until a mask exists (the
+    # server-side message itself is covered by tests/integration)
     page.select_option("#mode", "inpaint_masked")
+    assert page.evaluate("document.getElementById('btn-generate').disabled")
+
+    # painting a mask re-enables the button and the job starts
+    page.keyboard.press("m")
+    dot(page, 100, 75)
+    assert wait_until(
+        lambda: mask_arr(base) is not None and mask_arr(base)[75, 100] == 255)
+    assert wait_until(
+        lambda: not page.evaluate(
+            "document.getElementById('btn-generate').disabled"))
     page.click("#btn-generate")
-    page.wait_for_function(
-        "document.getElementById('status-line').textContent.includes('mask is empty')",
-        timeout=15000,
-    )
+    assert wait_until(lambda: page.evaluate("state.job") is not None)
 
 
 def test_progress_bar_reserves_space(page, server):
@@ -1505,10 +1515,10 @@ def test_ctrl_wheel_changes_brush_size(page, server):
     assert page.evaluate("view.scale") == pytest.approx(scale_before)
     _wheel(page, delta_y=-120)
     assert page.evaluate("view.scale") > scale_before
-    # size is clamped to the slider range (10..300)
+    # size is clamped to the slider range (10..500)
     for _ in range(200):
         _wheel(page, delta_y=-120, ctrl=True)
-    assert page.evaluate("Tools.get().size") == 300
+    assert page.evaluate("Tools.get().size") == 500
     for _ in range(200):
         _wheel(page, delta_y=120, ctrl=True)
     assert page.evaluate("Tools.get().size") == 10

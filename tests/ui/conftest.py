@@ -185,7 +185,7 @@ def screen_pos(page, x: float, y: float) -> tuple[float, float]:
     )
 
 
-def stroke(page, pts, shift: bool = False, button: str = "left"):
+def stroke(page, pts, shift: bool = False, ctrl: bool = False, button: str = "left"):
     """Pointer stroke through canvas-pixel points.
 
     The client commits strokes locally (no round trip), so the helper ends
@@ -196,19 +196,23 @@ def stroke(page, pts, shift: bool = False, button: str = "left"):
     page.mouse.move(sx, sy)
     if shift:
         page.keyboard.down("Shift")
+    if ctrl:
+        page.keyboard.down("Control")
     page.mouse.down(button=button)
     for p in pts[1:]:
         sx, sy = screen_pos(page, *p)
         page.mouse.move(sx, sy, steps=5)
     page.mouse.up(button=button)
+    if ctrl:
+        page.keyboard.up("Control")
     if shift:
         page.keyboard.up("Shift")
     page.evaluate("forceSync()")
 
 
-def dot(page, x: float, y: float, shift: bool = False):
+def dot(page, x: float, y: float, shift: bool = False, ctrl: bool = False):
     """A single-point stroke (one stamp)."""
-    stroke(page, [[x, y]], shift=shift)
+    stroke(page, [[x, y]], shift=shift, ctrl=ctrl)
 
 
 def set_input(page, selector: str, value):
