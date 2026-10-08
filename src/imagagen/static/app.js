@@ -2533,6 +2533,21 @@ document.addEventListener("keyup", (e) => {
   if (e.key === "Shift") cloneGestureEnd();
 });
 
+// Highlight the canvas border with the focus color while the tool hotkeys
+// are live — i.e. no input/select/textarea has focus (the exact condition
+// the hotkey handlers above check). The hover preview overlay mimics the
+// canvas border, so it gets the same class.
+const syncHotkeyBorder = () => {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
+  for (const id of ["canvas", "thumb-preview"])
+    $(id).classList.toggle("hotkeys", !typing);
+};
+// focusout fires before activeElement moves to the next field, so re-check
+// after the focus machinery settled
+for (const ev of ["focusin", "focusout"])
+  document.addEventListener(ev, () => requestAnimationFrame(syncHotkeyBorder));
+syncHotkeyBorder();
+
 // -------- sidebar resize: drag the border between the sidebar and stage --------
 const SIDEBAR_MIN_W = 280;
 const SIDEBAR_MAX_W = 800;

@@ -487,6 +487,7 @@ button.danger:hover { background: #a33; }
 }
 #thumb-preview[hidden] { display: none; }
 #thumb-preview.on { opacity: 1; }
+#thumb-preview.hotkeys { border-color: #777; } /* hotkeys live: match canvas */
 #thumb-preview img {
   /* zoom-to-fit: scaled (up or down) to touch the canvas rect's edges,
      aspect preserved, never cropped */
@@ -503,6 +504,8 @@ button.danger:hover { background: #a33; }
   touch-action: none; /* pointer events, not scrolling, on the canvas */
   cursor: crosshair;
 }
+/* tool hotkeys are live (no input/select focused): focus-color border */
+#canvas.hotkeys { border-color: #777; }
 
 /* ---------------- dialogs (model configs, presets) ---------------- */
 /* covers the whole UI until the websocket is connected (visible from the
