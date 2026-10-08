@@ -164,7 +164,7 @@
         <span class="sep"></span>
         <button id="tool-crop" class="tool mini" title="crop tool (P); drag a rectangle to crop the displayed image (Esc while dragging aborts); with a floating selection active it crops that selection">Cro<u>p</u></button>
         <button id="tool-copy" class="tool mini" title="copy tool (C); drag a rectangle to copy that area of the image (Esc while dragging aborts)"><u>C</u>opy</button>
-        <button id="tool-paste" class="tool mini" title="paste tool (V); click to drop the copied area as a floating selection, then drag its handles; Enter applies it, Esc discards it" disabled>Paste</button>
+        <button id="tool-paste" class="tool mini" title="paste tool (V); click to drop the copied area as a floating selection; while one is active, drag inside it to move it and click outside it to drop a new one (Enter applies, Esc discards)" disabled>Paste</button>
         <span class="sep"></span>
         <button id="zoom-in" class="mini icon" title="zoom in (also: mouse wheel)">+</button>
         <button id="zoom-out" class="mini icon" title="zoom out">−</button>
@@ -179,8 +179,8 @@
         <div id="thumb-preview" hidden><img id="thumb-preview-img" alt="" draggable="false"></div>
         <div id="canvas-empty" class="muted">empty — generate or drop a PNG here (or onto the prompt fields to import its metadata)</div>
         <div id="sel-actions" hidden>
-          <button id="sel-ok" class="mini" title="apply the floating selection to the image (Enter)">✓ Apply</button>
-          <button id="sel-cancel" class="mini" title="discard the floating selection (Esc)">✕ Cancel</button>
+          <button id="sel-ok" class="mini" title="apply the floating selection to the image (Enter)">✓<span class="sel-word"> Apply</span></button>
+          <button id="sel-cancel" class="mini" title="discard the floating selection (Esc)">✕<span class="sel-word"> Cancel</span></button>
         </div>
       </div>
     </main>

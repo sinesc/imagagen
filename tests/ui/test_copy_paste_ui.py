@@ -134,16 +134,41 @@ def test_paste_drop_is_an_overlay_until_applied(page, server):
     assert sel["sw"] == 40 and sel["sh"] == 40
     # centred on the click
     assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [150, 100]
-    # the apply / discard pair is there, centred on the selection
-    assert page.is_visible("#sel-actions")
+    # the apply / discard pair is there, flanking the selection's centre
+    # (#sel-actions itself is a zero-size anchor, so check the buttons)
+    assert page.is_visible("#sel-ok") and page.is_visible("#sel-cancel")
+
+    # the labels must not wrap: the buttons shrink-to-fit inside a ZERO-size
+    # anchor, so without white-space: nowrap the text breaks after the glyph
+    # and overflows the button box (checked with the labels visible)
+    fits = lambda: page.evaluate(
+        "(() => ['sel-ok', 'sel-cancel'].map((id) => {"
+        " const e = document.getElementById(id);"
+        " return [e.scrollWidth <= e.clientWidth, e.scrollHeight <= e.clientHeight]; }))()"
+    )
+
+    # the pair drops its labels when it would cover the selection's handles
+    # (a 40 px selection at this zoom), and shows them on a wide one
+    word_display = lambda: page.evaluate(
+        "getComputedStyle(document.querySelector('#sel-ok .sel-word')).display"
+    )
+    assert page.evaluate("document.getElementById('sel-actions').classList.contains('compact')")
+    assert word_display() == "none"
+    page.evaluate("view.sel.sw = 300; viewRedraw()")
+    assert not page.evaluate("document.getElementById('sel-actions').classList.contains('compact')")
+    assert word_display() != "none"
+    assert fits() == [[True, True], [True, True]]
+    page.evaluate("view.sel.sw = 40; viewRedraw()")
+    assert fits() == [[True, True], [True, True]]
 
     # the drop is an overlay only: the server's canvas is untouched
     page.evaluate("forceSync()")
     assert canvas_px(base, 150, 100) == BG
 
-    # Apply composites it (with one draw-undo step)
+    # Apply composites it (with one draw-undo step) and leaves paste mode
     page.click("#sel-ok")
     assert wait_until(lambda: page.evaluate("view.sel") is None)  # async: snapshot first
+    assert page.evaluate("Tools.current") == "copy"
     page.evaluate("forceSync()")
     assert wait_until(lambda: canvas_px(base, 150, 100) == PATCH)
     assert _canvas_size(base) == (200, 150)
@@ -161,7 +186,7 @@ def test_paste_cancel_discards(page, server):
 
     page.click("#sel-cancel")
     assert page.evaluate("view.sel") is None
-    assert page.is_hidden("#sel-actions")
+    assert page.is_hidden("#sel-ok")
     page.evaluate("forceSync()")
     assert canvas_px(base, 150, 100) == BG
 
@@ -385,6 +410,67 @@ def test_erase_preview_is_live(page, server):
     assert screen_rgb(94, 66) == list(BG)  # the commit matches the preview
 
 
+def test_paste_mode_moves_the_selection_and_cursors(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base)
+    _paste(page, 100, 75)  # 40x40 at (80..120, 55..95)
+
+    cursor = lambda: page.evaluate("document.getElementById('canvas').style.cursor")
+
+    # in paste mode the body is draggable: the cursor says move
+    page.mouse.move(*screen_pos(page, 90, 65))
+    assert cursor() == "move"
+
+    # dragging it MOVES the selection instead of dropping a new copy
+    page.mouse.move(*screen_pos(page, 100, 75))  # its centre
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 110, 85), steps=3)
+    assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [110, 85]
+    page.mouse.move(*screen_pos(page, 120, 95), steps=3)
+    page.mouse.up()
+    assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [120, 95]
+    assert _sel_state(page)["sw"] == 40  # same selection, just moved
+
+    # handle cursors, on the moved selection (100..140, 75..115)
+    for x, y, want in [
+        (140, 95, "ew-resize"),  # right edge
+        (100, 95, "ew-resize"),  # left edge
+        (120, 75, "ns-resize"),  # top edge
+        (120, 115, "ns-resize"),  # bottom edge
+        (100, 75, "grabbing"),  # top-left corner (rotate)
+        (140, 115, "grabbing"),  # bottom-right corner (rotate)
+        (140, 75, "nesw-resize"),  # top-right corner (aspect scale)
+        (100, 115, "nesw-resize"),  # bottom-left corner (aspect scale)
+    ]:
+        page.mouse.move(*screen_pos(page, x, y))
+        assert cursor() == want, f"({x},{y})"
+
+    # the "move" cursor is limited to the selection's body: outside it the
+    # canvas keeps its default cursor (the point stays clear of the apply /
+    # discard pair, which covers a band across the selection's middle)
+    page.mouse.move(*screen_pos(page, 170, 130))
+    assert cursor() == ""
+    page.mouse.move(*screen_pos(page, 105, 110))  # inside, off the buttons
+    assert cursor() == "move"
+    # leaving paste mode drops it back to the CSS default (crosshair)
+    page.keyboard.press("d")
+    assert cursor() == ""
+
+    # and the move drag keeps working with the paste tool re-armed: inside
+    # the selection a drag moves it, a click OUTSIDE it drops a new copy
+    page.keyboard.press("v")
+    page.mouse.move(*screen_pos(page, 120, 95))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 130, 95), steps=3)
+    page.mouse.up()
+    assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [130, 95]
+
+    page.mouse.click(*screen_pos(page, 160, 120))
+    assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [160, 120]
+
+
 def test_selection_survives_tool_switch_and_dies_with_the_view(page, server):
     base, _ = server
     _open(page, base)
@@ -402,5 +488,5 @@ def test_selection_survives_tool_switch_and_dies_with_the_view(page, server):
     page.evaluate("viewRefresh()")
     page.wait_for_function("document.getElementById('canvas').hidden === false")
     assert page.evaluate("view.sel") is None
-    assert page.is_hidden("#sel-actions")
+    assert page.is_hidden("#sel-ok")
     assert page.evaluate("view.clip") is not None

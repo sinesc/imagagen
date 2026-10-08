@@ -50,3 +50,20 @@ Ok/Cancel buttons in the middle of the floating selection.
   The image keeps its own resolution while dragging (stretched preview) and is resampled once
   at Apply. Min 8 px, max 8192 px per side.
 - Hotkeys: Clone moves from C to O, Copy takes C, Paste is V; Ctrl+C / Ctrl+V are aliases.
+
+## Follow-up changes (after the first implementation)
+
+- Apply ends paste mode: it switches the toolbar to the Copy tool, so users cannot get stuck in
+  paste mode.
+- Paste mode with an active selection: dragging INSIDE the selection moves it (a click outside it
+  drops a new copy). The cursor is `move` only inside the selection.
+- Handle cursors: `ns-resize` (top/bottom edge), `ew-resize` (left/right edge), `nesw-resize`
+  (TR/BL aspect corners), `grabbing` (TL/BR rotate corners).
+- The Apply/Cancel pair is a zero-size anchor point at the selection centre with the buttons
+  flanking it (a flex row shifts the gap off-centre once the labels differ in width, which made
+  the centre unclickable/unpaintable); compact height to cover as little of the image as possible.
+- The Apply/Cancel labels must not wrap (`white-space: nowrap`: the buttons shrink-to-fit inside
+  the zero-size anchor, whose available width is 0). With the labels on one line the pair is wide,
+  so on a small selection it would cover the edge/corner handles — `syncSelActions()` measures the
+  fit and toggles `.compact`, which hides the labels (the glyphs stay, Enter/Esc and the tooltips
+  carry the meaning).

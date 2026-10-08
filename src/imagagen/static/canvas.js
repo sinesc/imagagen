@@ -133,6 +133,7 @@ function viewRedraw() {
   drawCursor(ctx);
   drawCloneCrosshairs(ctx);
   syncSelActions(); // the apply / discard pair follows the selection
+  syncCanvasCursor(); // hovering a handle changes the cursor
   $("zoom-label").textContent = `${Math.round(view.scale * 100)}%`;
 }
 
@@ -1512,21 +1513,71 @@ function selHandles(s) {
 }
 
 // grab a handle: the pointer must land within a screen-constant radius of it
-function startSelDrag(p) {
+function hitSelHandle(p) {
   const s = view.sel;
   const q = selCentred(p);
-  const tol = Math.max(8 / view.scale, 7 / view.scale);
+  const tol = 8 / view.scale;
   let best = null, bestD = 1 / 0;
   for (const h of selHandles(s)) {
     const d = Math.hypot(q[0] - h.x, q[1] - h.y);
     if (d <= tol && d < bestD) { best = h; bestD = d; }
   }
+  return best;
+}
+
+// the cursor a handle asks for: the direction it drags along (the rot
+// corners turn the selection, so they get the grabbing hand)
+function selHandleCursor(h) {
+  if (h.kind === "edge") return h.edge === "l" || h.edge === "r" ? "ew-resize" : "ns-resize";
+  return h.kind === "rot" ? "grabbing" : "nesw-resize";
+}
+
+// is the point inside the selection's rect (its own frame)?
+function selContains(p) {
+  const q = selCentred(p);
+  return Math.abs(q[0]) <= view.sel.sw / 2 && Math.abs(q[1]) <= view.sel.sh / 2;
+}
+
+// the canvas cursor: handle cursors while hovering / dragging one, the move
+// cursor over the body of an active selection in paste mode, else the CSS
+// default (crosshair)
+function syncCanvasCursor() {
+  const c = cv();
+  let cur = "";
+  if (view.selDrag) {
+    const d = view.selDrag;
+    cur = d.kind === "move" ? "move" : selHandleCursor(d);
+  } else if (view.sel && view.cursor) {
+    const p = [(view.cursor[0] - view.ox) / view.scale,
+               (view.cursor[1] - view.oy) / view.scale];
+    const h = hitSelHandle(p);
+    if (h) cur = selHandleCursor(h);
+    else if (Tools.current === "paste" && selContains(p)) cur = "move";
+  }
+  if (c.style.cursor !== cur) c.style.cursor = cur;
+}
+
+function startSelDrag(p) {
+  const s = view.sel;
+  const best = hitSelHandle(p);
   if (!best) return false;
   const d = { kind: best.kind, F: { cx: s.cx, cy: s.cy, angle: s.angle, sw: s.sw, sh: s.sh } };
   if (d.kind === "rot") d.base = Math.atan2(best.y, best.x); // corner's own direction
   if (d.kind === "edge") d.edge = best.edge;
   if (d.kind === "scale") d.corner = best.corner;
   view.selDrag = d;
+  return true;
+}
+
+// paste tool with an active selection: dragging the body MOVES the selection
+// (a click no longer drops a new copy -- Apply / Cancel first for that)
+function startSelMove(p) {
+  const s = view.sel;
+  view.selDrag = {
+    kind: "move",
+    F: { cx: s.cx, cy: s.cy, angle: s.angle, sw: s.sw, sh: s.sh },
+    p0: [p[0], p[1]],
+  };
   return true;
 }
 
@@ -1538,6 +1589,11 @@ function applySelDrag(p) {
   const d = view.selDrag, F = d.F, s = view.sel;
   const q = frameLocal(F, p);
   const ca = Math.cos(F.angle), sa = Math.sin(F.angle);
+  if (d.kind === "move") {
+    s.cx = F.cx + (p[0] - d.p0[0]);
+    s.cy = F.cy + (p[1] - d.p0[1]);
+    return;
+  }
   if (d.kind === "rot") {
     s.angle = Math.atan2(p[1] - F.cy, p[0] - F.cx) - d.base;
     return;
@@ -1713,7 +1769,9 @@ function cropSelection(r) {
 }
 
 // Apply: composite the selection (stretched + rotated, resampled once) onto
-// the committed image with its per-pixel alpha, as ONE draw-undo step
+// the committed image with its per-pixel alpha, as ONE draw-undo step, and
+// leave paste mode (the copy tool: staying in paste mode leaves users
+// staring at a canvas that drops a new copy on the next click)
 async function commitSelection() {
   const s = view.sel;
   if (!s) return;
@@ -1732,6 +1790,7 @@ async function commitSelection() {
   pushUndo("draw", snap);
   markDirty();
   syncUndoButtons(); // app.js
+  if (Tools.current === "paste") switchTool("copy"); // app.js
   viewRedraw();
   setStatus("applied the floating selection");
 }
@@ -1760,6 +1819,13 @@ function syncSelActions() {
   el.hidden = false;
   el.style.left = `${c.left - holder.left + view.ox + view.sel.cx * view.scale}px`;
   el.style.top = `${c.top - holder.top + view.oy + view.sel.cy * view.scale}px`;
+  // the labels only stay while the pair fits inside the selection's on-screen
+  // width: the pair sits ON the selection, so a wider pair would cover its
+  // edge / corner handles (the 12 px are the 2 x 0.35rem gap flanking the
+  // anchor point)
+  el.classList.remove("compact");
+  const pair = el.children[0].offsetWidth + el.children[1].offsetWidth + 12;
+  el.classList.toggle("compact", pair > 0.9 * view.sel.sw * view.scale);
 }
 
 // ---------------- crop tool ----------------
@@ -1844,13 +1910,22 @@ function setupCanvasInput() {
     if (e.button !== 0) return;
     const tool = Tools.current;
     const p = canvasPoint(e);
-    // a floating selection is active: its handles grab the pointer first
+    // a floating selection is active: its handles grab the pointer first,
+    // then (in paste mode) the body moves the selection
     if (view.sel && startSelDrag(p)) {
       c.setPointerCapture(e.pointerId);
       viewRedraw();
       return;
     }
     if (tool === "paste") {
+      // inside the active selection a drag MOVES it; outside it the click
+      // drops a new copy (Apply / Cancel first to replace the old one)
+      if (view.sel && selContains(p)) {
+        startSelMove(p);
+        c.setPointerCapture(e.pointerId);
+        viewRedraw();
+        return;
+      }
       pasteAt(p); // drop the copied area as a floating selection
       return;
     }

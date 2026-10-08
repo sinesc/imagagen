@@ -507,19 +507,35 @@ button.danger:hover { background: #a33; }
 
 /* floating selection (copy/paste): the apply / discard pair, centred on the
    selection's middle by JS (canvas.js syncSelActions, same holder-relative
-   anchoring as #thumb-preview) */
+   anchoring as #thumb-preview). The container is a ZERO-SIZE anchor point and
+   the buttons flank it, so the pair is symmetric around the centre and the
+   centre itself stays paintable (a flex row would shift the gap off-centre
+   as soon as the two labels differ in width) */
 #sel-actions {
   position: absolute;
-  transform: translate(-50%, -50%);
-  display: flex;
-  gap: 0.35rem;
+  width: 0;
+  height: 0;
   z-index: 3;
-  /* the pair sits ON the image, so only the buttons may eat pointer events:
-     the selection itself has to stay paintable underneath it */
-  pointer-events: none;
+  pointer-events: none; /* the pair sits ON the image, so only the buttons */
 }
-#sel-actions button { pointer-events: auto; }
+#sel-actions button {
+  position: absolute;
+  top: 0;
+  transform: translateY(-50%); /* straddle the anchor point vertically */
+  pointer-events: auto; /* may eat pointer events, the selection not */
+  height: 1.5rem; /* compact: the pair covers as little of the image as */
+  padding: 0.1rem 0.4rem; /* possible, it sits right on top of it */
+  /* shrink-to-fit inside the ZERO-size anchor would wrap the label (the
+     available width is 0), so the text must never wrap */
+  white-space: nowrap;
+}
+#sel-actions #sel-ok { right: 0.35rem; }
+#sel-actions #sel-cancel { left: 0.35rem; }
 #sel-actions[hidden] { display: none; }
+/* the labels only fit on a selection that is wide enough on screen; the pair
+   sits ON the selection, so a wide pair would cover its edge / corner handles
+   -- then only the glyphs stay (canvas.js syncSelActions measures the fit) */
+#sel-actions.compact .sel-word { display: none; }
 
 /* ---------------- dialogs (model configs, presets) ---------------- */
 /* covers the whole UI until the websocket is connected (visible from the
