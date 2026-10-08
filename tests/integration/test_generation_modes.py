@@ -626,15 +626,17 @@ def test_auto_size_sentinel_requires_inpaint(client):
 def test_auto_size_sentinel_and_oversample(client):
     _set_canvas(client, 128, 128, 99)
     _mask_dot(client, 40, 40, size=16)  # mask bbox 16x16
-    # -1/-1: mask bbox (16) rounded up to 16, clamped to the 64px minimum
+    # -1/-1: mask bbox (16) rounded up to 16, clamped to 64, then boosted
+    # to the 1024 min side (auto-computed sizes only)
     with client.websocket_connect("/api/ws") as ws:
         job = _generate(client, ws, mode="inpaint_masked", width=-1,
                         height=-1, mask_padding=0)
     r = client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
     assert r.status_code == 200
     meta = _canvas_meta(client)
-    assert (meta["width"], meta["height"]) == (64, 64)
-    # oversample scales the user-specified size before the 16-round-up
+    assert (meta["width"], meta["height"]) == (1024, 1024)
+    # oversample scales the user-specified size before the 16-round-up;
+    # user sizes get NO min-side boost
     with client.websocket_connect("/api/ws") as ws:
         job2 = _generate(client, ws, mode="inpaint_masked", width=64,
                          height=64, mask_padding=0, oversample=2.0)

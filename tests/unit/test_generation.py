@@ -219,14 +219,16 @@ def test_inpaint_masked_requires_mask():
 
 
 def test_auto_size_sentinel_uses_mask_bbox():
-    # -1 resolves from the mask bbox, rounded UP to a multiple of 16
+    # -1 resolves from the mask bbox, rounded UP to a multiple of 16, then
+    # the short side is boosted to 1024 (AR preserved)
     c = _canvas(128, 128)
     m = np.zeros((128, 128), dtype=np.uint8)
     m[20:120, 10:61] = 255  # bbox 51x100 (w x h)
     c.set_mask(m)
     req = GenerateRequest(prompt="x", width=-1, height=-1)
     with_inpaint(req, "inpaint_masked", c, 1.0, padding=0)
-    assert (req.width, req.height) == (64, 112)  # ceil51/16, ceil100/16
+    # ceil51/16=64, ceil100/16=112 -> short side 64 -> x16 -> 1024x1792
+    assert (req.width, req.height) == (1024, 1792)
 
 
 def test_auto_size_sentinel_needs_mask():
@@ -236,7 +238,8 @@ def test_auto_size_sentinel_needs_mask():
 
 
 def test_oversample_scales_and_rounds_dims():
-    # user-specified dims are scaled by oversample, then rounded up to 16
+    # user-specified dims are scaled by oversample, rounded up to 16, then
+    # the min-side rule boosts them to 1024
     c = _canvas(128, 128)
     m = np.zeros((128, 128), dtype=np.uint8)
     m[10:20, 10:20] = 255
@@ -244,12 +247,22 @@ def test_oversample_scales_and_rounds_dims():
     req = GenerateRequest(prompt="x", width=100, height=100)
     plan = with_inpaint(req, "inpaint_masked", c, 1.0, padding=0,
                         oversample=1.25)
-    assert (req.width, req.height) == (128, 128)  # 100*1.25 = 125 -> 128
+    # user-specified dims: 100*1.25 = 125 -> 128, NO min-side boost
+    assert (req.width, req.height) == (128, 128)
     assert plan.requested_size == (128, 128)
     # the sentinel path scales too: bbox 10x10 * 2.4 = 24 -> 32 -> clamp 64
+    # -> min-side boost
     req2 = GenerateRequest(prompt="x", width=-1, height=-1)
     with_inpaint(req2, "inpaint_masked", c, 1.0, padding=0, oversample=2.4)
-    assert (req2.width, req2.height) == (64, 64)
+    assert (req2.width, req2.height) == (1024, 1024)
+    # a wide mask box keeps its aspect ratio through the boost
+    m2 = np.zeros((128, 128), dtype=np.uint8)
+    m2[60:68, 10:120] = 255  # bbox 110x8
+    c.set_mask(m2)
+    req3 = GenerateRequest(prompt="x", width=-1, height=-1)
+    with_inpaint(req3, "inpaint_masked", c, 1.0, padding=0)
+    # 112x16 (h clamped to 64) -> short 64 -> x16 -> 1792x1024
+    assert (req3.width, req3.height) == (1792, 1024)
 
 
 def test_inpaint_masked_populates_request():

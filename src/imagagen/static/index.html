@@ -58,10 +58,10 @@
         </label>
       </div>
       <div class="row dims-row">
-        <label class="dims" title="-1 = auto: mask bounding box, scaled by Oversample and rounded up to a multiple of 16 (Inpaint/Outpaint only)">Width <input id="width" type="number" value="1024" min="-1" max="4096" step="8"></label>
+        <label class="dims" title="-1 = auto: mask bounding box, scaled by Scale, rounded up to a multiple of 16 and raised to a 1024 min side (AR preserved; Inpaint/Outpaint only)">Width <input id="width" type="number" value="1024" min="-1" max="4096" step="8"></label>
         <button id="swap-dims" type="button" class="mini icon" title="swap width and height">↔</button>
-        <label class="dims" title="-1 = auto: mask bounding box, scaled by Oversample and rounded up to a multiple of 16 (Inpaint/Outpaint only)">Height <input id="height" type="number" value="1024" min="-1" max="4096" step="8"></label>
-        <label class="trio" title="scale the generation size (user-specified or mask-derived) before rounding up to a multiple of 16 (Inpaint/Outpaint only)">Oversample
+        <label class="dims" title="-1 = auto: mask bounding box, scaled by Scale, rounded up to a multiple of 16 and raised to a 1024 min side (AR preserved; Inpaint/Outpaint only)">Height <input id="height" type="number" value="1024" min="-1" max="4096" step="8"></label>
+        <label class="trio" title="scale the generation size (user-specified or mask-derived) before rounding up to a multiple of 16; auto-computed (-1) sizes are additionally raised to a 1024 min side with the other dimension scaled to keep the aspect ratio (Inpaint/Outpaint only)">Scale
           <input id="oversample" type="number" value="1" min="0.1" max="4" step="0.05" disabled>
         </label>
         <label class="trio" title="rotate the source before generating and counter-rotate the result: the model always sees upright content (+ = clockwise); ±45°/±135° extend the generation size so the rotated image fits">Rotate

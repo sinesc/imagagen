@@ -1481,7 +1481,7 @@ function openPresetDialog(existing, onClose = null, isClone = false) {
     ["mode", "Mode", "select", p.mode],
     ["denoise", "Denoise strength", "number", p.denoise],
     ["mask_padding", "Mask padding", "number", p.mask_padding],
-    ["oversample", "Oversample", "number", p.oversample],
+    ["oversample", "Scale", "number", p.oversample],
     ["loras", "LORAs", "loras", p.loras],
     ["soft_inpaint", "Soft inpainting", "bool", p.soft_inpaint],
   ];

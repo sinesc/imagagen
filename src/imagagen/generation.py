@@ -302,6 +302,28 @@ def _round16_up(px: float) -> int:
     return int(min(4096, max(64, math.ceil(px / 16) * 16)))
 
 
+#: inpaint generation keeps a minimum side length (the shorter dimension is
+#: boosted to it and the longer one scaled by the same factor, preserving
+#: the aspect ratio) — small mask boxes generate at the model's native size
+MIN_GEN_SIDE = 1024
+
+
+def _resolve_gen_size(w: int, h: int, oversample: float,
+                      auto: bool) -> tuple[int, int]:
+    """Inpaint generation size: scale by ``oversample`` and round UP to
+    multiples of 16. For AUTO-computed sizes (``auto``, the -1 sentinel)
+    the shorter side is then raised to ``MIN_GEN_SIDE`` with the longer
+    side scaled by the same factor, preserving the aspect ratio; user-
+    specified dimensions are used as-is."""
+    w, h = _round16_up(w * oversample), _round16_up(h * oversample)
+    if auto:
+        short = min(w, h)
+        if short < MIN_GEN_SIDE:
+            f = MIN_GEN_SIDE / short
+            w, h = _round16_up(w * f), _round16_up(h * f)
+    return w, h
+
+
 def with_inpaint(
     request: GenerateRequest,
     mode: str,
@@ -335,9 +357,10 @@ def with_inpaint(
     ``width``/``height`` == -1 on the request is the auto-size sentinel:
     the dimension is taken from the mask bounding box (display frame). In
     the inpaint modes every dimension (auto-computed or user-specified) is
-    scaled by ``oversample`` and rounded up to a multiple of 16 before the
-    mode-specific geometry runs, so the resolved size is what the plan and
-    the PNG metadata record."""
+    scaled by ``oversample`` and rounded up to a multiple of 16; auto-
+    computed sizes additionally get ``MIN_GEN_SIDE`` on the shorter side
+    (longer side scaled to keep the AR). The resolved size is what the
+    plan and the PNG metadata record."""
     if rotation not in ROTATIONS:
         raise GenerationError(f"invalid rotation {rotation!r}")
     if mode == "generate":
@@ -357,8 +380,10 @@ def with_inpaint(
     mask = canvas.mask
     # resolve the auto-size sentinel from the mask bbox (display frame,
     # before any rotation), then apply the oversample scale + 16-round-up
-    # to every dimension (user-specified ones included) — inpaint modes only
-    if request.width == -1 or request.height == -1:
+    # to every dimension (user-specified ones included); the 1024 min-side
+    # boost only applies to auto-computed sizes — inpaint modes only
+    auto = request.width == -1 or request.height == -1
+    if auto:
         if not (mask > 0).any():
             raise GenerationError("mask is empty")
         rows = np.where((mask > 0).any(axis=1))[0]
@@ -368,8 +393,8 @@ def with_inpaint(
             request.width = bw
         if request.height == -1:
             request.height = bh
-    request.width = _round16_up(request.width * oversample)
-    request.height = _round16_up(request.height * oversample)
+    request.width, request.height = _resolve_gen_size(
+        request.width, request.height, oversample, auto)
     work_image = rotate_canvas(image, rotation) if rotation else image
     work_mask = rotate_canvas(mask, rotation) if rotation else mask
 
