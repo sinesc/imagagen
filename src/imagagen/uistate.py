@@ -28,12 +28,12 @@ TOOL_NAMES = ("brush", "mask", "clone", "smudge", "crop")
 class ToolSettings(BaseModel):
     """What one tool remembers for the next time it is used.
 
-    Same limits as the toolbar UI: brush size clamped to 10-300 px,
+    Same limits as the toolbar UI: brush size clamped to 10-500 px,
     opacity slider 0.05-1. The colour applies to the brush tool only
     (mask strokes ignore it; clone/smudge/crop have none).
     """
 
-    size: int = Field(10, ge=10, le=300)
+    size: int = Field(10, ge=10, le=500)
     opacity: float = Field(1.0, ge=0.05, le=1.0)
     brush: str = "circle"  # shape name as listed by /api/brushes
     screen: bool = False  # size in screen px instead of canvas px

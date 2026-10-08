@@ -1622,7 +1622,7 @@ async function loadBrushes() {
 
 // Brush size bounds; keep in sync with ToolSettings.size in uistate.py
 const BRUSH_SIZE_MIN = 10;
-const BRUSH_SIZE_MAX = 300;
+const BRUSH_SIZE_MAX = 500;
 // log-scale size: slider 0..1 maps to BRUSH_SIZE_MIN..BRUSH_SIZE_MAX px
 const sizeFromSlider = (v) => BRUSH_SIZE_MIN * Math.pow(BRUSH_SIZE_MAX / BRUSH_SIZE_MIN, v);
 const sliderFromSize = (s) => Math.log(Math.max(s, BRUSH_SIZE_MIN) / BRUSH_SIZE_MIN) / Math.log(BRUSH_SIZE_MAX / BRUSH_SIZE_MIN);
