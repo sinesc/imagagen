@@ -31,7 +31,16 @@ const view = {
   cloneGesture: null, // [ox,oy] canvas px: SHIFT held -> the source follows
   // the cursor at this relative offset (a temporary move of the picked S)
   crop: null, // {sx, sy, ex, ey} raw canvas px of the crop tool's drag; the
-  // region used is its clamped intersection with the image (cropRect)
+  // region used is its clamped intersection with the image (cropRect). The
+  // copy tool drags the same rectangle (commitCrop dispatches on the tool)
+  clip: null, // the copied area: {img, w, h} -- img is an offscreen canvas
+  // (w x h, opaque) taken from view.base; paste drops it as a floating
+  // selection. In-memory only: it survives entity switches, not a reload
+  sel: null, // floating selection {img, sw, sh, cx, cy, angle}: img is the
+  // copied image (its own resolution), sw/sh the CURRENT display size (the
+  // image is stretched to fill it, resampled once at Apply), cx/cy its
+  // centre and angle its rotation, all in canvas px / radians
+  selDrag: null, // in-flight handle drag {kind, F: frame frozen at drag start}
   pan: null,
   cursor: null, // [mx,my] in CSS px relative to the canvas element
 };
@@ -101,6 +110,7 @@ function viewRedraw() {
   ctx.clearRect(0, 0, c.width, c.height);
   if (!view.has) {
     $("zoom-label").textContent = "";
+    syncSelActions(); // no canvas -> no selection overlay buttons
     return;
   }
   ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
@@ -116,11 +126,13 @@ function viewRedraw() {
   const s0 = view.stroke;
   const maskLayered = !!s0 && (s0.tool === "mask" || s0.tool === "smudge");
   if (view.mask && !maskLayered) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
-  if (view.stroke) drawStrokePreview(ctx, view.stroke);
+  if (view.stroke && !view.stroke.sel) drawStrokePreview(ctx, view.stroke);
   drawMaskOutline(ctx);
   if (view.crop) drawCropOverlay(ctx);
+  if (view.sel) drawSelectionOverlay(ctx);
   drawCursor(ctx);
   drawCloneCrosshairs(ctx);
+  syncSelActions(); // the apply / discard pair follows the selection
   $("zoom-label").textContent = `${Math.round(view.scale * 100)}%`;
 }
 
@@ -310,6 +322,12 @@ async function viewRefresh() {
     undoMask.push(pendingMaskUndo);
     pendingMaskUndo = null;
   }
+  // fresh server state replaces the canvas: a floating selection rides on the
+  // OLD image, so it is dropped with it (the copied area survives -- it is
+  // the client's own buffer, not canvas state)
+  view.sel = null;
+  view.selDrag = null;
+  view.crop = null;
   cancelSync();
   view.has = ri.ok;
   if (!view.has) {
@@ -700,25 +718,43 @@ function drawBrushRing(ctx, x, y) {
 // outline of the brush footprint at the cursor (pre-draw preview)
 function drawCursor(ctx) {
   if (!view.has || !view.cursor) return;
-  if (Tools.current === "crop") return; // the crop tool shows a rectangle, not a brush
-  if (Tools.current === "brush" && shiftDown)
-    return; // colour-picker mode: no brush preview under the mouse
-  const x = (view.cursor[0] - view.ox) / view.scale;
-  const y = (view.cursor[1] - view.oy) / view.scale;
-  drawBrushRing(ctx, x, y);
+  const tool = Tools.current;
+  if (tool === "crop" || tool === "copy") return; // these show a rectangle
+  if (tool === "paste") return drawPasteGhost(ctx);
+  if (tool === "brush" && ctrlDown) return; // colour-picker: no brush preview
+  const p = [(view.cursor[0] - view.ox) / view.scale,
+             (view.cursor[1] - view.oy) / view.scale];
+  if (selStrokeTool(tool)) {
+    // the stroke lands in the selection's own frame, so the footprint
+    // outline is drawn there too (it rotates with the selection)
+    const s = view.sel;
+    ctx.save();
+    ctx.translate(s.cx, s.cy);
+    ctx.rotate(s.angle);
+    const q = selCentred(p);
+    drawBrushRing(ctx, q[0], q[1]);
+    ctx.restore();
+    return;
+  }
+  drawBrushRing(ctx, p[0], p[1]);
 }
 
-// shift held: with the draw tool this is colour-picker mode (the brush
-// preview is hidden and a click picks the canvas colour at the cursor)
+// shift held: with a floating selection active the draw tool erases (see
+// drawStrokePreview); with the mask tool it is the mask eraser
 let shiftDown = false;
+// ctrl held: with the draw tool this is colour-picker mode (the brush preview
+// is hidden and a click picks the canvas colour at the cursor)
+let ctrlDown = false;
 document.addEventListener("keydown", (e) => {
   if (e.key === "Shift" && !shiftDown) { shiftDown = true; viewRedraw(); }
+  if (e.key === "Control" && !ctrlDown) { ctrlDown = true; viewRedraw(); }
 });
 document.addEventListener("keyup", (e) => {
   if (e.key === "Shift" && shiftDown) { shiftDown = false; viewRedraw(); }
+  if (e.key === "Control" && ctrlDown) { ctrlDown = false; viewRedraw(); }
 });
 
-// draw tool + shift held: pick the committed image's colour at the click as
+// draw tool + ctrl held: pick the committed image's colour at the click as
 // the brush tool's colour (not a stroke; no pointer capture either, so the
 // following pointerup has nothing to commit)
 function pickBrushColor(p) {
@@ -820,13 +856,13 @@ function cloneCursorSample() {
   return [x, y];
 }
 
-// the smudge preview's working image: a copy of the pre-stroke image at
-// canvas-px resolution, accumulated stamp by stamp (drawStrokePreview)
-function newSmudgeWork() {
+// the smudge preview's working image: a copy of the pre-stroke image at the
+// stroke's target resolution, accumulated stamp by stamp (drawStrokePreview)
+function newSmudgeWork(img, w, h) {
   const canvas = document.createElement("canvas");
-  canvas.width = view.w;
-  canvas.height = view.h;
-  canvas.getContext("2d").drawImage(view.base, 0, 0);
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(img, 0, 0);
   return { canvas };
 }
 
@@ -869,9 +905,9 @@ function coverageCtx(w, h) {
 function strokeMaxCoverage(s, pts, raw) {
   if (!raw) return null;
   const cov = s.cov || (s.cov = document.createElement("canvas"));
-  if (cov.width !== view.w || cov.height !== view.h) {
-    cov.width = view.w;
-    cov.height = view.h;
+  if (cov.width !== s.tw || cov.height !== s.th) {
+    cov.width = s.tw;
+    cov.height = s.th;
   }
   const covCtx = cov.getContext("2d", { willReadFrequently: true });
   const da = raw.alphaData.data;
@@ -880,8 +916,8 @@ function strokeMaxCoverage(s, pts, raw) {
     const y0 = Math.round(pts[i][1] - raw.height / 2);
     const rx = Math.max(0, x0);
     const ry = Math.max(0, y0);
-    const rw = Math.min(view.w, x0 + raw.width) - rx;
-    const rh = Math.min(view.h, y0 + raw.height) - ry;
+    const rw = Math.min(s.tw, x0 + raw.width) - rx;
+    const rh = Math.min(s.th, y0 + raw.height) - ry;
     if (rw <= 0 || rh <= 0) continue;
     const c = covCtx.getImageData(rx, ry, rw, rh);
     const cd = c.data;
@@ -1024,14 +1060,15 @@ function drawStrokePreview(ctx, s) {
     // from scratch) -- see smudgeAccumulate
     smudgeAccumulate(s, st, pts, raw, r);
     // blit the working image; the mask overlay goes on top of it so the
-    // stack matches the base rendering (image, then mask)
+    // stack matches the base rendering (image, then mask). A stroke on a
+    // floating selection has no mask layer (the mask belongs to the canvas)
     ctx.globalAlpha = 1;
     ctx.drawImage(s.work.canvas, 0, 0);
-    if (view.mask) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
+    if (view.mask && !s.sel) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
     return;
   }
   if (s.tool === "clone") {
-    // live clone preview: paint the pre-stroke image (view.base) translated
+    // live clone preview: paint the pre-stroke image (s.img) translated
     // by the frozen offset, masked by the UNION of the stamp footprints,
     // in ONE composite so the opacity applies to the stroke as a whole
     // (overlapping stamps must not stack). The coverage canvas accumulates
@@ -1050,23 +1087,23 @@ function drawStrokePreview(ctx, s) {
       ctx.globalAlpha = st.opacity;
       // dest pixel p must show img[p + (ox, oy)]: drawImage(img, dx, dy)
       // shows img[p - (dx, dy)], so the image goes at -offset
-      ctx.drawImage(s.img || view.base, -ox, -oy);
+      ctx.drawImage(s.img, -ox, -oy);
       ctx.restore();
       ctx.globalAlpha = 1;
       return;
     }
-    const lctx = layerCtx(stampLayer, view.w, view.h);
-    const cctx = coverageCtx(view.w, view.h);
+    const lctx = layerCtx(stampLayer, s.tw, s.th);
+    const cctx = coverageCtx(s.tw, s.th);
     lctx.globalCompositeOperation = "source-over";
     lctx.globalAlpha = 1;
-    lctx.clearRect(0, 0, view.w, view.h);
+    lctx.clearRect(0, 0, s.tw, s.th);
     // dest pixel p must show img[p + (ox, oy)]: drawImage(img, dx, dy) shows
     // img[p - (dx, dy)], so the image goes at -offset. s.img is the
     // pre-stroke image the commit sampled
-    lctx.drawImage(s.img || view.base, -ox, -oy);
+    lctx.drawImage(s.img, -ox, -oy);
     cctx.globalCompositeOperation = "source-over";
     cctx.globalAlpha = 1;
-    cctx.clearRect(0, 0, view.w, view.h);
+    cctx.clearRect(0, 0, s.tw, s.th);
     for (const [x, y] of pts) {
       cctx.drawImage(
         raw,
@@ -1207,30 +1244,36 @@ function drawStrokePreview(ctx, s) {
   }
   // brush tool: colour x brush x opacity, NON-stacking like the commit:
   // the colour is blended in ONCE by the stroke's max coverage x
-  // opacity (overlapping stamps do not darken the core)
+  // opacity (overlapping stamps do not darken the core). On a floating
+  // selection, shift is the eraser: the same layer composited
+  // destination-out, which lowers the affected pixels' alpha
   const cov = strokeMaxCoverage(s, pts, raw);
   if (cov) {
-    const lctx = layerCtx(stampLayer, view.w, view.h);
+    const lctx = layerCtx(stampLayer, s.tw, s.th);
     lctx.globalCompositeOperation = "source-over";
     lctx.globalAlpha = 1;
     lctx.fillStyle = st.color;
-    lctx.fillRect(0, 0, view.w, view.h);
+    lctx.fillRect(0, 0, s.tw, s.th);
     // keep only the stroke's coverage (alpha = max shape over stamps)
     lctx.globalCompositeOperation = "destination-in";
     lctx.drawImage(cov, 0, 0);
     lctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = st.opacity;
+    if (s.erase) ctx.globalCompositeOperation = "destination-out";
     ctx.drawImage(stampLayer.canvas, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
     return;
   }
   // fallback: the old stacked discs (brush image not loaded yet)
   ctx.fillStyle = st.color;
+  if (s.erase) ctx.globalCompositeOperation = "destination-out";
   for (const [x, y] of pts) {
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
   }
+  if (s.erase) ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1;
 }
 
@@ -1355,7 +1398,7 @@ function commitMaskErase(s, st) {
 // last preview frame (the previews are built to be pixel-exact), so the
 // hand-off is invisible.
 function commitStroke(s, st) {
-  const baseCtx = view.base.getContext("2d");
+  const baseCtx = s.img.getContext("2d"); // the canvas, or the selection image
   if (s.tool === "brush" || s.tool === "clone") {
     // the preview's paint/clone branch blits the stroke's layer (colour x
     // coverage, or the translated image x coverage) with the stroke's
@@ -1383,6 +1426,335 @@ function commitStroke(s, st) {
 // wheel delta with the shift-fallback described above
 function wheelDelta(e) {
   return e.deltaY !== 0 ? e.deltaY : e.deltaX;
+}
+
+// ---------------- copy / paste / floating selection ----------------
+//
+// The copy tool drags the crop tool's rectangle and stores that region of
+// view.base (view.clip, fully opaque, in-memory). The paste tool drops it as
+// a FLOATING SELECTION: an image riding on top of the canvas with its own
+// position, size and rotation, with handles to reshape it and an apply /
+// discard pair in its middle. It is drawn as an overlay only -- view.base is
+// untouched until Apply composites it, so sync, snapshots and the draw undo
+// stack never see it. While it is active the draw / smudge / clone tools
+// paint on the selection (in its local frame) and the crop tool crops it;
+// the mask tool keeps working on the canvas's own mask.
+//
+// Geometry: the selection is (cx, cy) centre + angle + display size (sw, sh)
+// in canvas px; its image keeps its own resolution and is STRETCHED to fill
+// sw x sh, so dragging a handle is a pure transform (no resampling) and the
+// resample happens once, at Apply / stroke start (selMaterialize).
+
+// the selection's display size never goes below this (px) or above that
+const SEL_MIN = 8;
+const SEL_MAX = 8192;
+
+// tools whose strokes land on the selection while one is active
+function selStrokeTool(tool) {
+  return !!view.sel && (tool === "brush" || tool === "clone" || tool === "smudge");
+}
+
+// canvas px <-> selection-local px (local: x in [0, sw], y in [0, sh])
+function frameLocal(F, p) {
+  const ca = Math.cos(-F.angle), sa = Math.sin(-F.angle);
+  const dx = p[0] - F.cx, dy = p[1] - F.cy;
+  return [dx * ca - dy * sa + F.sw / 2, dx * sa + dy * ca + F.sh / 2];
+}
+
+function frameWorld(F, q) {
+  const ca = Math.cos(F.angle), sa = Math.sin(F.angle);
+  const dx = q[0] - F.sw / 2, dy = q[1] - F.sh / 2;
+  return [F.cx + dx * ca - dy * sa, F.cy + dx * sa + dy * ca];
+}
+
+const selLocal = (p) => frameLocal(view.sel, p);
+const selWorld = (q) => frameWorld(view.sel, q);
+
+// the same point in the CENTRED local frame (x in [-sw/2, sw/2]): what the
+// transform-drawn overlay (border, handles, cursor ring) lives in, while
+// selLocal's [0, sw] frame is the selection image's own pixel grid
+function selCentred(p) {
+  const q = selLocal(p);
+  return [q[0] - view.sel.sw / 2, q[1] - view.sel.sh / 2];
+}
+
+// the selection's image resampled to its current display size (the stretched
+// view of it, in canvas px): the layer strokes paint on and the layer Apply
+// composites
+function selMaterialize(s) {
+  const w = Math.max(1, Math.round(s.sw));
+  const h = Math.max(1, Math.round(s.sh));
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(s.img, 0, 0, s.img.width, s.img.height, 0, 0, w, h);
+  return c;
+}
+
+// the handles, in selection-local px: edge midpoints resize that edge (the
+// opposite edge stays put), TR/BL scale with the aspect locked (opposite
+// corner pinned), TL/BR rotate around the centre
+function selHandles(s) {
+  const w = s.sw / 2, h = s.sh / 2;
+  return [
+    { kind: "edge", edge: "l", x: -w, y: 0 },
+    { kind: "edge", edge: "r", x: w, y: 0 },
+    { kind: "edge", edge: "t", x: 0, y: -h },
+    { kind: "edge", edge: "b", x: 0, y: h },
+    { kind: "rot", x: -w, y: -h },
+    { kind: "scale", corner: "tr", x: w, y: -h },
+    { kind: "scale", corner: "bl", x: -w, y: h },
+    { kind: "rot", x: w, y: h },
+  ];
+}
+
+// grab a handle: the pointer must land within a screen-constant radius of it
+function startSelDrag(p) {
+  const s = view.sel;
+  const q = selCentred(p);
+  const tol = Math.max(8 / view.scale, 7 / view.scale);
+  let best = null, bestD = 1 / 0;
+  for (const h of selHandles(s)) {
+    const d = Math.hypot(q[0] - h.x, q[1] - h.y);
+    if (d <= tol && d < bestD) { best = h; bestD = d; }
+  }
+  if (!best) return false;
+  const d = { kind: best.kind, F: { cx: s.cx, cy: s.cy, angle: s.angle, sw: s.sw, sh: s.sh } };
+  if (d.kind === "rot") d.base = Math.atan2(best.y, best.x); // corner's own direction
+  if (d.kind === "edge") d.edge = best.edge;
+  if (d.kind === "scale") d.corner = best.corner;
+  view.selDrag = d;
+  return true;
+}
+
+const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+// apply a handle drag to the selection; the frame F frozen at drag start is
+// the reference, so the fixed edge / corner never drifts
+function applySelDrag(p) {
+  const d = view.selDrag, F = d.F, s = view.sel;
+  const q = frameLocal(F, p);
+  const ca = Math.cos(F.angle), sa = Math.sin(F.angle);
+  if (d.kind === "rot") {
+    s.angle = Math.atan2(p[1] - F.cy, p[0] - F.cx) - d.base;
+    return;
+  }
+  if (d.kind === "edge") {
+    const horiz = d.edge === "l" || d.edge === "r";
+    if (horiz) {
+      const w = Math.round(clampN(d.edge === "r" ? q[0] : F.sw - q[0], SEL_MIN, SEL_MAX));
+      const a = frameWorld(F, d.edge === "r" ? [0, F.sh / 2] : [F.sw, F.sh / 2]);
+      const k = (d.edge === "r" ? 1 : -1) * (w / 2);
+      s.sw = w;
+      s.cx = a[0] + k * ca;
+      s.cy = a[1] + k * sa;
+    } else {
+      const h = Math.round(clampN(d.edge === "b" ? q[1] : F.sh - q[1], SEL_MIN, SEL_MAX));
+      const a = frameWorld(F, d.edge === "b" ? [F.sw / 2, 0] : [F.sw / 2, F.sh]);
+      const k = (d.edge === "b" ? 1 : -1) * (h / 2);
+      s.sh = h;
+      s.cx = a[0] - k * sa;
+      s.cy = a[1] + k * ca;
+    }
+    return;
+  }
+  // aspect-locked scale: the dragged corner follows the cursor along the
+  // diagonal through the pinned corner
+  const a = F.sw / F.sh, dd = a * a + 1;
+  const t = clampN(
+    d.corner === "tr" ? (q[0] * a + F.sh - q[1]) / dd : ((F.sw - q[0]) * a + q[1]) / dd,
+    SEL_MIN / a, SEL_MAX / a
+  );
+  const w = Math.round(t * a), h = Math.round(t);
+  const c = frameWorld(F, d.corner === "tr" ? [w / 2, F.sh - h / 2] : [F.sw - w / 2, h / 2]);
+  s.sw = w;
+  s.sh = h;
+  s.cx = c[0];
+  s.cy = c[1];
+}
+
+// the live stroke preview on a selection is built on a scratch layer (the
+// stroke's own frame), then blitted inside the selection's transform
+const selPreview = { canvas: document.createElement("canvas"), w: 0, h: 0 };
+
+function drawSelectionOverlay(ctx) {
+  const s = view.sel;
+  ctx.save();
+  ctx.translate(s.cx, s.cy);
+  ctx.rotate(s.angle);
+  ctx.imageSmoothingEnabled = true; // the selection is resampled content
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(s.img, 0, 0, s.img.width, s.img.height, -s.sw / 2, -s.sh / 2, s.sw, s.sh);
+  const st = view.stroke;
+  if (st && st.sel) {
+    const pc = selPreview.canvas;
+    if (selPreview.w !== st.tw || selPreview.h !== st.th) {
+      pc.width = st.tw;
+      pc.height = st.th;
+      selPreview.w = st.tw;
+      selPreview.h = st.th;
+    }
+    const pctx = pc.getContext("2d");
+    pctx.setTransform(1, 0, 0, 1, 0, 0);
+    pctx.globalCompositeOperation = "source-over";
+    pctx.globalAlpha = 1;
+    pctx.clearRect(0, 0, st.tw, st.th);
+    pctx.imageSmoothingEnabled = true;
+    pctx.drawImage(st.img, 0, 0);
+    drawStrokePreview(pctx, st);
+    ctx.drawImage(pc, 0, 0, st.tw, st.th);
+  }
+  // faint border + handles (constant on screen)
+  ctx.lineWidth = 3 / view.scale;
+  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  ctx.strokeRect(-s.sw / 2, -s.sh / 2, s.sw, s.sh);
+  ctx.lineWidth = 1 / view.scale;
+  ctx.strokeStyle = "rgba(255,255,255,0.75)";
+  ctx.strokeRect(-s.sw / 2, -s.sh / 2, s.sw, s.sh);
+  const hs = 7 / view.scale;
+  for (const h of selHandles(s)) {
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.fillRect(h.x - hs / 2, h.y - hs / 2, hs, hs);
+    ctx.lineWidth = 1 / view.scale;
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.strokeRect(h.x - hs / 2, h.y - hs / 2, hs, hs);
+  }
+  ctx.restore();
+}
+
+// the paste tool carries the copied area at the cursor until it is dropped
+// (clipped to the image, so it is only visible on the canvas)
+function drawPasteGhost(ctx) {
+  const cl = view.clip;
+  if (!cl || view.sel) return;
+  const x = Math.round((view.cursor[0] - view.ox) / view.scale - cl.w / 2);
+  const y = Math.round((view.cursor[1] - view.oy) / view.scale - cl.h / 2);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, view.w, view.h);
+  ctx.clip();
+  ctx.globalAlpha = 0.6;
+  ctx.drawImage(cl.img, x, y);
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 1 / view.scale;
+  ctx.strokeStyle = "rgba(255,255,255,0.9)";
+  ctx.strokeRect(x, y, cl.w, cl.h);
+  ctx.restore();
+}
+
+// paste tool click: drop the copied area, centred on the cursor. It may hang
+// off the canvas (Apply clips it); a new drop replaces an active selection.
+function pasteAt(p) {
+  if (!view.clip) {
+    setStatus("nothing copied yet \u2014 drag a rectangle with the copy tool first");
+    return;
+  }
+  view.stroke = null;
+  view.selDrag = null;
+  view.crop = null;
+  view.sel = { img: view.clip.img, sw: view.clip.w, sh: view.clip.h, cx: p[0], cy: p[1], angle: 0 };
+  viewRedraw();
+  setStatus("floating selection \u2014 drag its handles, Enter applies, Esc discards");
+}
+
+// copy tool pointerup: store the region of the committed image (the copied
+// area is opaque; erasing to transparency happens on the floating selection)
+function commitCopy(r) {
+  // integer canvas px: the copied area is a pixel grid, not a sub-pixel rect
+  const x = Math.round(r.x), y = Math.round(r.y);
+  const w = Math.max(1, Math.round(r.w)), h = Math.max(1, Math.round(r.h));
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  c.getContext("2d").drawImage(view.base, x, y, w, h, 0, 0, w, h);
+  view.clip = { img: c, w, h };
+  syncToolbar(); // app.js: the paste button becomes enabled
+  setStatus(`copied ${w}\u00d7${h} \u2014 paste tool (V), click to place it`);
+}
+
+// crop tool with an active selection: crop the SELECTION to the dragged
+// rectangle (the canvas entity is untouched, no new entity is created)
+function cropSelection(r) {
+  const s = view.sel;
+  const cs = [[r.x, r.y], [r.x + r.w, r.y], [r.x, r.y + r.h], [r.x + r.w, r.y + r.h]]
+    .map(selLocal);
+  // rounded to the selection's pixel grid: the pointer's sub-pixel position
+  // must not shift the crop by a whole row / column
+  const x0 = clampN(Math.round(Math.min(...cs.map((q) => q[0]))), 0, s.sw - 1);
+  const y0 = clampN(Math.round(Math.min(...cs.map((q) => q[1]))), 0, s.sh - 1);
+  const x1 = clampN(Math.round(Math.max(...cs.map((q) => q[0]))), x0 + 1, s.sw);
+  const y1 = clampN(Math.round(Math.max(...cs.map((q) => q[1]))), y0 + 1, s.sh);
+  const w = x1 - x0, h = y1 - y0;
+  if (w < 2 || h < 2) {
+    setStatus("the crop must keep at least 2\u00d72 px of the selection");
+    return;
+  }
+  const m = selMaterialize(s);
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  c.getContext("2d").drawImage(m, x0, y0, w, h, 0, 0, w, h);
+  const centre = selWorld([x0 + w / 2, y0 + h / 2]);
+  s.img = c;
+  s.sw = w;
+  s.sh = h;
+  s.cx = centre[0];
+  s.cy = centre[1];
+  viewRedraw();
+  setStatus(`cropped the selection to ${w}\u00d7${h}`);
+}
+
+// Apply: composite the selection (stretched + rotated, resampled once) onto
+// the committed image with its per-pixel alpha, as ONE draw-undo step
+async function commitSelection() {
+  const s = view.sel;
+  if (!s) return;
+  const snap = await snapCanvas(view.base);
+  const m = selMaterialize(s);
+  const ctx = view.base.getContext("2d");
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.translate(Math.round(s.cx), Math.round(s.cy));
+  ctx.rotate(s.angle);
+  ctx.drawImage(m, -m.width / 2, -m.height / 2);
+  ctx.restore();
+  view.sel = null;
+  view.selDrag = null;
+  pushUndo("draw", snap);
+  markDirty();
+  syncUndoButtons(); // app.js
+  viewRedraw();
+  setStatus("applied the floating selection");
+}
+
+// Cancel: throw the selection away (no history step, the base never changed)
+function cancelSelection() {
+  if (!view.sel) return;
+  view.sel = null;
+  view.selDrag = null;
+  view.stroke = null;
+  viewRedraw();
+  setStatus("discarded the floating selection");
+}
+
+// the apply / discard pair, centred on the selection (holder-relative
+// anchoring, same pattern as the thumbnail hover preview)
+function syncSelActions() {
+  const el = document.getElementById("sel-actions");
+  if (!el) return;
+  if (!view.sel || !view.has) {
+    el.hidden = true;
+    return;
+  }
+  const holder = document.getElementById("canvas-holder").getBoundingClientRect();
+  const c = cv().getBoundingClientRect();
+  el.hidden = false;
+  el.style.left = `${c.left - holder.left + view.ox + view.sel.cx * view.scale}px`;
+  el.style.top = `${c.top - holder.top + view.oy + view.sel.cy * view.scale}px`;
 }
 
 // ---------------- crop tool ----------------
@@ -1421,13 +1793,17 @@ function drawCropOverlay(ctx) {
   ctx.restore();
 }
 
-// pointerup on a finished drag: commit the (already clamped) rect to the
-// server; a zero-area selection (plain click) is a no-op
+// pointerup on a finished drag: commit the (already clamped) rect -- the copy
+// tool stores it, the crop tool crops the floating selection (while one is
+// active) or the canvas image; a zero-area selection (plain click) is a no-op
 function commitCrop() {
   const r = cropRect();
+  const tool = Tools.current;
   view.crop = null;
   viewRedraw();
   if (!r) return;
+  if (tool === "copy") { commitCopy(r); return; }
+  if (view.sel) { cropSelection(r); return; }
   doCrop(r.x, r.y, r.w, r.h); // app.js: POST + thumbnail update + refresh
 }
 
@@ -1463,7 +1839,17 @@ function setupCanvasInput() {
     if (e.button !== 0) return;
     const tool = Tools.current;
     const p = canvasPoint(e);
-    if (tool === "crop") {
+    // a floating selection is active: its handles grab the pointer first
+    if (view.sel && startSelDrag(p)) {
+      c.setPointerCapture(e.pointerId);
+      viewRedraw();
+      return;
+    }
+    if (tool === "paste") {
+      pasteAt(p); // drop the copied area as a floating selection
+      return;
+    }
+    if (tool === "crop" || tool === "copy") {
       // start a rectangle selection; the pointer may be anywhere on the
       // element (including outside the image) -- the used region is the
       // clamped intersection, computed in cropRect
@@ -1472,15 +1858,25 @@ function setupCanvasInput() {
       viewRedraw();
       return;
     }
-    if (tool === "brush" && e.shiftKey) {
+    if (tool === "brush" && e.ctrlKey) {
       // colour-picker mode: set the brush colour from the clicked pixel
       pickBrushColor(p);
       return;
     }
+    // with a floating selection active, the draw / clone / smudge strokes
+    // land on IT, in its own (rotated) frame: the stroke runs on the
+    // selection's image resampled to its display size, in local px
+    const onSel = selStrokeTool(tool);
+    const pt = onSel ? selLocal(p) : p;
+    const tw = onSel ? Math.round(view.sel.sw) : view.w;
+    const th = onSel ? Math.round(view.sel.sh) : view.h;
+    const img = onSel ? selMaterialize(view.sel) : view.base;
     if (tool === "clone") {
       if (e.ctrlKey) {
         // pick/move the clone source S; not a stroke (no pointer capture,
-        // so the following pointerup has nothing to commit)
+        // so the following pointerup has nothing to commit). Stored in
+        // canvas px: on a selection it maps into the selection's frame per
+        // stroke, so moving the selection carries the sampled content along
         view.cloneSource = [p[0], p[1]];
         // re-anchor an active SHIFT gesture: the moved source lands on S
         // (the cursor is on S, so the relative offset is zero)
@@ -1493,18 +1889,23 @@ function setupCanvasInput() {
         setStatus("clone: ctrl-click to pick a source point first");
         return;
       }
+      const srcL = onSel ? selLocal(src) : src;
       view.stroke = {
         tool,
-        points: [p],
+        points: [pt],
         size: brushSizeCanvas(),
         // frozen for the whole stroke, integer canvas px, so the preview
         // and the commit sample identical pixels
-        cloneOffset: [Math.round(src[0] - p[0]), Math.round(src[1] - p[1])],
+        cloneOffset: [Math.round(srcL[0] - pt[0]), Math.round(srcL[1] - pt[1])],
         // the pre-stroke image the commit samples
-        img: view.base,
+        img,
+        tw,
+        th,
+        sel: onSel,
         // pre-stroke snapshot for the draw undo stack; toBlob captures at
-        // call time, so the encode overlaps the drag
-        snapP: snapCanvas(view.base),
+        // call time, so the encode overlaps the drag. A stroke on a floating
+        // selection is no canvas edit, so it gets no history step
+        snapP: onSel ? null : snapCanvas(view.base),
       };
       c.setPointerCapture(e.pointerId);
       viewRedraw();
@@ -1513,15 +1914,19 @@ function setupCanvasInput() {
     if (tool === "smudge") {
       // smudge is a drag: the first stamp samples itself (a no-op), so the
       // stamp counter starts at 1; the working image starts as the current
-      // (pre-stroke) canvas image and rides on the stroke object, so the
+      // (pre-stroke) target image and rides on the stroke object, so the
       // held preview keeps working after the stroke ends
       view.stroke = {
         tool,
-        points: [p],
+        points: [pt],
         size: brushSizeCanvas(),
         smudgeStamps: 1,
-        work: newSmudgeWork(),
-        snapP: snapCanvas(view.base),
+        work: newSmudgeWork(img, tw, th),
+        img,
+        tw,
+        th,
+        sel: onSel,
+        snapP: onSel ? null : snapCanvas(view.base),
       };
       c.setPointerCapture(e.pointerId);
       viewRedraw();
@@ -1529,13 +1934,18 @@ function setupCanvasInput() {
     }
     view.stroke = {
       tool,
-      points: [p],
+      points: [pt],
       // freeze the canvas-px footprint at stroke start (the commit stamps
       // with a single size, so a mid-stroke zoom can't change it)
       size: brushSizeCanvas(),
-      erase: tool === "mask" && e.shiftKey, // shift = mask eraser
+      // shift = mask eraser, and (on a floating selection) draw eraser
+      erase: e.shiftKey && (tool === "mask" || (tool === "brush" && onSel)),
+      img,
+      tw,
+      th,
+      sel: onSel,
       // pre-stroke snapshot for the right undo stack (draw vs mask)
-      snapP: tool === "mask" ? null : snapCanvas(view.base),
+      snapP: tool === "mask" || onSel ? null : snapCanvas(view.base),
       snapMaskP: tool === "mask" ? snapCanvas(view.maskValues) : null,
     };
     c.setPointerCapture(e.pointerId);
@@ -1552,6 +1962,11 @@ function setupCanvasInput() {
     if (!view.has) return;
     const oldCursor = view.cursor;
     const p = canvasPoint(e); // also updates view.cursor
+    if (view.selDrag) {
+      applySelDrag(p);
+      viewRedraw();
+      return;
+    }
     if (view.crop) {
       view.crop.ex = p[0];
       view.crop.ey = p[1];
@@ -1563,8 +1978,9 @@ function setupCanvasInput() {
       const n = view.stroke.points.length;
       const [lx, ly] = view.stroke.points[n - 1];
       // ignore sub-pixel jitter: at least 1 screen px between recorded points
-      if (Math.hypot(p[0] - lx, p[1] - ly) * view.scale >= 1) {
-        view.stroke.points.push(p);
+      const q = view.stroke.sel ? selLocal(p) : p;
+      if (Math.hypot(q[0] - lx, q[1] - ly) * view.scale >= 1) {
+        view.stroke.points.push(q);
         redraw = true;
       }
     } else if (
@@ -1603,6 +2019,13 @@ function setupCanvasInput() {
     }
     commitStroke(s, st); // local, synchronous: the preview's own result
     clearBrushStamps(); // the preview is committed; its stamp cache is done
+    if (s.sel) {
+      // the edited selection image IS the committed result: no canvas edit,
+      // so no history step and no sync (view.base never changed)
+      view.sel.img = s.img;
+      viewRedraw();
+      return;
+    }
     // the snapshot promise lands on the stack immediately (its encoding
     // overlaps the drag); undoStep/redoStep await it on pop
     pushUndo(s.tool, s.snapP || s.snapMaskP);
@@ -1612,10 +2035,20 @@ function setupCanvasInput() {
     viewRedraw();
   };
   c.addEventListener("pointerup", (e) => {
+    if (view.selDrag) {
+      view.selDrag = null; // the transform is live: nothing to resample
+      viewRedraw();
+      return;
+    }
     if (view.crop) { commitCrop(); return; }
     endStroke();
   });
   c.addEventListener("pointercancel", (e) => {
+    if (view.selDrag) {
+      view.selDrag = null;
+      viewRedraw();
+      return;
+    }
     if (view.crop) { abortCrop(); return; }
     endStroke();
   });

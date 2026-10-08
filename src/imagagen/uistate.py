@@ -18,11 +18,11 @@ import json
 import re
 from pathlib import Path
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
 # Canvas tools, same list as the TOOLS array in tools.js
-TOOL_NAMES = ("brush", "mask", "clone", "smudge", "crop")
+TOOL_NAMES = ("brush", "mask", "clone", "smudge", "crop", "copy", "paste")
 
 
 class ToolSettings(BaseModel):
@@ -30,7 +30,7 @@ class ToolSettings(BaseModel):
 
     Same limits as the toolbar UI: brush size clamped to 10-500 px,
     opacity slider 0.05-1. The colour applies to the brush tool only
-    (mask strokes ignore it; clone/smudge/crop have none).
+    (mask strokes ignore it; clone/smudge/crop/copy/paste have none).
     """
 
     size: int = Field(10, ge=10, le=500)
@@ -58,6 +58,10 @@ class ToolSettings(BaseModel):
 class ToolState(BaseModel):
     """Current canvas tool + the per-tool remembered settings."""
 
+    # `copy_area` is validated from its alias too, so the JSON the browser
+    # posts ("copy") and a plain model_dump ("copy_area") both load
+    model_config = ConfigDict(populate_by_name=True)
+
     current: str = "brush"
     # spec defaults match tools.js (the mask tool starts at 30 px)
     brush: ToolSettings = Field(default_factory=ToolSettings)
@@ -65,6 +69,15 @@ class ToolState(BaseModel):
     clone: ToolSettings = Field(default_factory=ToolSettings)
     smudge: ToolSettings = Field(default_factory=ToolSettings)
     crop: ToolSettings = Field(default_factory=ToolSettings)
+    # copy/paste drag no brush at all (copy drags a rectangle, paste drops
+    # the copied area); entries kept so every tool has a settings row. The
+    # copy tool's field is `copy_area` -- a field named `copy` would shadow
+    # pydantic's BaseModel.copy(); the JSON key stays "copy" (alias, and
+    # saved/served with model_dump(by_alias=True))
+    copy_area: ToolSettings = Field(
+        default_factory=ToolSettings, alias="copy", serialization_alias="copy"
+    )
+    paste: ToolSettings = Field(default_factory=ToolSettings)
 
     @field_validator("current")
     @classmethod
@@ -196,7 +209,7 @@ class UiStateStore:
             return
         tmp = self.path.with_suffix(".json.tmp")
         tmp.write_text(
-            json.dumps(state.model_dump(), indent=2, ensure_ascii=False) + "\n",
+            json.dumps(state.model_dump(by_alias=True), indent=2, ensure_ascii=False) + "\n",
             "utf-8",
         )
         tmp.replace(self.path)

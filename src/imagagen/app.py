@@ -783,7 +783,9 @@ def create_app(
                 entries = []
             if entries and state.model not in {e.id for e in entries}:
                 state.model = entries[0].id
-        return {"state": state.model_dump()}
+        # by_alias: the tool rows use their JSON names ("copy", not the
+        # field's "copy_area", which must not shadow BaseModel.copy())
+        return {"state": state.model_dump(by_alias=True)}
 
     @app.post("/api/ui-state")
     async def save_ui_state(request: Request) -> dict:

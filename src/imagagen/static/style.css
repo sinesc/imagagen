@@ -505,6 +505,22 @@ button.danger:hover { background: #a33; }
 /* tool hotkeys are live (no input/select focused): focus-color border */
 #canvas.hotkeys { border-color: #777; }
 
+/* floating selection (copy/paste): the apply / discard pair, centred on the
+   selection's middle by JS (canvas.js syncSelActions, same holder-relative
+   anchoring as #thumb-preview) */
+#sel-actions {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  gap: 0.35rem;
+  z-index: 3;
+  /* the pair sits ON the image, so only the buttons may eat pointer events:
+     the selection itself has to stay paintable underneath it */
+  pointer-events: none;
+}
+#sel-actions button { pointer-events: auto; }
+#sel-actions[hidden] { display: none; }
+
 /* ---------------- dialogs (model configs, presets) ---------------- */
 /* covers the whole UI until the websocket is connected (visible from the
    first paint, app.js hides it on ws.onopen) */

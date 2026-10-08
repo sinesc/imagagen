@@ -66,8 +66,8 @@ def test_tool_and_view_hotkeys(page, server):
     base, _root = server
     _open(page, base)
 
-    for key, tool in {"d": "brush", "s": "smudge", "c": "clone",
-                      "m": "mask", "p": "crop"}.items():
+    for key, tool in {"d": "brush", "s": "smudge", "o": "clone",
+                      "m": "mask", "p": "crop", "c": "copy", "v": "paste"}.items():
         page.keyboard.press(key)
         assert page.evaluate("Tools.current") == tool
 
@@ -84,7 +84,7 @@ def test_tool_and_view_hotkeys(page, server):
     # typing in a field: none of the hotkeys fire
     page.click("#prompt")
     page.keyboard.press("m")
-    assert page.evaluate("Tools.current") == "crop"
+    assert page.evaluate("Tools.current") == "paste"
 
 
 def test_save_and_generate_hotkeys(page, server):

@@ -1636,12 +1636,16 @@ function syncToolbar() {
   $("tool-clone").classList.toggle("active", Tools.current === "clone");
   $("tool-smudge").classList.toggle("active", Tools.current === "smudge");
   $("tool-crop").classList.toggle("active", Tools.current === "crop");
-  const cropMode = Tools.current === "crop";
+  $("tool-copy").classList.toggle("active", Tools.current === "copy");
+  $("tool-paste").classList.toggle("active", Tools.current === "paste");
+  // paste has nothing to drop until the copy tool stored an area
+  $("tool-paste").disabled = !view.clip;
+  const cropMode = ["crop", "copy", "paste"].includes(Tools.current);
   // The colour swatch always edits the brush tool's remembered colour
   // (mask strokes ignore colour), so it stays live in mask mode too;
   // the clone and smudge tools have no colour at all, so disable it there.
-  // Crop disables all four brush controls entirely.
-  $("brush-color").disabled = ["clone", "smudge", "mask", "crop"].includes(Tools.current);
+  // Crop, copy and paste use no brush at all and disable all four controls.
+  $("brush-color").disabled = ["clone", "smudge", "mask", "crop", "copy", "paste"].includes(Tools.current);
   $("brush-size").disabled = cropMode;
   $("brush-screen").disabled = cropMode;
   $("brush-opacity").disabled = cropMode;
@@ -1678,8 +1682,9 @@ function wheelBrushOpacity(factor) {
 }
 
 function switchTool(t) {
-  // switching to a DIFFERENT tool abandons an in-progress crop selection
-  // (re-arming the crop tool itself, e.g. tapping P mid-drag, does not)
+  // switching to a DIFFERENT tool abandons an in-progress crop/copy rectangle
+  // (re-arming the same tool itself, e.g. tapping P mid-drag, does not). A
+  // floating selection SURVIVES a tool switch: the tools act on it
   if (view.crop && Tools.current !== t) abortCrop();
   Tools.switch(t);
   scheduleSaveUiState();
@@ -1914,6 +1919,10 @@ function wireToolbar() {
   $("tool-clone").onclick = () => switchTool("clone");
   $("tool-smudge").onclick = () => switchTool("smudge");
   $("tool-crop").onclick = () => switchTool("crop");
+  $("tool-copy").onclick = () => switchTool("copy");
+  $("tool-paste").onclick = () => switchTool("paste");
+  $("sel-ok").onclick = () => commitSelection();
+  $("sel-cancel").onclick = () => cancelSelection();
   $("brush").onchange = (e) => {
     Tools.get().brush = e.target.value;
     scheduleSaveUiState();
@@ -2493,9 +2502,12 @@ document.addEventListener("keydown", (e) => {
   });
 });
 
-// D / S / C / M / P switch tools, N / K / R act on the mask, F fits the
-// image, CTRL+S saves, CTRL+G generates, CTRL+Z / CTRL+Y undo / redo
-// (all when not typing in a field);
+// D / S / O / M / P / C / V switch tools (draw, smudge, clone, mask, crop,
+// copy, paste), N / K / R act on the mask, F fits the image, CTRL+S saves,
+// CTRL+G generates, CTRL+Z / CTRL+Y undo / redo, CTRL+C / CTRL+V arm the
+// copy / paste tools, ENTER applies a floating selection and ESC aborts an
+// in-flight rectangle or discards the selection (all when not typing in a
+// field);
 // SHIFT (clone tool, a source set) makes the source follow the cursor
 // until it is released
 document.addEventListener("keydown", (e) => {
@@ -2521,17 +2533,32 @@ document.addEventListener("keydown", (e) => {
     $("btn-generate").onclick();
     return;
   }
+  if (e.ctrlKey && !e.shiftKey && (e.key === "c" || e.key === "C")) {
+    e.preventDefault(); // the browser clipboard holds nothing of ours
+    switchTool("copy");
+    return;
+  }
+  if (e.ctrlKey && !e.shiftKey && (e.key === "v" || e.key === "V")) {
+    e.preventDefault();
+    switchTool("paste");
+    return;
+  }
   if (e.key === "d" || e.key === "D") switchTool("brush");
   else if (e.key === "m" || e.key === "M") switchTool("mask");
-  else if (e.key === "c" || e.key === "C") switchTool("clone");
+  else if (e.key === "o" || e.key === "O") switchTool("clone");
   else if (e.key === "s" || e.key === "S") switchTool("smudge");
   else if (e.key === "p" || e.key === "P") switchTool("crop");
+  else if (e.key === "c" || e.key === "C") switchTool("copy");
+  else if (e.key === "v" || e.key === "V") switchTool("paste");
   else if (e.key === "n" || e.key === "N") $("mask-dilate").onclick();
   else if (e.key === "k" || e.key === "K") $("mask-erode").onclick();
   else if (e.key === "r" || e.key === "R") $("mask-clear").onclick();
   else if (e.key === "f" || e.key === "F") viewFit();
-  // Esc while dragging the crop rectangle aborts the selection
+  // Esc aborts an in-flight rectangle first, else discards the floating
+  // selection; Enter applies it (both only while no dialog is open)
   else if (e.key === "Escape" && view.crop) abortCrop();
+  else if (e.key === "Escape" && view.sel && $("dialog").hidden) cancelSelection();
+  else if (e.key === "Enter" && view.sel && $("dialog").hidden) commitSelection();
   else if (e.key === "Shift") cloneGestureStart();
 });
 document.addEventListener("keyup", (e) => {

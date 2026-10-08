@@ -4,7 +4,7 @@
    which includes it in the ui-state saved to the server. */
 "use strict";
 
-const TOOLS = ["brush", "mask", "clone", "smudge", "crop"];
+const TOOLS = ["brush", "mask", "clone", "smudge", "crop", "copy", "paste"];
 
 const Tools = {
   current: "brush",
@@ -19,6 +19,10 @@ const Tools = {
     smudge: { size: 10, opacity: 1, brush: "circle", screen: false },
     // crop uses no brush at all; entry kept so Tools.get() never returns undefined
     crop: { size: 10, opacity: 1, brush: "circle", screen: false },
+    // copy drags a rectangle and paste drops the copied area: no brush here
+    // either; entries kept so Tools.get() never returns undefined
+    copy: { size: 10, opacity: 1, brush: "circle", screen: false },
+    paste: { size: 10, opacity: 1, brush: "circle", screen: false },
   },
   // restored from the server's ui-state by applyUiState() in app.js
   get() {

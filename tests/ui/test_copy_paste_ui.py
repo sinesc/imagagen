@@ -1,0 +1,318 @@
+"""Browser tests for copy / paste with a floating selection (Chromium).
+
+Covers what only a real browser can verify: the toolbar wiring (Clone moved
+to O, Copy = C, Paste = V, Ctrl+C / Ctrl+V), the copy rectangle, the floating
+selection's lifecycle (drop, handles, erase, crop, apply, cancel, undo) and
+the rule that the selection is an OVERLAY -- the server's canvas only changes
+when it is applied.
+"""
+
+import io
+
+import httpx
+from conftest import canvas_px, dot, screen_pos, set_canvas, stroke, wait_until
+from PIL import Image
+
+BG = (20, 30, 40)
+PATCH = (240, 220, 10)  # the copied area: a bright 40x40 square at (10,10)
+
+
+def _open(page, base):
+    page.goto(base)
+    assert page.is_visible("#tool-copy")
+    page.wait_for_function("brushNames.length >= 1")
+
+
+def _upload(base, img):
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    with httpx.Client(base_url=base, timeout=10) as c:
+        assert c.post("/api/canvas/upload", content=buf.getvalue()).status_code == 200
+
+
+def _show(page, base, w=200, h=150):
+    """Two-tone image on the server canvas, rendered in the UI."""
+    img = Image.new("RGB", (w, h), BG)
+    for x in range(10, 50):
+        for y in range(10, 50):
+            img.putpixel((x, y), PATCH)
+    _upload(base, img)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+
+
+def _canvas_size(base):
+    with httpx.Client(base_url=base, timeout=10) as c:
+        r = c.get("/api/canvas.png")
+        if r.status_code == 404:
+            return None
+        return Image.open(io.BytesIO(r.content)).size
+
+
+def _active(pid):
+    return f"document.getElementById('{pid}').classList.contains('active')"
+
+
+def _copy(page, base, x0=10, y0=10, x1=50, y1=50):
+    """Drag the copy rectangle (x0,y0) -> (x1,y1)."""
+    page.keyboard.press("c")
+    page.mouse.move(*screen_pos(page, x0, y0))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, x1, y1), steps=5)
+    page.mouse.up()
+    assert wait_until(lambda: page.evaluate("view.clip") is not None)
+
+
+def _paste(page, x, y):
+    page.keyboard.press("v")
+    page.mouse.click(*screen_pos(page, x, y))
+    assert page.evaluate("view.sel") is not None
+
+
+def _sel_state(page):
+    return page.evaluate(
+        "view.sel ? {sw: Math.round(view.sel.sw), sh: Math.round(view.sel.sh),"
+        " angle: view.sel.angle} : null"
+    )
+
+
+def test_copy_paste_toolbar_and_hotkeys(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+
+    # Clone moved from C to O; C arms the copy tool, V the paste tool
+    page.keyboard.press("o")
+    assert page.evaluate(_active("tool-clone"))
+    page.keyboard.press("c")
+    assert page.evaluate(_active("tool-copy"))
+    page.keyboard.press("v")
+    assert page.evaluate(_active("tool-paste"))
+    page.keyboard.press("p")
+    assert page.evaluate(_active("tool-crop"))
+    page.keyboard.press("Control+c")
+    assert page.evaluate(_active("tool-copy"))
+    page.keyboard.press("Control+v")
+    assert page.evaluate(_active("tool-paste"))
+
+    # copy / paste use no brush: all four brush controls are disabled
+    for sel in ("#brush-color", "#brush-size", "#brush-screen", "#brush-opacity"):
+        assert page.evaluate(f"document.querySelector('{sel}').disabled"), f"{sel} not disabled"
+    page.keyboard.press("d")
+    for sel in ("#brush-size", "#brush-screen", "#brush-opacity"):
+        assert not page.evaluate(f"document.querySelector('{sel}').disabled"), f"{sel} disabled"
+
+    # paste has nothing to drop until an area was copied
+    assert page.evaluate("document.getElementById('tool-paste').disabled")
+    _copy(page, base)
+    assert not page.evaluate("document.getElementById('tool-paste').disabled")
+
+
+def test_copy_stores_the_area_only(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base, 10, 10, 50, 90)
+
+    clip = page.evaluate("view.clip ? {w: view.clip.w, h: view.clip.h} : null")
+    assert clip == {"w": 40, "h": 80}
+    # copying changes nothing on the canvas (no new entity, no pixels touched)
+    assert _canvas_size(base) == (200, 150)
+    assert canvas_px(base, 100, 100) == BG
+    assert page.evaluate("view.sel") is None
+    assert "copied 40" in page.text_content("#status-line")
+
+
+def test_paste_drop_is_an_overlay_until_applied(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base)
+    _paste(page, 150, 100)
+
+    sel = _sel_state(page)
+    assert sel["sw"] == 40 and sel["sh"] == 40
+    # centred on the click
+    assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [150, 100]
+    # the apply / discard pair is there, centred on the selection
+    assert page.is_visible("#sel-actions")
+
+    # the drop is an overlay only: the server's canvas is untouched
+    page.evaluate("forceSync()")
+    assert canvas_px(base, 150, 100) == BG
+
+    # Apply composites it (with one draw-undo step)
+    page.click("#sel-ok")
+    assert wait_until(lambda: page.evaluate("view.sel") is None)  # async: snapshot first
+    page.evaluate("forceSync()")
+    assert wait_until(lambda: canvas_px(base, 150, 100) == PATCH)
+    assert _canvas_size(base) == (200, 150)
+
+    page.keyboard.press("Control+z")
+    assert wait_until(lambda: canvas_px(base, 150, 100) == BG)
+
+
+def test_paste_cancel_discards(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base)
+    _paste(page, 150, 100)
+
+    page.click("#sel-cancel")
+    assert page.evaluate("view.sel") is None
+    assert page.is_hidden("#sel-actions")
+    page.evaluate("forceSync()")
+    assert canvas_px(base, 150, 100) == BG
+
+    # Esc discards too
+    _paste(page, 150, 100)
+    page.keyboard.press("Escape")
+    assert page.evaluate("view.sel") is None
+
+
+def test_selection_handles_resize_and_rotate(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base)
+    _paste(page, 100, 75)  # 40x40 at (80..120, 55..95)
+
+    # right-edge handle: moves that edge, the left edge stays put
+    page.mouse.move(*screen_pos(page, 120, 75))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 150, 75), steps=5)
+    page.mouse.up()
+    sel = _sel_state(page)
+    assert sel["sw"] == 70
+    assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.sh)]") == [115, 40]
+
+    # top-left corner: free rotation around the centre
+    before = _sel_state(page)["angle"]
+    page.mouse.move(*screen_pos(page, 80, 55))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 115, 60), steps=5)
+    page.mouse.up()
+    after = _sel_state(page)["angle"]
+    assert after != before
+    assert abs(after) <= 2 * 3.141592653589793
+
+    # bottom-right corner: aspect-locked scale, opposite corner pinned
+    page.evaluate("view.sel.angle = 0")
+    page.evaluate("view.sel.sw = 40; view.sel.sh = 40; view.sel.cx = 100; view.sel.cy = 75")
+    page.mouse.move(*screen_pos(page, 120, 55))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 160, 35), steps=5)
+    page.mouse.up()
+    sel = _sel_state(page)
+    assert sel["sw"] == sel["sh"]  # the aspect (1:1) is preserved
+    assert sel["sw"] > 40
+    # the pinned bottom-left corner did not move
+    assert page.evaluate("[view.sel.cx - view.sel.sw / 2, view.sel.cy + view.sel.sh / 2]") == [80, 95]
+
+    # the canvas never changed while all this happened
+    assert _canvas_size(base) == (200, 150)
+
+
+def test_draw_on_selection_and_shift_erase(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base)
+    _paste(page, 150, 100)  # local (0,0) is world (130,80)
+
+    def alpha(lx, ly):
+        return page.evaluate(
+            "([x, y]) => view.sel.img.getContext('2d').getImageData(x, y, 1, 1).data[3]",
+            [lx, ly],
+        )
+
+    assert alpha(20, 20) == 255
+
+    # a normal draw paints ON the selection (in its frame), not on the canvas.
+    # Off the exact centre: the apply / discard pair sits there (and only its
+    # buttons eat clicks, see #sel-actions)
+    page.keyboard.press("d")
+    page.evaluate("Tools.state.brush.color = '#ff0000'; Tools.state.brush.size = 20")
+    stroke(page, [[140, 90]])
+    assert alpha(10, 10) == 255
+    assert page.evaluate(
+        "([x, y]) => view.sel.img.getContext('2d').getImageData(x, y, 1, 1).data.slice(0, 3)",
+        [10, 10],
+    ) == [255, 0, 0]
+    assert canvas_px(base, 140, 90) == BG
+
+    # shift draws as an eraser: the affected pixels lose their alpha
+    dot(page, 140, 90, shift=True)
+    assert alpha(10, 10) == 0
+    assert alpha(2, 2) == 255  # untouched corner
+    assert canvas_px(base, 140, 90) == BG
+
+    # Apply keeps the erased pixels transparent
+    page.click("#sel-ok")
+    assert wait_until(lambda: page.evaluate("view.sel") is None)
+    page.evaluate("forceSync()")
+    assert canvas_px(base, 140, 90) == BG
+    assert canvas_px(base, 132, 82) == PATCH
+
+
+def test_crop_and_clone_target_the_selection(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base)
+    _paste(page, 100, 75)  # 40x40 at (80..120, 55..95)
+
+    # crop with an active selection crops the SELECTION, not the canvas
+    page.keyboard.press("p")
+    page.mouse.move(*screen_pos(page, 90, 60))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 110, 90), steps=5)
+    page.mouse.up()
+    sel = _sel_state(page)
+    assert sel == {"sw": 20, "sh": 30, "angle": 0}
+    assert _canvas_size(base) == (200, 150)
+    assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [100, 75]
+
+    # clone samples the SELECTION: paint a marker colour on it, then clone
+    # from that point (the canvas under the target is the plain BG, so a
+    # source that leaked to the canvas would show up as BG). Coordinates are
+    # inside the CROPPED selection: 20x30 at (90..110, 60..90)
+    page.keyboard.press("d")
+    page.evaluate("Tools.state.brush.color = '#ff0000'; Tools.state.brush.size = 12")
+    stroke(page, [[94, 66]])  # local (4, 6)
+    page.keyboard.press("o")
+    page.keyboard.down("Control")
+    page.mouse.move(*screen_pos(page, 94, 66))
+    page.mouse.down()
+    page.mouse.up()
+    page.keyboard.up("Control")
+    page.evaluate("Tools.state.clone.size = 12")
+    stroke(page, [[104, 82]])  # local (14, 22)
+    rgb = page.evaluate(
+        "(() => { const d = view.sel.img.getContext('2d').getImageData(14, 22, 1, 1).data;"
+        " return [d[0], d[1], d[2]]; })()"
+    )
+    assert rgb == [255, 0, 0]
+    assert canvas_px(base, 104, 82) == BG  # the canvas never saw any of it
+
+
+def test_selection_survives_tool_switch_and_dies_with_the_view(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base)
+    _paste(page, 150, 100)
+
+    for key in ("d", "s", "o", "m", "p"):
+        page.keyboard.press(key)
+        assert page.evaluate("view.sel") is not None, f"lost on {key}"
+
+    # a new server-side view (new entity here) drops the floating selection,
+    # while the copied area survives (it is the client's own buffer)
+    set_canvas(base, 120, 100, BG)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+    assert page.evaluate("view.sel") is None
+    assert page.is_hidden("#sel-actions")
+    assert page.evaluate("view.clip") is not None
