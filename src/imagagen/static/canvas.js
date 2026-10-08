@@ -273,11 +273,16 @@ function drawMaskOutline(ctx) {
   // corner (the drawn box is padded, the number is the raw mask extent)
   const b = maskBboxLive();
   if (b) {
-    const fs = 12 / view.scale; // ~12 screen px
+    const fs = 15 / view.scale; // ~15 screen px
     ctx.font = `${fs}px system-ui, sans-serif`;
     ctx.fillStyle = "rgba(128,128,128,0.9)";
     ctx.textAlign = "right";
     ctx.textBaseline = "bottom";
+    // thin dark drop shadow so the grey text stays readable on bright canvas
+    // (shadowBlur/offset are in device px, unaffected by the view transform)
+    ctx.shadowColor = "rgba(0,0,0,0.85)";
+    ctx.shadowBlur = 1;
+    ctx.shadowOffsetY = 1;
     const inset = 2 / view.scale;
     ctx.fillText(`${b.w}x${b.h}`, r.x + r.w - inset, r.y + r.h - inset);
   }
