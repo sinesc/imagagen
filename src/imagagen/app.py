@@ -170,8 +170,13 @@ class LoraSettingsBody(BaseModel):
 class GenerateBody(BaseModel):
     prompt: str
     negative_prompt: str = ""
-    width: int = Field(default=1024, ge=64, le=4096)
-    height: int = Field(default=1024, ge=64, le=4096)
+    # -1 = auto size: the mask bounding box (per dimension), scaled by
+    # `oversample` and rounded up to a multiple of 16 (inpaint modes only)
+    width: int = Field(default=1024, ge=-1, le=4096)
+    height: int = Field(default=1024, ge=-1, le=4096)
+    # scales the generation size (user-specified or mask-derived) before
+    # rounding up to a multiple of 16 (inpaint modes only)
+    oversample: float = Field(default=1.0, ge=0.1, le=4.0)
     # -1 = "use model default": the model configuration's value, then the
     # backend built-in (the default IS the sentinel, so callers that omit
     # the fields get the per-model built-ins, not a hard-coded value)
@@ -557,6 +562,12 @@ def create_app(
     # --- generation ---
     @app.post("/api/generate")
     def generate(body: GenerateBody) -> dict:
+        # the auto-size sentinel (-1) resolves from the mask bounding box,
+        # which only exists for the inpaint modes
+        if body.mode == "generate" and (body.width == -1 or body.height == -1):
+            return JSONResponse(
+                {"error": "auto size (-1) requires an inpaint mode"},
+                status_code=400)
         # model_id here is a *configuration* id (Phase 4): files in
         # user/model-configs/ or the in-memory default of an unconfigured model.
         # Default-override resolution (concept.md): user setting -> (only
@@ -675,7 +686,8 @@ def create_app(
             # "generate" leaves the request untouched
             plan = with_inpaint(req, body.mode, canvas, body.denoise,
                                 rotation=body.rotation,
-                                padding=body.mask_padding)
+                                padding=body.mask_padding,
+                                oversample=body.oversample)
         except GenerationError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         job = queue.submit(model_id, req, body.batch_size, plan=plan,

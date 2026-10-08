@@ -296,6 +296,12 @@ class InpaintPlan:
         return out
 
 
+def _round16_up(px: float) -> int:
+    """Generation dimension rounded UP to a multiple of 16, clamped to the
+    UI's size limits."""
+    return int(min(4096, max(64, math.ceil(px / 16) * 16)))
+
+
 def with_inpaint(
     request: GenerateRequest,
     mode: str,
@@ -303,6 +309,7 @@ def with_inpaint(
     denoise: float,
     rotation: int = 0,
     padding: int = INPAINT_PADDING,
+    oversample: float = 1.0,
 ) -> InpaintPlan | None:
     """Populate ``request.init_image``/``init_mask``/``denoise`` and return
     the post-processing plan (None only for a rotation-0 "generate").
@@ -323,7 +330,14 @@ def with_inpaint(
     (it is what the PNG metadata records, alongside ``rotation``).
 
     ``padding`` is the context ring around the mask box for "inpaint
-    masked" (see ``INPAINT_PADDING``), capped at the mask's largest extent."""
+    masked" (see ``INPAINT_PADDING``, capped at the mask's largest extent).
+
+    ``width``/``height`` == -1 on the request is the auto-size sentinel:
+    the dimension is taken from the mask bounding box (display frame). In
+    the inpaint modes every dimension (auto-computed or user-specified) is
+    scaled by ``oversample`` and rounded up to a multiple of 16 before the
+    mode-specific geometry runs, so the resolved size is what the plan and
+    the PNG metadata record."""
     if rotation not in ROTATIONS:
         raise GenerationError(f"invalid rotation {rotation!r}")
     if mode == "generate":
@@ -341,6 +355,21 @@ def with_inpaint(
         raise GenerationError("canvas is empty")
     # the displayed image's own mask (at the canvas image's size)
     mask = canvas.mask
+    # resolve the auto-size sentinel from the mask bbox (display frame,
+    # before any rotation), then apply the oversample scale + 16-round-up
+    # to every dimension (user-specified ones included) — inpaint modes only
+    if request.width == -1 or request.height == -1:
+        if not (mask > 0).any():
+            raise GenerationError("mask is empty")
+        rows = np.where((mask > 0).any(axis=1))[0]
+        cols = np.where((mask > 0).any(axis=0))[0]
+        bw, bh = cols[-1] - cols[0] + 1, rows[-1] - rows[0] + 1
+        if request.width == -1:
+            request.width = bw
+        if request.height == -1:
+            request.height = bh
+    request.width = _round16_up(request.width * oversample)
+    request.height = _round16_up(request.height * oversample)
     work_image = rotate_canvas(image, rotation) if rotation else image
     work_mask = rotate_canvas(mask, rotation) if rotation else mask
 

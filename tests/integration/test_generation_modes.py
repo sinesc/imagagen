@@ -610,3 +610,35 @@ def test_client_edits_retain_canvas_metadata(client):
     meta = _canvas_meta(client)
     assert meta is not None
     assert meta["prompt"] == "before strokes"
+
+
+# ------------------------------------------------- auto size + oversample --
+
+
+def test_auto_size_sentinel_requires_inpaint(client):
+    _set_canvas(client, 64, 64, 99)
+    _mask_dot(client, 32, 32, size=16)
+    r = client.post("/api/generate", json={
+        "prompt": "t", "width": -1, "height": 64, "mode": "generate"})
+    assert r.status_code == 400
+
+
+def test_auto_size_sentinel_and_oversample(client):
+    _set_canvas(client, 128, 128, 99)
+    _mask_dot(client, 40, 40, size=16)  # mask bbox 16x16
+    # -1/-1: mask bbox (16) rounded up to 16, clamped to the 64px minimum
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, mode="inpaint_masked", width=-1,
+                        height=-1, mask_padding=0)
+    r = client.post("/api/canvas/thumb", json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    meta = _canvas_meta(client)
+    assert (meta["width"], meta["height"]) == (64, 64)
+    # oversample scales the user-specified size before the 16-round-up
+    with client.websocket_connect("/api/ws") as ws:
+        job2 = _generate(client, ws, mode="inpaint_masked", width=64,
+                         height=64, mask_padding=0, oversample=2.0)
+    r = client.post("/api/canvas/thumb", json={"job": job2["job_id"], "index": 0})
+    assert r.status_code == 200
+    meta2 = _canvas_meta(client)
+    assert (meta2["width"], meta2["height"]) == (128, 128)

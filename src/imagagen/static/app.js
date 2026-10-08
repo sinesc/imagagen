@@ -952,6 +952,7 @@ async function generate() {
     mode: $("mode").value,
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
+    oversample: parseFloat($("oversample").value) || 1,
     soft_inpainting: softInpaintBody(), // null = off
   };
   // pinned thumbnails are retained across the generation (their images
@@ -1331,7 +1332,7 @@ async function deleteConfig() {
 
 // ---------------- presets (Phase 4) ----------------
 const PRESET_KEYS = ["width", "height", "rotation", "steps", "cfg", "seed", "batch",
-  "sampler", "scheduler", "mode", "denoise", "mask_padding", "loras",
+  "sampler", "scheduler", "mode", "denoise", "mask_padding", "oversample", "loras",
   "soft_inpaint"]; // enable/disable of the sidebar checkboxes
 
 // The preset box keeps its selection while the form still matches the applied
@@ -1480,6 +1481,7 @@ function openPresetDialog(existing, onClose = null, isClone = false) {
     ["mode", "Mode", "select", p.mode],
     ["denoise", "Denoise strength", "number", p.denoise],
     ["mask_padding", "Mask padding", "number", p.mask_padding],
+    ["oversample", "Oversample", "number", p.oversample],
     ["loras", "LORAs", "loras", p.loras],
     ["soft_inpaint", "Soft inpainting", "bool", p.soft_inpaint],
   ];
@@ -1774,6 +1776,7 @@ function zoomCenter(f) {
 function syncMode() {
   $("denoise").disabled = $("mode").value === "generate";
   $("mask-padding").disabled = $("mode").value !== "inpaint_masked";
+  $("oversample").disabled = $("mode").value === "generate";
   $("soft-inpaint").disabled = $("mode").value === "generate";
   syncGenerateEnabled();
 }
@@ -2187,6 +2190,7 @@ function readUiState() {
     // "generate" mode since there is nothing to inpaint yet
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
+    oversample: parseFloat($("oversample").value) || 1,
     soft_inpainting: $("soft-inpaint").checked,
     soft_mask_blend_power: state.soft.power,
     soft_mask_blend_scale: state.soft.scale,
@@ -2226,6 +2230,7 @@ function applyUiState(st) {
     ["scheduler", "scheduler"],
     ["denoise", "denoise"],
     ["mask-padding", "mask_padding"],
+    ["oversample", "oversample"],
   ];
   for (const [elm, key] of fields) {
     if (st[key] !== undefined && st[key] !== null) $(elm).value = st[key];
@@ -2621,7 +2626,7 @@ document.addEventListener(
   true
 );
 
-["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch", "denoise", "mask-padding"].forEach((id) => {
+["prompt", "negative", "width", "height", "steps", "cfg", "seed", "batch", "denoise", "mask-padding", "oversample"].forEach((id) => {
   $(id).addEventListener("input", () => { onUserFieldChange(id); scheduleSaveUiState(); });
 });
 $("prompt").addEventListener("input", schedulePromptTokens);

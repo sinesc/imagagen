@@ -41,6 +41,7 @@ PRESET_FIELDS = (
     "mode",
     "denoise",
     "mask_padding",
+    "oversample",
     "loras",
     "soft_inpaint",
 )
@@ -55,8 +56,9 @@ class Preset(BaseModel):
     # optional group label (the main UI's preset dropdown renders one
     # optgroup per group; empty-group presets are plain options)
     group: str | None = Field(default=None, max_length=120)
-    width: int | None = Field(default=None, ge=64, le=4096)
-    height: int | None = Field(default=None, ge=64, le=4096)
+    # -1 = the auto-size sentinel (mask bounding box, inpaint modes only)
+    width: int | None = Field(default=None, ge=-1, le=4096)
+    height: int | None = Field(default=None, ge=-1, le=4096)
     # source rotation (degrees, positive = clockwise; None = leave as-is)
     rotation: int | None = Field(default=None, ge=-180, le=180)
     # steps/cfg: -1 = the "use model default" sentinel (same as the form)
@@ -69,6 +71,7 @@ class Preset(BaseModel):
     mode: str | None = Field(default=None, pattern="^(generate|inpaint_masked|inpaint_not_masked)$")
     denoise: float | None = Field(default=None, ge=0.0, le=1.0)
     mask_padding: int | None = Field(default=None, ge=0, le=2048)
+    oversample: float | None = Field(default=None, ge=0.1, le=4.0)
     loras: list[tuple[str, float]] | None = None
     # the enable/disable checkbox of the soft inpainting row (bool;
     # null = unchecked = leave as-is). Self attention guidance is not a

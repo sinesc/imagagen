@@ -18,14 +18,15 @@ def _open(page, base):
 def test_rotation_select_layout(page, server):
     base, _ = server
     _open(page, base)
-    # the select sits in the dims row, between the height and batch slots
+    # the select sits in the dims row, between the oversample and batch slots
     # each slot: its own id (the swap button) or the id of the control
     # nested in its label
     ids = page.evaluate(
         "() => [...document.getElementById('width')"
         ".closest('.row').children]"
         ".map(e => e.id || e.querySelector('input,select')?.id || '')")
-    assert ids == ["width", "swap-dims", "height", "rotation", "batch"]
+    assert ids == ["width", "swap-dims", "height", "oversample", "rotation",
+                    "batch"]
     opts = page.evaluate(
         "() => [...document.getElementById('rotation').options]"
         ".map(o => [o.value, o.textContent])")

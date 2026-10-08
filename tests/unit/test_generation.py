@@ -218,6 +218,40 @@ def test_inpaint_masked_requires_mask():
                      "inpaint_masked", _canvas(), 1.0)
 
 
+def test_auto_size_sentinel_uses_mask_bbox():
+    # -1 resolves from the mask bbox, rounded UP to a multiple of 16
+    c = _canvas(128, 128)
+    m = np.zeros((128, 128), dtype=np.uint8)
+    m[20:120, 10:61] = 255  # bbox 51x100 (w x h)
+    c.set_mask(m)
+    req = GenerateRequest(prompt="x", width=-1, height=-1)
+    with_inpaint(req, "inpaint_masked", c, 1.0, padding=0)
+    assert (req.width, req.height) == (64, 112)  # ceil51/16, ceil100/16
+
+
+def test_auto_size_sentinel_needs_mask():
+    with pytest.raises(GenerationError):
+        with_inpaint(GenerateRequest(prompt="x", width=-1, height=64),
+                     "inpaint_not_masked", _canvas(64, 64), 1.0)
+
+
+def test_oversample_scales_and_rounds_dims():
+    # user-specified dims are scaled by oversample, then rounded up to 16
+    c = _canvas(128, 128)
+    m = np.zeros((128, 128), dtype=np.uint8)
+    m[10:20, 10:20] = 255
+    c.set_mask(m)
+    req = GenerateRequest(prompt="x", width=100, height=100)
+    plan = with_inpaint(req, "inpaint_masked", c, 1.0, padding=0,
+                        oversample=1.25)
+    assert (req.width, req.height) == (128, 128)  # 100*1.25 = 125 -> 128
+    assert plan.requested_size == (128, 128)
+    # the sentinel path scales too: bbox 10x10 * 2.4 = 24 -> 32 -> clamp 64
+    req2 = GenerateRequest(prompt="x", width=-1, height=-1)
+    with_inpaint(req2, "inpaint_masked", c, 1.0, padding=0, oversample=2.4)
+    assert (req2.width, req2.height) == (64, 64)
+
+
 def test_inpaint_masked_populates_request():
     c = _canvas()
     m = np.zeros((48, 64), dtype=np.uint8)
@@ -291,31 +325,31 @@ def test_inpaint_masked_postprocess_blends_only_mask_region():
 
 
 def test_inpaint_not_masked_populates_request():
-    c = _canvas()  # 64x48
-    m = np.zeros((48, 64), dtype=np.uint8)
+    c = _canvas(64, 64)  # square: the 16-round-up keeps the 64x64 request
+    m = np.zeros((64, 64), dtype=np.uint8)
     m[10:20, 12:32] = 255
     c.set_mask(m)
-    req = GenerateRequest(prompt="x", width=64, height=48)
+    req = GenerateRequest(prompt="x", width=64, height=64)
     plan = with_inpaint(req, "inpaint_not_masked", c, 0.75)
     # same size: no scale, no border
-    assert plan.work_mask.shape == (48, 64)
+    assert plan.work_mask.shape == (64, 64)
     np.testing.assert_array_equal(plan.work_mask, m)
-    assert req.init_image.shape == (48, 64, 3)
+    assert req.init_image.shape == (64, 64, 3)
     # init mask is inverted: protect where the user masked
     np.testing.assert_array_equal(req.init_mask, 255 - m)
 
 
 def test_inpaint_not_masked_outpaint_geometry():
-    c = _canvas()  # 64x48
-    req = GenerateRequest(prompt="x", width=128, height=48)
+    c = _canvas(64, 64)  # square: 128x64 request survives the 16-round-up
+    req = GenerateRequest(prompt="x", width=128, height=64)
     plan = with_inpaint(req, "inpaint_not_masked", c, 1.0)
     # 2x horizontally, centered, no vertical change
-    assert req.init_image.shape == (48, 128, 3)
+    assert req.init_image.shape == (64, 128, 3)
     # the image sits in the middle: cols 32..96, borders edge-replicated
     np.testing.assert_array_equal(req.init_image[:, 32:96], 100)
     assert (req.init_image[:, :32] == 100).all()
     assert (req.init_image[:, 96:] == 100).all()
-    assert plan.work_mask.shape == (48, 128)
+    assert plan.work_mask.shape == (64, 128)
     assert not plan.work_mask.any()
 
 
@@ -485,21 +519,22 @@ def test_with_inpaint_inpaint_masked_rotation_mismatched_request_size():
 
 
 def test_with_inpaint_inpaint_not_masked_rotation_extends_size():
-    c = _canvas()  # 64x48
-    req = GenerateRequest(prompt="x", width=64, height=48)
+    c = _canvas(64, 64)  # square: 64x64 survives the 16-round-up
+    req = GenerateRequest(prompt="x", width=64, height=64)
     plan = with_inpaint(req, "inpaint_not_masked", c, 1.0, rotation=90)
-    assert (req.width, req.height) == (48, 64)
-    assert req.init_image.shape == (64, 48, 3)
-    assert plan.requested_size == (64, 48)
+    assert (req.width, req.height) == (64, 64)
+    assert req.init_image.shape == (64, 64, 3)
+    assert plan.requested_size == (64, 64)
     assert plan.postprocess(
-        np.full((64, 48, 3), 7, dtype=np.uint8)).shape == (48, 64, 3)
+        np.full((64, 64, 3), 7, dtype=np.uint8)).shape == (64, 64, 3)
 
     req2 = GenerateRequest(prompt="x", width=100, height=100)
     plan2 = with_inpaint(req2, "inpaint_not_masked", c, 1.0, rotation=45)
-    assert (req2.width, req2.height) == (142, 142)
-    assert req2.init_image.shape == (142, 142, 3)
+    # the request is rounded up to 112x112 first, then extended for 45°
+    assert (req2.width, req2.height) == (159, 159)
+    assert req2.init_image.shape == (159, 159, 3)
     assert plan2.postprocess(
-        np.full((142, 142, 3), 7, dtype=np.uint8)).shape == (100, 100, 3)
+        np.full((159, 159, 3), 7, dtype=np.uint8)).shape == (112, 112, 3)
 
 
 def test_with_inpaint_invalid_rotation_raises():

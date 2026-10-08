@@ -85,8 +85,9 @@ class UiState(BaseModel):
     model: str | None = None
     prompt: str = ""
     negative_prompt: str = ""
-    width: int = Field(default=1024, ge=64, le=4096)
-    height: int = Field(default=1024, ge=64, le=4096)
+    # -1 = auto size: mask bounding box (inpaint modes only; see generation.py)
+    width: int = Field(default=1024, ge=-1, le=4096)
+    height: int = Field(default=1024, ge=-1, le=4096)
     # -1 = "use model default" (the model configuration's value, then built-in);
     # the default IS the sentinel, so an unconfigured field rides on the
     # resolution chain instead of hard-coding a value
@@ -100,6 +101,9 @@ class UiState(BaseModel):
     # context padding around the masked area (canvas px per side),
     # "inpaint masked" only; same limits as the HTML input
     mask_padding: int = Field(default=8, ge=0, le=2048)
+    # scales the generation size (user or mask-derived) before rounding up
+    # to a multiple of 16 (inpaint modes only); same limits as the HTML input
+    oversample: float = Field(default=1.0, ge=0.1, le=4.0)
     # rotate the source before generating (UI dropdown; 0 = default)
     rotation: int = Field(default=0, ge=-180, le=180)
 

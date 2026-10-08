@@ -57,11 +57,14 @@
           </span>
         </label>
       </div>
-      <div class="row">
-        <label class="dims">Width <input id="width" type="number" value="1024" min="64" max="4096" step="8"></label>
+      <div class="row dims-row">
+        <label class="dims" title="-1 = auto: mask bounding box, scaled by Oversample and rounded up to a multiple of 16 (Inpaint/Outpaint only)">Width <input id="width" type="number" value="1024" min="-1" max="4096" step="8"></label>
         <button id="swap-dims" type="button" class="mini icon" title="swap width and height">↔</button>
-        <label class="dims">Height <input id="height" type="number" value="1024" min="64" max="4096" step="8"></label>
-        <label class="rotate" title="rotate the source before generating and counter-rotate the result: the model always sees upright content (+ = clockwise); ±45°/±135° extend the generation size so the rotated image fits">Rotate
+        <label class="dims" title="-1 = auto: mask bounding box, scaled by Oversample and rounded up to a multiple of 16 (Inpaint/Outpaint only)">Height <input id="height" type="number" value="1024" min="-1" max="4096" step="8"></label>
+        <label class="trio" title="scale the generation size (user-specified or mask-derived) before rounding up to a multiple of 16 (Inpaint/Outpaint only)">Oversample
+          <input id="oversample" type="number" value="1" min="0.1" max="4" step="0.05" disabled>
+        </label>
+        <label class="trio" title="rotate the source before generating and counter-rotate the result: the model always sees upright content (+ = clockwise); ±45°/±135° extend the generation size so the rotated image fits">Rotate
           <select id="rotation">
             <option value="-180">-180°</option>
             <option value="-135">-135°</option>
@@ -74,7 +77,7 @@
             <option value="180">+180°</option>
           </select>
         </label>
-        <label>Batch <input id="batch" type="number" value="1" min="1" max="32"></label>
+        <label class="trio">Batch <input id="batch" type="number" value="1" min="1" max="32"></label>
       </div>
       <div class="row">
         <label class="mode-label" title="Generate: new image — Inpaint: regenerate the masked area — Outpaint: regenerate the whole image (img2img/outpaint), masked content protected">
