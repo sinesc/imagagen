@@ -1587,9 +1587,12 @@ function drawSelectionOverlay(ctx) {
   ctx.rotate(s.angle);
   ctx.imageSmoothingEnabled = true; // the selection is resampled content
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(s.img, 0, 0, s.img.width, s.img.height, -s.sw / 2, -s.sh / 2, s.sw, s.sh);
   const st = view.stroke;
   if (st && st.sel) {
+    // the live stroke preview: the layer IS the selection image + stroke, so
+    // it REPLACES the image (blitting it on top of the image would hide an
+    // erase, which lowers the layer's alpha, and drawing it at 0,0 would
+    // show a second copy offset by half its size)
     const pc = selPreview.canvas;
     if (selPreview.w !== st.tw || selPreview.h !== st.th) {
       pc.width = st.tw;
@@ -1605,10 +1608,9 @@ function drawSelectionOverlay(ctx) {
     pctx.imageSmoothingEnabled = true;
     pctx.drawImage(st.img, 0, 0);
     drawStrokePreview(pctx, st);
-    // the preview layer IS the selection image + stroke, so it goes exactly
-    // where the image itself was drawn (centred on the transform origin) --
-    // blitting it at 0,0 would show a second copy offset by half its size
     ctx.drawImage(pc, -st.tw / 2, -st.th / 2, st.tw, st.th);
+  } else {
+    ctx.drawImage(s.img, 0, 0, s.img.width, s.img.height, -s.sw / 2, -s.sh / 2, s.sw, s.sh);
   }
   // faint border + handles (constant on screen)
   ctx.lineWidth = 3 / view.scale;

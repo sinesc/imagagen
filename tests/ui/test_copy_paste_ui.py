@@ -342,6 +342,49 @@ def test_stroke_preview_lands_on_the_selection(page, server):
     assert canvas_px(base, 94, 66) == BG
 
 
+def test_erase_preview_is_live(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base)
+    _paste(page, 100, 75)  # 40x40 patch at (80..120, 55..95)
+
+    def screen_rgb(x, y):
+        return page.evaluate(
+            """([x, y]) => {
+                const c = document.getElementById('canvas');
+                const dx = Math.round((view.ox + x * view.scale) * view.dpr);
+                const dy = Math.round((view.oy + y * view.scale) * view.dpr);
+                const d = c.getContext('2d').getImageData(dx, dy, 1, 1).data;
+                return [d[0], d[1], d[2]];
+            }""",
+            [x, y],
+        )
+
+    assert screen_rgb(94, 66) == list(PATCH)  # the selection covers it
+
+    page.keyboard.press("d")
+    page.evaluate("Tools.state.brush.size = 20")
+    page.mouse.move(*screen_pos(page, 94, 66))  # selection-local (14, 16)
+    page.keyboard.down("Shift")
+    page.mouse.down()
+
+    # the erase is visible WHILE dragging: the hole reveals the canvas image
+    # (the preview layer replaces the selection image, it is not blitted on
+    # top of it, where lowering its alpha would show nothing)
+    assert screen_rgb(94, 66) == list(BG)
+    assert screen_rgb(84, 60) == list(PATCH)  # outside the brush: intact
+
+    page.mouse.up()
+    page.keyboard.up("Shift")
+    a = page.evaluate(
+        "([x, y]) => view.sel.img.getContext('2d').getImageData(x, y, 1, 1).data[3]",
+        [14, 16],
+    )
+    assert a == 0
+    assert screen_rgb(94, 66) == list(BG)  # the commit matches the preview
+
+
 def test_selection_survives_tool_switch_and_dies_with_the_view(page, server):
     base, _ = server
     _open(page, base)
