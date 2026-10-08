@@ -2543,10 +2543,20 @@ const syncHotkeyBorder = () => {
     $(id).classList.toggle("hotkeys", !typing);
 };
 // focusout fires before activeElement moves to the next field, so re-check
-// after the focus machinery settled
+// after the focus machinery settled; debounce 100ms so combo-box selections
+// (which blur/refocus the input mid-pick) don't flash the border
+let hotkeyBorderTimer = 0;
+const applyHotkeyBorder = () => {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
+  for (const id of ["canvas", "thumb-preview"])
+    $(id).classList.toggle("hotkeys", !typing);
+};
 for (const ev of ["focusin", "focusout"])
-  document.addEventListener(ev, () => requestAnimationFrame(syncHotkeyBorder));
-syncHotkeyBorder();
+  document.addEventListener(ev, () => {
+    clearTimeout(hotkeyBorderTimer);
+    hotkeyBorderTimer = setTimeout(applyHotkeyBorder, 100);
+  });
+applyHotkeyBorder();
 
 // -------- sidebar resize: drag the border between the sidebar and stage --------
 const SIDEBAR_MIN_W = 280;
