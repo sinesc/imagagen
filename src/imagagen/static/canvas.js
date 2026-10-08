@@ -1605,7 +1605,10 @@ function drawSelectionOverlay(ctx) {
     pctx.imageSmoothingEnabled = true;
     pctx.drawImage(st.img, 0, 0);
     drawStrokePreview(pctx, st);
-    ctx.drawImage(pc, 0, 0, st.tw, st.th);
+    // the preview layer IS the selection image + stroke, so it goes exactly
+    // where the image itself was drawn (centred on the transform origin) --
+    // blitting it at 0,0 would show a second copy offset by half its size
+    ctx.drawImage(pc, -st.tw / 2, -st.th / 2, st.tw, st.th);
   }
   // faint border + handles (constant on screen)
   ctx.lineWidth = 3 / view.scale;

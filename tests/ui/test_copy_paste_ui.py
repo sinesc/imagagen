@@ -297,6 +297,51 @@ def test_crop_and_clone_target_the_selection(page, server):
     assert canvas_px(base, 104, 82) == BG  # the canvas never saw any of it
 
 
+def test_stroke_preview_lands_on_the_selection(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base)
+    _paste(page, 100, 75)  # 40x40 at (80..120, 55..95)
+
+    def screen_rgb(x, y):
+        """The device pixel of the DISPLAY canvas at canvas px (x, y)."""
+        return page.evaluate(
+            """([x, y]) => {
+                const c = document.getElementById('canvas');
+                const dx = Math.round((view.ox + x * view.scale) * view.dpr);
+                const dy = Math.round((view.oy + y * view.scale) * view.dpr);
+                const d = c.getContext('2d').getImageData(dx, dy, 1, 1).data;
+                return [d[0], d[1], d[2]];
+            }""",
+            [x, y],
+        )
+
+    page.keyboard.press("d")
+    page.evaluate("Tools.state.brush.color = '#ff0000'; Tools.state.brush.size = 20")
+    page.mouse.move(*screen_pos(page, 94, 66))  # selection-local (14, 16)
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 98, 70), steps=4)
+
+    # the live preview rides ON the selection: the stroke point is red there...
+    assert screen_rgb(94, 66) == [255, 0, 0]
+    # ...and not as a second copy offset by half the selection's size (the
+    # preview layer's origin is its centre, not its top-left): the matching
+    # point of that offset copy is (114, 91) and must still be the plain
+    # selection image (the patch colour), not the stroke colour
+    assert screen_rgb(114, 91) == list(PATCH)
+
+    page.mouse.up()
+    # the commit lands in the selection image, not on the canvas
+    rgb = page.evaluate(
+        "(() => { const d = view.sel.img.getContext('2d').getImageData(14, 16, 1, 1).data;"
+        " return [d[0], d[1], d[2]]; })()"
+    )
+    assert rgb == [255, 0, 0]
+    page.evaluate("forceSync()")
+    assert canvas_px(base, 94, 66) == BG
+
+
 def test_selection_survives_tool_switch_and_dies_with_the_view(page, server):
     base, _ = server
     _open(page, base)
