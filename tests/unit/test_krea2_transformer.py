@@ -6,6 +6,9 @@ full 12B checkpoint (the end-to-end numeric check is dev/smoke_krea2.py).
 - :class:`~imagagen.backends.krea2.transformer.Int8Linear`: the int8 load path
   (weight + per-row weight_scale), the dequantized GEMM on the
   rotated input, and the runtime LoRA deltas on the rotated input;
+- :class:`~imagagen.backends.krea2.transformer.Int4Linear`: the packed
+  nibble layout (int8 [out, in/2]) unpacks to the exact int8 values, so
+  the forward and the LoRA deltas are bit-identical to Int8Linear;
 - :class:`~imagagen.backends.krea2.transformer.DeltaLinear`: the plain-bf16
   delta contract (same shape/dtype rules as the int8 path).
 """
@@ -13,13 +16,15 @@ full 12B checkpoint (the end-to-end numeric check is dev/smoke_krea2.py).
 import torch
 from torch import nn
 
-from imagagen.gguf_ops import quant_dtype_scope
+from imagagen.backends.krea2 import _unpack_int4_row_major
 from imagagen.backends.krea2.transformer import (
     DeltaLinear,
+    Int4Linear,
     Int8Linear,
     _build_hadamard,
     _rotate,
 )
+from imagagen.gguf_ops import quant_dtype_scope
 
 
 class TestHadamard:
@@ -133,6 +138,66 @@ class TestInt8Linear:
         x = torch.randn(2, 64, dtype=torch.bfloat16)
         expected = x.float() @ (w.float() * scale.float()).T
         assert _rel_err(m(x).float(), expected) < 0.01
+
+
+def _pack_int4(values: torch.Tensor) -> torch.Tensor:
+    """comfy_kitchen _pack_int4_row_major: (..., K) int4 values ->
+    (..., K/2) int8, the even column in the low nibble."""
+    lo = values[..., 0::2].to(torch.int32) & 0x0F
+    hi = values[..., 1::2].to(torch.int32) & 0x0F
+    return (lo | (hi << 4)).to(torch.int8)
+
+
+def _make_int4(w: torch.Tensor, scale: torch.Tensor) -> Int4Linear:
+    """A loaded Int4Linear for the stored int8 weight ``w`` (nibble-packed
+    here; the checkpoints store the ConvRot-rotated weight) and the fp32
+    per-row ``scale``."""
+    with quant_dtype_scope(torch.device("cpu"), torch.bfloat16):
+        m = Int4Linear(w.shape[1], w.shape[0], bias=False)
+    m.load_state_dict({
+        "weight": nn.Parameter(_pack_int4(w), requires_grad=False),
+        "weight_scale": nn.Parameter(scale, requires_grad=False),
+    })
+    return m
+
+
+class TestInt4Linear:
+    def test_forward_is_bit_identical_to_int8(self):
+        # same stored bytes (the rotated weight, int4-packed vs int8):
+        # the GPU unpack reproduces the exact int8 values, so the bf16
+        # GEMM inputs are identical -> bit-equal
+        m8, w, scale = _make_int8()
+        w4 = w.clamp(-8, 7)  # int4 needs the same stored values, in range
+        m8.load_state_dict({
+            "weight": nn.Parameter(w4, requires_grad=False),
+            "weight_scale": nn.Parameter(scale, requires_grad=False)})
+        m4 = _make_int4(w4, scale)
+        torch.testing.assert_close(_unpack_int4_row_major(m4.weight), w4)
+        assert m4.weight.shape == (w.shape[0], w.shape[1] // 2)
+        gen = torch.Generator().manual_seed(5)
+        x = torch.randn(5, 256, generator=gen, dtype=torch.bfloat16)
+        assert torch.equal(m4(x), m8(x))
+
+    def test_lora_deltas_are_inherited(self):
+        # zero base weight: the output IS the plain-space delta, exactly
+        # as on Int8Linear (the A rotation is inherited)
+        m4 = _make_int4(torch.zeros(64, 256, dtype=torch.int8),
+                        torch.ones(64, 1))
+        a = torch.randn(4, 256)
+        b = torch.randn(64, 4)
+        m4.set_lora_deltas([(a, b, 0, 64)])
+        x = torch.randn(2, 256, dtype=torch.bfloat16)
+        expected = x.float() @ (b @ a).T
+        assert _rel_err(m4(x).float(), expected) < 0.01
+        m4.clear_lora_deltas()
+        assert m4.lora_deltas == []
+
+    def test_apply_moves_the_scales(self):
+        m4 = _make_int4(torch.zeros(4, 8, dtype=torch.int8), torch.ones(4, 1))
+        # a plain tensor scale is not a registered parameter: _apply must
+        # transport it (the inherited Int8Linear hook)
+        m4 = m4.to(torch.float16)
+        assert m4.weight_scale.dtype == torch.float16
 
 
 class TestDeltaLinear:

@@ -17,9 +17,10 @@ Architecture:
   txtfusion/txtmlp/tmlp/tproj/first/last sections are plain bf16. The
   ``int4_convrot`` checkpoints (e.g. ``krea2_finetuned_int4``) quantize
   the ``txtfusion`` projections too; :func:`_load_krea2_state_dict`
-  unpacks their nibble-packed int4 weights into the same int8 block
-  layout (~7 GB resident) and dequantizes/de-rotates the txtfusion
-  weights to plain bf16;
+  keeps their nibble-packed int4 blocks weights PACKED on the GPU
+  (:class:`Int4Linear` unpacks them to int8 per op, bit-identical to
+  the int8 numerics, ~7 GB resident) and dequantizes/de-rotates the
+  txtfusion weights to plain bf16;
 - the text condition is a 12-layer TAP of the Qwen3-VL-4B text tower
   (``hidden_states[2, 5, 8, ..., 35]``), flattened to (1, seq, 12*2560)
   and fused by the DiT's internal ``txtfusion`` adapter; the encoder
@@ -91,7 +92,7 @@ from .. import (
     shared_enc_cache,
 )
 from .lora import parse_krea2_lora
-from .transformer import DeltaLinear, Int8Linear, Krea2Transformer
+from .transformer import DeltaLinear, Int4Linear, Int8Linear, Krea2Transformer
 from .vae import denormalize_latent, load_krea2_vae, normalize_latent
 
 
@@ -136,10 +137,12 @@ def _unpack_int4_row_major(packed: torch.Tensor) -> torch.Tensor:
             .reshape(*packed.shape[:-1], -1).to(torch.int8))
 
 
-def _load_krea2_state_dict(path: str) -> dict:
-    """Read the K2 transformer checkpoint into ``{key: Parameter}`` (keys
-    relative to the transformer root; the ``*.comfy_quant`` U8 markers are
-    skipped). Two checkpoint layouts are handled:
+def _load_krea2_state_dict(path: str) -> tuple[dict, str]:
+    """Read the K2 transformer checkpoint into ``({key: Parameter},
+    layout)`` (keys relative to the transformer root; the ``*.comfy_quant``
+    U8 markers are skipped; ``layout`` is ``"int8" | "int4" | "bf16"``,
+    which selects the block ``quant_cls`` in the backend). Three
+    checkpoint layouts are handled:
 
     - ``int8_tensorwise`` (``krea2_Int8Extended``): the int8 tensors stay
       int8 and the per-row ``weight_scale`` ``(out, 1)`` ride along;
@@ -149,21 +152,22 @@ def _load_krea2_state_dict(path: str) -> dict:
       ``model.diffusion_model.`` prefix and every quantized projection is
       packed two signed nibbles per byte (``weight`` ``(out, in/2)``,
       per-row ``weight_scale`` ``(out,)``), Hadamard-rotated along the
-      input axis like the int8 checkpoint. The loader strips the prefix,
-      unpacks the nibbles back to int8 and reshapes the scales to
-      ``(out, 1)``, so the ``blocks.N`` sections load into the very same
-      Int8Linear modules (the runtime activation rotation still cancels
-      the stored weight rotation). The ``txtfusion`` projections are the
-      exception: their modules are plain bf16 DeltaLinears WITHOUT
-      ConvRot, so those weights are additionally dequantized and
-      de-rotated (H is symmetric, H^2 = I) to bf16 and their scales
-      dropped.
+      input axis like the int8 checkpoint. The loader strips the prefix
+      and keeps the blocks weights PACKED (int8 ``(out, in/2)`` plus the
+      scale reshaped to ``(out, 1)``), so they load into
+      :class:`Int4Linear` modules and unpack on the GPU per op (the
+      runtime activation rotation still cancels the stored weight
+      rotation). The ``txtfusion`` projections are the exception: their
+      modules are plain bf16 DeltaLinears WITHOUT ConvRot, so those
+      weights are additionally dequantized and de-rotated (H is
+      symmetric, H^2 = I) to bf16 and their scales dropped.
+    - plain ``bf16`` (no quantization metadata, no packed tensors): every
+      tensor rides through unchanged.
 
     Slow disk I/O; run OUTSIDE ``_PARAM_INIT_LOCK`` (it only reads
     tensors, it does not register them in a module). The tensors are
     fetched one at a time (``get_slice`` for the layout decisions), so
-    the peak RSS stays at the size of the returned dict instead of
-    holding the whole file twice during the int4 conversion.
+    the peak RSS stays at the size of the returned dict.
     """
     import json
 
@@ -187,6 +191,7 @@ def _load_krea2_state_dict(path: str) -> dict:
                 group = int(layer.get("convrot_groupsize", group))
                 break
         int4 = "int4" in fmt
+        layout = "int4" if int4 else "bf16"
 
         prefix = "model.diffusion_model."
         if names and all(k.startswith(prefix) for k in names):
@@ -211,25 +216,29 @@ def _load_krea2_state_dict(path: str) -> dict:
                     "_scale") in packed:
                 continue  # the scale is consumed (reshaped/folded) below
             if name not in packed:
+                if name.endswith(".weight_scale"):
+                    layout = "int8"  # int8_tensorwise per-row scales
                 sd[name] = torch.nn.Parameter(
                     f.get_tensor(file_key), requires_grad=False)
                 continue
-            w = _unpack_int4_row_major(f.get_tensor(file_key))
             scale = f.get_tensor(names[f"{name}_scale"])
             if name.removesuffix(".weight").startswith("txtfusion."):
-                # plain DeltaLinear target: fold the scale in and undo the
-                # ConvRot rotation, leaving a plain bf16 weight
+                # plain DeltaLinear target: unpack the nibbles, fold the
+                # scale in and undo the ConvRot rotation, leaving a plain
+                # bf16 weight
+                w = _unpack_int4_row_major(f.get_tensor(file_key))
                 w = _rotate(w.to(torch.float32) * scale.reshape(-1, 1),
                             group)
                 sd[name] = torch.nn.Parameter(
                     w.to(torch.bfloat16), requires_grad=False)
             else:
-                # Int8Linear target: the unpacked int8 bytes and the
-                # (out, 1) scale load exactly like the int8 checkpoint
-                sd[name] = torch.nn.Parameter(w, requires_grad=False)
+                # Int4Linear target: the PACKED int8 bytes (out, in/2)
+                # stay packed and unpack on the GPU per op
+                sd[name] = torch.nn.Parameter(
+                    f.get_tensor(file_key), requires_grad=False)
                 sd[f"{name}_scale"] = torch.nn.Parameter(
                     scale.reshape(-1, 1), requires_grad=False)
-    return sd
+    return sd, layout
 
 
 class Krea2Backend(ModelBackend):
@@ -269,7 +278,11 @@ class Krea2Backend(ModelBackend):
         #     I/O (it BUILDS tensors on the CPU but does not register them in
         #     a module), so it runs OUTSIDE _PARAM_INIT_LOCK to avoid blocking
         #     concurrent parameter work on another GPU for the whole read.
-        sd = _load_krea2_state_dict(self.model_path)
+        sd, layout = _load_krea2_state_dict(self.model_path)
+        # the packed int4 checkpoint keeps its nibble-packed blocks weights
+        # resident (Int4Linear unpacks them on the GPU per op); int8/bf16
+        # checkpoints use the int8 dequantize path
+        quant_cls = Int4Linear if layout == "int4" else Int8Linear
 
         # Every step below CREATES or MOVES module parameters (VAE,
         # transformer, text encoder). The .to() device moves route through
@@ -286,7 +299,7 @@ class Krea2Backend(ModelBackend):
             # mixes Int8Linear block projections with plain bf16 linears);
             # the int8 bytes load on CPU and move to the GPU with .to(device)
             with quant_dtype_scope(torch.device("cpu"), torch.bfloat16):
-                self.transformer = Krea2Transformer()
+                self.transformer = Krea2Transformer(quant_cls=quant_cls)
             result = self.transformer.load_state_dict(sd, strict=False)
             missing = list(result.missing_keys)
             unexpected = list(result.unexpected_keys)
@@ -296,18 +309,23 @@ class Krea2Backend(ModelBackend):
                     f"Krea 2 checkpoint mismatch for {info.name}: "
                     f"missing={missing[:5]} unexpected={unexpected[:5]}")
             # construction left the plain (non-quantized) linears/norms in
-            # fp32 while the Int8Linear weights are int8 with bf16 dummies:
-            # cast only the parameters outside the Int8Linear submodules so
+            # fp32 while the quantized weights are int8 with bf16 dummies:
+            # cast only the parameters outside the quantized submodules so
             # the quantized weights keep their dtype (a module-level .to()
-            # would recurse into the Int8Linear children)
-            int8_prefixes = {
+            # would recurse into the Int8Linear/Int4Linear children)
+            quant_prefixes = {
                 name + "." for name, mod in self.transformer.named_modules()
                 if isinstance(mod, Int8Linear)}
             for name, p in list(self.transformer.named_parameters()):
-                if not any(name.startswith(pref) for pref in int8_prefixes):
+                if not any(name.startswith(pref) for pref in quant_prefixes):
                     p.data = p.data.to(torch.bfloat16)
             self.transformer.to(device)
             self.transformer.eval()
+            self._transformer_bytes = sum(
+                p.numel() * p.element_size()
+                for p in self.transformer.parameters())
+            log.info("krea2 %s: %s layout, %.2f GiB transformer resident",
+                     info.name, layout, self._transformer_bytes / 2**30)
 
             # --- text encoder (Qwen3-VL-4B, plain fp8) ---
             # `te_device` (GPU by default) is where the encoder runs during a

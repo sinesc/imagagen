@@ -204,6 +204,29 @@ class Int8Linear(QuantLinear):
         return super().forward(x)
 
 
+class Int4Linear(Int8Linear):
+    """``convrot_w4a4`` (``int4_convrot``): the nibble-packed int8
+    ``weight`` ``[out, in//2]`` (low nibble = even input column, signed
+    nibbles ``[-8, 7]``) stays RESIDENT and is unpacked to int8 on the
+    GPU per op, then follows the inherited per-row scale + bf16 GEMM
+    path. Only the weight storage differs from :class:`Int8Linear` —
+    the ConvRot activation rotation, the LoRA A-rotation, the
+    ``weight_scale`` handling and the ``_apply`` scale transport are
+    inherited unchanged, and the unpack reproduces the exact int8
+    values, so the numerics are bit-identical to the loader-unpacked
+    int8 path while the resident transformer halves (~7 GiB)."""
+
+    def _dequantize(self, w):
+        # signed nibble extraction via arithmetic shifts, staying int8
+        # (torch's int8 >>/<< are arithmetic on CPU and CUDA): the odd
+        # input column is the high nibble, the even column the low one
+        hi = w >> 4
+        lo = (w << 4) >> 4
+        full = torch.stack([lo, hi], dim=-1).reshape(*w.shape[:-1], -1)
+        return full.to(self.computation_dtype) * \
+            self.weight_scale.to(self.computation_dtype)
+
+
 class DeltaLinear(nn.Linear):
     """Plain bf16 ``nn.Linear`` that also accepts runtime LoRA weight
     deltas (the same ``set_lora_deltas``/``clear_lora_deltas`` contract
@@ -481,7 +504,8 @@ class Krea2Transformer(nn.Module):
     128), multiplier 4 (MLP 16384), 28 blocks, patch 2, channels 16,
     12 text taps, RoPE theta 1e3 with 3-axis dims [32, 48, 48].
 
-    The block projections are :class:`Int8Linear` (int8 + ConvRot);
+    The block projections are :class:`Int8Linear` (int8 + ConvRot) or,
+    for the packed int4 checkpoints, :class:`Int4Linear` (``quant_cls``);
     every other projection (``first``, txtfusion incl. the ``projector``,
     ``txtmlp`` / ``tmlp`` / ``tproj`` linears, ``last.linear``) is a
     :class:`DeltaLinear` (bf16, delta-capable); only the norms and the
@@ -499,7 +523,8 @@ class Krea2Transformer(nn.Module):
                  multiplier: int = 4, layers: int = 28, patch: int = 2,
                  channels: int = 16, bias: bool = False, theta: float = 1e3,
                  txtlayers: int = 12, txtheads: int = 20,
-                 txtkvheads: int | None = 20) -> None:
+                 txtkvheads: int | None = 20,
+                 quant_cls: type[Int8Linear] = Int8Linear) -> None:
         super().__init__()
         self.patch = patch
         self.channels = channels
@@ -516,7 +541,7 @@ class Krea2Transformer(nn.Module):
         self.pe_embedder = Krea2PositionalEncoding(axes, theta)
         self.first = DeltaLinear(channels * patch ** 2, features, bias=True)
         self.blocks = nn.ModuleList(
-            [SingleStreamBlock(features, heads, Int8Linear, multiplier,
+            [SingleStreamBlock(features, heads, quant_cls, multiplier,
                                bias, kvheads) for _ in range(layers)]
         )
         self.tmlp = nn.Sequential(
