@@ -1483,6 +1483,38 @@ def test_drop_png_on_thumbs_strip_leaves_canvas_content(page, server):
     assert page.locator("#thumbs .thumb-pin").last.is_checked()
 
 
+def test_thumbs_dropzone_reaches_the_window_bottom(page, server):
+    """The strip is a dropzone in BOTH states and stretches over the sidebar's
+    leftover height: empty, it reaches near the bottom of the window, leaving
+    the sidebar's own 0.8rem padding below it (the gap to the window's left
+    edge). Its TOP edge must not move (the progress area above it is fixed)."""
+    base, _ = server
+    _open(page, base)
+
+    def geom() -> dict:
+        return page.evaluate(
+            "() => ({ t: document.getElementById('thumbs').getBoundingClientRect().toJSON(),"
+            " i: document.querySelector('#thumbs img')?.getBoundingClientRect().toJSON(),"
+            " c: document.getElementById('controls').getBoundingClientRect().toJSON(),"
+            " h: innerHeight })"
+        )
+
+    g = geom()
+    pad = g["c"]["bottom"] - g["t"]["bottom"]  # sidebar padding below the strip
+    assert 10 <= pad <= 16, f"bottom gap {pad:.1f}px, want the 0.8rem padding"
+    assert g["t"]["height"] > 80, f"empty strip only {g['t']['height']:.0f}px tall"
+    top_empty = g["t"]["top"]
+
+    # with thumbnails: same bottom edge, the images stack from the TOP
+    _drop_png(page, "#thumbs", _meta_png(120, 90, rgb=BG), "p.png")
+    assert wait_until(lambda: page.locator("#thumbs img").count() == 1)
+    g2 = geom()
+    assert abs(g2["t"]["bottom"] - g["t"]["bottom"]) < 1
+    assert abs(g2["t"]["top"] - top_empty) < 1
+    assert g2["t"]["bottom"] - g2["t"]["top"] > 84  # taller than a thumbnail
+    assert g2["t"]["top"] + 40 > g2["i"]["top"]  # thumbs stack at the strip's top
+
+
 def test_drop_png_on_prompt_applies_metadata_and_sets_canvas(page, server):
     base, _ = server
     _open(page, base)

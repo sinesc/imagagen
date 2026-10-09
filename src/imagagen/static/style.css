@@ -248,19 +248,26 @@ button.mini.icon {
    so the gear's right edge sits under the rows' remove (−) buttons */
 #style-add, #lora-add { flex: 1; }
 
-/* thumbnails: below the parameter box in the sidebar, wrapping rows */
+/* thumbnails: below the parameter box in the sidebar, wrapping rows.
+   flex:1 0 auto absorbs the sidebar's leftover height, so the strip fills
+   the space down to the bottom of the content box — i.e. it reaches near
+   the bottom of the window with the sidebar's own 0.8rem padding below it
+   (the same gap as to the window's left edge) — and never shrinks below its
+   content when the sidebar overflows (then the strip scrolls). The strip is
+   a PNG dropzone (pinned thumbnail import) in BOTH states, so it stretches
+   empty too. */
 #thumbs {
   display: flex;
+  flex: 1 0 auto;
   flex-wrap: wrap;
+  align-content: flex-start;
   gap: 0.4rem;
   border-top: 1px solid #333;
   padding-top: 0.6rem;
 }
 #thumbs[hidden] { display: none; }
-/* empty strip: a thin dashed placeholder that stays a PNG dropzone (a drop
-   there adds a PINNED thumbnail and leaves the canvas untouched) */
+/* empty strip: a dashed placeholder over the whole stretched area */
 #thumbs.empty:not([hidden]) {
-  min-height: 26px;
   border: 1px dashed #444;
   border-radius: 4px;
 }
