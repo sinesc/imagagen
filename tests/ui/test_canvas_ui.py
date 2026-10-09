@@ -1440,6 +1440,49 @@ def test_second_drop_replaces_the_upload_thumbnail(page, server):
     assert wait_until(lambda: canvas_px(base, 1, 1) == (200, 210, 220))
 
 
+def test_drop_png_on_thumbs_strip_adds_pinned_thumbnail(page, server):
+    """The (empty) thumbnail strip is a dropzone: the PNG becomes a PINNED
+    thumbnail and the canvas stays empty."""
+    base, _ = server
+    _open(page, base)
+    assert page.locator("#thumbs").evaluate("el => el.classList.contains('empty')")
+
+    _drop_png(page, "#thumbs", _meta_png(120, 90, rgb=BG), "pin.png")
+    assert wait_until(lambda: page.locator("#thumbs img").count() == 1)
+    assert page.evaluate("state.thumbs.every(t => t.pinned)")
+    assert page.locator("#thumbs img").nth(0).get_attribute("title") \
+        == "uploaded image (click to restore)"
+    assert not page.locator("#thumbs img").nth(0).evaluate(
+        "el => el.classList.contains('selected')")
+    assert _canvas_size(base) is None  # the canvas is untouched
+    assert page.evaluate("document.getElementById('canvas').hidden")
+
+    # clicking it puts the pinned image on the canvas
+    page.locator("#thumbs img").nth(0).click()
+    assert wait_until(lambda: _canvas_size(base) == (120, 90))
+    assert canvas_px(base, 1, 1) == BG
+
+
+def test_drop_png_on_thumbs_strip_leaves_canvas_content(page, server):
+    """Same with a non-empty canvas: the displayed image is NOT replaced."""
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150 BG
+
+    _drop_png(page, "#thumbs", _meta_png(120, 90, rgb=(200, 210, 220)), "p.png")
+    assert wait_until(lambda: page.locator("#thumbs img").count() == 1)
+    assert page.evaluate("state.thumbs.every(t => t.pinned)")
+    assert canvas_px(base, 100, 75) == BG  # canvas untouched
+
+    # the pinned thumbnail survives a generation (it is pinned server-side);
+    # the source thumbnail is unshifted to the FRONT, so check by index
+    page.click("#btn-generate")
+    page.wait_for_function("state.thumbs.length >= 2")
+    assert page.evaluate(
+        "state.thumbs.some(t => t.pinned && t.upload)")
+    assert page.locator("#thumbs .thumb-pin").last.is_checked()
+
+
 def test_drop_png_on_prompt_applies_metadata_and_sets_canvas(page, server):
     base, _ = server
     _open(page, base)

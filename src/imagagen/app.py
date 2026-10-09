@@ -876,6 +876,18 @@ def create_app(
         # the new entity's id lets the UI add a restorable thumbnail
         return {"ok": True, "canvas": canvas.has_image(), "image_id": image_id}
 
+    @app.post("/api/canvas/import-pin")
+    async def import_pin_canvas(request: Request) -> dict:
+        """Thumbnail-strip drag&drop: register the PNG as a pinned canvas
+        entity (a permanent thumbnail) and leave the displayed image alone.
+        Restorable via /api/canvas/select, served by /api/canvas/image.png."""
+        data = await request.body()
+        try:
+            image_id = canvas.import_pinned(data)
+        except Exception:
+            return JSONResponse({"error": "could not read image"}, status_code=400)
+        return {"ok": True, "image_id": image_id}
+
     @app.post("/api/png-meta")
     async def png_meta(request: Request) -> dict:
         """Parse the PNG's embedded generation metadata (A1111/Forge

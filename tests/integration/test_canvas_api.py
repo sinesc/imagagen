@@ -2,6 +2,7 @@
 mask.png, select, crop and entity PNGs."""
 
 import io
+import time
 
 import numpy as np
 from PIL import Image
@@ -71,6 +72,33 @@ def test_brush_png_endpoint(tmp_path):
         assert a2.shape == (256, 256)  # 8x8 source scaled to 256
         assert a2.max() == 200  # the brush file's luminance
         assert c.get("/api/brush/nope.png").status_code == 404
+
+
+def test_import_pin_adds_entity_without_touching_canvas(tmp_path):
+    """Thumbnail-strip drop: the PNG becomes a pinned entity, the displayed
+    image is untouched, and the entity survives a generation (the pin)."""
+    with _client(tmp_path) as c:
+        _set_canvas(c, _png_bytes(32, 24, 1))
+        before = _img(c)
+        r = c.post("/api/canvas/import-pin", content=_png_bytes(40, 16, 200))
+        assert r.status_code == 200
+        eid = r.json()["image_id"]
+        assert np.asarray(Image.open(io.BytesIO(c.get(
+            f"/api/canvas/image.png?id={eid}").content))).shape == (16, 40, 3)
+        # the canvas still shows the previous image (not the imported one)
+        assert np.array_equal(_img(c), before)
+        # a generation drops its job's entities; the pinned import survives
+        g = c.post("/api/generate", json={"prompt": "p", "width": 32, "height": 24,
+                                         "seed": 1, "batch_size": 1})
+        job = g.json()["job_id"]
+        deadline = time.time() + 20
+        while c.get(f"/api/thumb/{job}/0.png").status_code != 200:
+            assert time.time() < deadline, "job never finished"
+            time.sleep(0.05)
+        assert c.get(f"/api/canvas/image.png?id={eid}").status_code == 200
+        assert c.post("/api/canvas/select", json={"id": eid}).status_code == 200
+        assert np.asarray(Image.open(io.BytesIO(c.get(
+            "/api/canvas.png").content))).shape == (16, 40, 3)
 
 
 def test_select_switches_and_rejects_unknown(tmp_path):

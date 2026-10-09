@@ -807,7 +807,10 @@ function pinToggle(t, index) {
 
 function renderThumbs() {
   const strip = $("thumbs");
-  strip.hidden = state.thumbs.length === 0;
+  // an empty strip stays visible as a dropzone (see wireThumbsDrop), styled
+  // by the .empty class; `hidden` would display:none it away from drops
+  strip.hidden = false;
+  strip.classList.toggle("empty", state.thumbs.length === 0);
   strip.innerHTML = "";
   state.thumbs.forEach((t, i) => {
     const item = el("div", { class: "thumb-item" });
@@ -2178,6 +2181,45 @@ function wireCanvasDrop() {
   });
 }
 
+// The thumbnail strip is a dropzone too: dropping a PNG there registers it as
+// a PINNED canvas entity (a permanent thumbnail) without touching the canvas
+// — the strip's own "Pin thumbnail" checkbox semantics, applied at import
+// time. The strip stays a drop target while empty (no `hidden`, just a thin
+// dashed placeholder), so the first thumbnail can be dropped in too.
+function wireThumbsDrop() {
+  const strip = $("thumbs");
+  strip.addEventListener("dragover", (e) => {
+    if (!(e.dataTransfer?.types || []).includes("Files")) return;
+    e.preventDefault();
+    strip.classList.add("drop");
+  });
+  strip.addEventListener("dragleave", () => strip.classList.remove("drop"));
+  strip.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    strip.classList.remove("drop");
+    const files = [...(e.dataTransfer?.files || [])];
+    const file = files.find((f) => f.type === "image/png" || /\.png$/i.test(f.name));
+    if (!file) {
+      setStatus("drop a PNG file");
+      return;
+    }
+    try {
+      const r = await fetch("/api/canvas/import-pin", { method: "POST", body: await file.arrayBuffer() });
+      if (!r.ok) throw new Error(`import-pin: ${r.status}`);
+      const { image_id } = await r.json();
+      // pinned from the start; NOT selected — the canvas still shows its own
+      // image, so the current thumbnail highlight is cleared
+      state.thumbs.push({ image_id, upload: true, pinned: true,
+                          url: `/api/canvas/image.png?id=${encodeURIComponent(image_id)}` });
+      state.currentThumb = -1;
+      renderThumbs();
+      setStatus(`added ${file.name} as a pinned thumbnail`);
+    } catch (err) {
+      setStatus(`thumbnail drop failed: ${err.message}`, true);
+    }
+  });
+}
+
 function wirePromptDrop() {
   for (const id of ["prompt", "negative"]) {
     const t = $(id);
@@ -2641,6 +2683,8 @@ wireToolbar();
 wireConfig();
 wirePromptDrop();
 wireCanvasDrop();
+wireThumbsDrop();
+renderThumbs(); // shows the empty strip as a dropzone (boot: index.html has it hidden)
 // the loading overlay covers the UI until it is settled: every request
 // whose response rewrites the form (init), plus the brush list and the
 // canvas. The websocket is deliberately NOT part of this gate: its

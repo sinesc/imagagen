@@ -232,6 +232,29 @@ class Canvas:
             self._enter_entity_locked(eid)
         return eid
 
+    def import_pinned(self, data: bytes) -> str:
+        """Thumbnail-strip drag&drop: register the PNG as a pinned entity
+        WITHOUT touching the canvas (the displayed image stays).
+
+        Used by ``POST /api/canvas/import-pin``: the image enters the
+        thumbnail strip pinned (it survives generations) and is never
+        selected, so the canvas keeps showing whatever it showed before.
+        The entity is decoded once for the size check and stays in the PNG
+        cold store; its mask is a fresh empty one at the image's size."""
+        arr = _decode_png(data)
+        info = _png_text_chunks(data)
+        h, w = arr.shape[:2]
+        with self._lock:
+            eid = f"upload:{self._upload_counter}"
+            self._upload_counter += 1
+            self._images[eid] = CanvasImage(
+                id=eid, png=data, info=info, mask=np.zeros((h, w), np.uint8),
+            )
+            self._pin_locked(eid)
+            self._user_pinned.add(eid)  # survives the per-generation pin reset
+            self._evict_stale_locked()
+        return eid
+
     def set_current(self, id: str) -> str:
         """Switch the displayed image to entity ``id`` (no history step)."""
         with self._lock:
