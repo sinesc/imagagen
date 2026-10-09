@@ -67,3 +67,6 @@ Ok/Cancel buttons in the middle of the floating selection.
   so on a small selection it would cover the edge/corner handles — `syncSelActions()` measures the
   fit and toggles `.compact`, which hides the labels (the glyphs stay, Enter/Esc and the tooltips
   carry the meaning).
+- Flip buttons: `↔ H-flip` centred above and `↕ V-flip` centred below the apply/discard pair
+  (same anchor point). They flip the floating selection's own pixels (H: left<->right, V: top<->bottom); the
+  committed image is untouched until Apply, so flipping needs no undo step.

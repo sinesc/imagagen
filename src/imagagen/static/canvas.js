@@ -1768,6 +1768,31 @@ function cropSelection(r) {
   setStatus(`cropped the selection to ${w}\u00d7${h}`);
 }
 
+// Flip the floating selection in place (horizontal: left <-> right, vertical:
+// top <-> bottom). It edits the selection's own pixels only — the committed
+// image is untouched until apply, so there is nothing to undo here.
+function flipSel(horiz) {
+  const s = view.sel;
+  if (!s) return;
+  const c = document.createElement("canvas");
+  c.width = s.sw;
+  c.height = s.sh;
+  const ctx = c.getContext("2d");
+  ctx.save();
+  if (horiz) {
+    ctx.translate(s.sw, 0);
+    ctx.scale(-1, 1);
+  } else {
+    ctx.translate(0, s.sh);
+    ctx.scale(1, -1);
+  }
+  ctx.drawImage(s.img, 0, 0);
+  ctx.restore();
+  s.img = c;
+  viewRedraw();
+  setStatus(horiz ? "flipped the selection horizontally" : "flipped the selection vertically");
+}
+
 // Apply: composite the selection (stretched + rotated, resampled once) onto
 // the committed image with its per-pixel alpha, as ONE draw-undo step, and
 // leave paste mode (the copy tool: staying in paste mode leaves users
@@ -1819,13 +1844,14 @@ function syncSelActions() {
   el.hidden = false;
   el.style.left = `${c.left - holder.left + view.ox + view.sel.cx * view.scale}px`;
   el.style.top = `${c.top - holder.top + view.oy + view.sel.cy * view.scale}px`;
-  // the labels only stay while the pair fits inside the selection's on-screen
-  // width: the pair sits ON the selection, so a wider pair would cover its
-  // edge / corner handles (the 12 px are the 2 x 0.35rem gap flanking the
-  // anchor point)
+  // the labels only stay while the buttons fit inside the selection's
+  // on-screen width: they sit ON the selection, so a wider button row would
+  // cover its edge / corner handles (the 12 px are the 2 x 0.35rem gap
+  // flanking the anchor point)
   el.classList.remove("compact");
-  const pair = el.children[0].offsetWidth + el.children[1].offsetWidth + 12;
-  el.classList.toggle("compact", pair > 0.9 * view.sel.sw * view.scale);
+  const w = (id) => document.getElementById(id).offsetWidth;
+  const widest = Math.max(w("sel-ok") + w("sel-cancel") + 12, w("sel-flip-h"), w("sel-flip-v"));
+  el.classList.toggle("compact", widest > 0.9 * view.sel.sw * view.scale);
 }
 
 // ---------------- crop tool ----------------

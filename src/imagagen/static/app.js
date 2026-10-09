@@ -1923,6 +1923,8 @@ function wireToolbar() {
   $("tool-paste").onclick = () => switchTool("paste");
   $("sel-ok").onclick = () => commitSelection();
   $("sel-cancel").onclick = () => cancelSelection();
+  $("sel-flip-h").onclick = () => flipSel(true);
+  $("sel-flip-v").onclick = () => flipSel(false);
   $("brush").onchange = (e) => {
     Tools.get().brush = e.target.value;
     scheduleSaveUiState();

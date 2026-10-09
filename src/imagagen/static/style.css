@@ -531,6 +531,11 @@ button.danger:hover { background: #a33; }
 }
 #sel-actions #sel-ok { right: 0.35rem; }
 #sel-actions #sel-cancel { left: 0.35rem; }
+/* flip pair: centred on the same anchor point, stacked above / below the
+   apply + discard pair (the base rule centres on the anchor vertically, the
+   two rules below centre on it horizontally) */
+#sel-actions #sel-flip-h { top: auto; bottom: 1rem; left: 0; transform: translateX(-50%); }
+#sel-actions #sel-flip-v { top: 1rem; left: 0; transform: translateX(-50%); }
 #sel-actions[hidden] { display: none; }
 /* the labels only fit on a selection that is wide enough on screen; the pair
    sits ON the selection, so a wide pair would cover its edge / corner handles

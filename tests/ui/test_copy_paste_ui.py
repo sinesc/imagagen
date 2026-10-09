@@ -490,3 +490,84 @@ def test_selection_survives_tool_switch_and_dies_with_the_view(page, server):
     assert page.evaluate("view.sel") is None
     assert page.is_hidden("#sel-ok")
     assert page.evaluate("view.clip") is not None
+
+
+def test_selection_flip_buttons(page, server):
+    base, _ = server
+    _open(page, base)
+
+    # a patch with four DISTINCT corners, so a flip is visible on the canvas
+    corners = {(10, 10): (255, 0, 0), (49, 10): (0, 255, 0),
+               (10, 49): (0, 0, 255), (49, 49): (255, 255, 255)}
+    img = Image.new("RGB", (200, 150), BG)
+    for (x, y), c in corners.items():
+        img.putpixel((x, y), c)
+    _upload(base, img)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+
+    _copy(page, base)
+    _paste(page, 30, 30)  # selection rect (10..50, 10..50)
+
+    # the flip pair is centred on the same anchor, above / below the pair
+    geo = page.evaluate(
+        "(() => { const r = (id) => document.getElementById(id).getBoundingClientRect();"
+        " const a = r('sel-actions'), h = r('sel-flip-h'), v = r('sel-flip-v');"
+        " const cx = (a.left + a.right) / 2;"
+        " return [Math.abs((h.left + h.right) / 2 - cx) < 1,"
+        " Math.abs((v.left + v.right) / 2 - cx) < 1,"
+        " h.bottom <= a.top, v.top >= a.bottom, h.width > 0, v.width > 0]; })()"
+    )
+    assert geo == [True, True, True, True, True, True]
+
+    # the flip labels follow the same fit rule as apply / discard: glyphs only
+    # on a small selection (this one), full labels once the row fits
+    flip_word = lambda: page.evaluate(
+        "getComputedStyle(document.querySelector('#sel-flip-h .sel-word')).display"
+    )
+    assert flip_word() == "none"
+    page.evaluate("view.sel.sw = 300; viewRedraw()")
+    assert flip_word() != "none"
+    assert "H-flip" in page.evaluate("document.getElementById('sel-flip-h').textContent")
+    assert "V-flip" in page.evaluate("document.getElementById('sel-flip-v').textContent")
+    page.evaluate("view.sel.sw = 40; viewRedraw()")
+    assert flip_word() == "none"
+
+    def apply_sel():
+        page.click("#sel-ok")
+        assert wait_until(lambda: page.evaluate("view.sel") is None)
+        page.evaluate("forceSync()")  # the composite reaches the server async
+
+    # H-flip: left <-> right
+    page.click("#sel-flip-h")
+    apply_sel()
+    assert canvas_px(base, 10, 10) == (0, 255, 0)
+    assert canvas_px(base, 49, 10) == (255, 0, 0)
+    assert canvas_px(base, 10, 49) == (255, 255, 255)
+    assert canvas_px(base, 49, 49) == (0, 0, 255)
+
+    page.keyboard.press("Control+z")
+    page.evaluate("forceSync()")
+    assert wait_until(lambda: canvas_px(base, 10, 10) == (255, 0, 0))
+
+    # V-flip: top <-> bottom (the copied area is still loaded)
+    _paste(page, 30, 30)
+    page.click("#sel-flip-v")
+    apply_sel()
+    assert canvas_px(base, 10, 10) == (0, 0, 255)
+    assert canvas_px(base, 49, 10) == (255, 255, 255)
+    assert canvas_px(base, 10, 49) == (255, 0, 0)
+    assert canvas_px(base, 49, 49) == (0, 255, 0)
+
+    # flipping edits the SELECTION only: discarding leaves the image untouched
+    page.keyboard.press("Control+z")
+    page.evaluate("forceSync()")
+    assert wait_until(lambda: canvas_px(base, 10, 10) == (255, 0, 0))
+    _paste(page, 30, 30)
+    page.click("#sel-flip-h")
+    page.click("#sel-flip-v")
+    page.keyboard.press("Escape")
+    assert page.evaluate("view.sel") is None
+    page.evaluate("forceSync()")
+    assert canvas_px(base, 10, 10) == (255, 0, 0)
+    assert canvas_px(base, 49, 49) == (255, 255, 255)
