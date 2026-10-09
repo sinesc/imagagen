@@ -53,8 +53,8 @@ Ok/Cancel buttons in the middle of the floating selection.
 
 ## Follow-up changes (after the first implementation)
 
-- Apply ends paste mode: it switches the toolbar to the Copy tool, so users cannot get stuck in
-  paste mode.
+- Apply AND Cancel end paste mode: both switch the toolbar to the Copy tool, so users cannot get stuck
+  in paste mode.
 - Paste mode with an active selection: dragging INSIDE the selection moves it; the cursor is
   `move` only inside the selection.
 - A click OUTSIDE an active selection does NOT drop a new copy (it never replaces what the user

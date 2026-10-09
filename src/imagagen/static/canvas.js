@@ -1821,11 +1821,14 @@ async function commitSelection() {
 }
 
 // Cancel: throw the selection away (no history step, the base never changed)
+// and -- like Apply -- leave paste mode, so the tool never stays armed on a
+// canvas whose next click would drop a new copy
 function cancelSelection() {
   if (!view.sel) return;
   view.sel = null;
   view.selDrag = null;
   view.stroke = null;
+  if (Tools.current === "paste") switchTool("copy"); // app.js
   viewRedraw();
   setStatus("discarded the floating selection");
 }

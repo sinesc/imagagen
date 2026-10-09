@@ -187,13 +187,16 @@ def test_paste_cancel_discards(page, server):
     page.click("#sel-cancel")
     assert page.evaluate("view.sel") is None
     assert page.is_hidden("#sel-ok")
+    # discarding leaves paste mode, exactly like applying does
+    assert page.evaluate(_active("tool-copy"))
     page.evaluate("forceSync()")
     assert canvas_px(base, 150, 100) == BG
 
-    # Esc discards too
+    # Esc discards too (and leaves paste mode the same way)
     _paste(page, 150, 100)
     page.keyboard.press("Escape")
     assert page.evaluate("view.sel") is None
+    assert page.evaluate(_active("tool-copy"))
 
 
 def test_selection_handles_resize_and_rotate(page, server):
@@ -476,9 +479,11 @@ def test_paste_mode_moves_the_selection_and_cursors(page, server):
         "Apply or cancel active selection first"
     )
 
-    # discarding frees the tool again: the next click drops a new copy
+    # discarding frees the tool again: re-arming paste, the next click drops
+    # a new copy (discarding itself left the copy tool, like Apply does)
     page.keyboard.press("Escape")
     assert page.evaluate("view.sel") is None
+    page.keyboard.press("v")
     page.mouse.click(*screen_pos(page, 160, 120))
     assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [160, 120]
 
