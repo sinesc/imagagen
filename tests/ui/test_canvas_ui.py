@@ -1383,6 +1383,63 @@ def test_drop_png_on_canvas_sets_image_only(page, server):
     assert page.input_value("#width") != "120"
 
 
+def test_drop_png_on_empty_canvas_creates_thumbnail(page, server):
+    """A PNG dropped onto the empty canvas becomes a canvas entity, so the
+    strip gets a thumbnail for it (immediately selected, like the crop is).
+    After a generation replaces the canvas image, clicking the thumbnail
+    restores the uploaded image."""
+    base, _ = server
+    _open(page, base)
+    assert page.locator("#thumbs img").count() == 0
+
+    _drop_png(page, "#canvas-holder", _meta_png(120, 90, rgb=BG))
+    assert wait_until(lambda: _canvas_size(base) == (120, 90))
+    assert wait_until(lambda: page.locator("#thumbs img").count() == 1)
+    thumb = page.locator("#thumbs img").nth(0)
+    assert thumb.get_attribute("title") == "uploaded image (click to restore)"
+    assert "selected" in (thumb.get_attribute("class") or "")
+
+    # a generation takes the uploaded image over as its (green-bordered)
+    # source thumbnail -- the upload entry is dropped by the same rule that
+    # clears every other unpinned thumbnail on generate -- and adds a result
+    page.click("#btn-generate")
+    page.wait_for_function("state.thumbs.length >= 2")
+    assert page.locator("#thumbs img").nth(0).get_attribute("title") \
+        == "source image (seed 7) (click to restore)"
+    assert canvas_px(base, 1, 1) == BG
+
+    page.locator("#thumbs img").nth(1).click()  # the result onto the canvas
+    assert wait_until(lambda: canvas_px(base, 1, 1) != BG)
+
+    # the source thumbnail (the dropped image) restores it
+    page.locator("#thumbs img").nth(0).click()
+    assert wait_until(lambda: canvas_px(base, 1, 1) == BG)
+
+
+def test_second_drop_replaces_the_upload_thumbnail(page, server):
+    """The canvas only ever holds ONE upload entity: dropping a second PNG
+    replaces the canvas content and RE-POINTS the existing upload thumbnail
+    at the new image (the server evicts the superseded entity, so a second
+    thumbnail would go dead and the old one would stop restoring)."""
+    base, _ = server
+    _open(page, base)
+
+    _drop_png(page, "#canvas-holder", _meta_png(120, 90, rgb=BG), "first.png")
+    assert wait_until(lambda: page.locator("#thumbs img").count() == 1)
+
+    _drop_png(page, "#canvas-holder", _meta_png(120, 90, rgb=(200, 210, 220)),
+              "second.png")
+    assert wait_until(lambda: canvas_px(base, 1, 1) == (200, 210, 220))
+    assert page.locator("#thumbs img").count() == 1
+    thumb = page.locator("#thumbs img").nth(0)
+    assert "selected" in (thumb.get_attribute("class") or "")
+
+    # the (single) thumbnail now shows the SECOND image and restores it
+    assert thumb.get_attribute("title") == "uploaded image (click to restore)"
+    page.locator("#thumbs img").nth(0).click()
+    assert wait_until(lambda: canvas_px(base, 1, 1) == (200, 210, 220))
+
+
 def test_drop_png_on_prompt_applies_metadata_and_sets_canvas(page, server):
     base, _ = server
     _open(page, base)

@@ -870,10 +870,11 @@ def create_app(
     async def upload_canvas(request: Request) -> dict:
         data = await request.body()
         try:
-            canvas.import_image(data)
+            image_id = canvas.import_image(data)
         except Exception:
             return JSONResponse({"error": "could not read image"}, status_code=400)
-        return {"ok": True, "canvas": canvas.has_image()}
+        # the new entity's id lets the UI add a restorable thumbnail
+        return {"ok": True, "canvas": canvas.has_image(), "image_id": image_id}
 
     @app.post("/api/png-meta")
     async def png_meta(request: Request) -> dict:

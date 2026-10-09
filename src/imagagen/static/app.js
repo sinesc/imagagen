@@ -817,7 +817,9 @@ function renderThumbs() {
       ? `source image${typeof t.seed === "number" ? ` (seed ${t.seed})` : ""} (click to restore)`
       : t.crop
         ? "crop (click to restore)"
-        : `#${i} seed ${t.seed}`;
+        : t.upload
+          ? "uploaded image (click to restore)"
+          : `#${i} seed ${t.seed}`;
     if (t.source) image.classList.add("source");
     if (i === state.currentThumb) image.classList.add("selected");
     image.onmouseenter = () => thumbPreviewShow(t.url);
@@ -2129,7 +2131,14 @@ function parseMetaLoras(items) {
 }
 
 // Dropping a PNG directly on the canvas just sets the image there --
-// applying metadata is what dropping on the prompt fields is for.
+// applying metadata is what dropping on the prompt fields is for. The
+// upload becomes a canvas entity, so it also gets a thumbnail (selected,
+// like the crop is): restorable via the strip after a generation puts a
+// result on the canvas, and pinnable like any other thumbnail. Dropping
+// onto an upload thumbnail REPLACES it (the canvas only ever holds one
+// upload entity: the server evicts the superseded one, so its thumbnail
+// would go dead), while any other canvas content (a result, a crop, a
+// source snapshot) keeps its thumbnail and gets a new one appended.
 function wireCanvasDrop() {
   const holder = $("canvas-holder");
   holder.addEventListener("dragover", (e) => {
@@ -2150,7 +2159,17 @@ function wireCanvasDrop() {
     try {
       const up = await fetch("/api/canvas/upload", { method: "POST", body: await file.arrayBuffer() });
       if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
-      await up.json();
+      const { image_id } = await up.json();
+      const url = `/api/canvas/image.png?id=${encodeURIComponent(image_id)}`;
+      const last = state.thumbs[state.thumbs.length - 1];
+      if (last?.upload) {
+        last.image_id = image_id; // re-point it at the new entity
+        last.url = url;
+      } else {
+        state.thumbs.push({ image_id, upload: true, url });
+      }
+      state.currentThumb = state.thumbs.length - 1; // the canvas shows it
+      renderThumbs();
       viewRefresh();
       setStatus(`loaded ${file.name} onto the canvas`);
     } catch (err) {
