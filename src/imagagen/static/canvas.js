@@ -1944,12 +1944,17 @@ function setupCanvasInput() {
       return;
     }
     if (tool === "paste") {
-      // inside the active selection a drag MOVES it; outside it the click
-      // drops a new copy (Apply / Cancel first to replace the old one)
-      if (view.sel && selContains(p)) {
-        startSelMove(p);
-        c.setPointerCapture(e.pointerId);
-        viewRedraw();
+      // an active selection owns the canvas: a drag INSIDE it moves it, and a
+      // click outside it is refused -- the user positioned that selection, so
+      // it is never silently replaced (Apply / Cancel first, then a new drop)
+      if (view.sel) {
+        if (selContains(p)) {
+          startSelMove(p);
+          c.setPointerCapture(e.pointerId);
+          viewRedraw();
+        } else {
+          setStatus("Apply or cancel active selection first");
+        }
         return;
       }
       pasteAt(p); // drop the copied area as a floating selection

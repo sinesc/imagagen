@@ -467,6 +467,18 @@ def test_paste_mode_moves_the_selection_and_cursors(page, server):
     page.mouse.up()
     assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [130, 95]
 
+    # a click OUTSIDE the active selection no longer drops a new copy: the
+    # selection stays where the user positioned it and the status line says
+    # what has to happen first
+    page.mouse.click(*screen_pos(page, 160, 120))
+    assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [130, 95]
+    assert page.evaluate("document.getElementById('status-line').textContent") == (
+        "Apply or cancel active selection first"
+    )
+
+    # discarding frees the tool again: the next click drops a new copy
+    page.keyboard.press("Escape")
+    assert page.evaluate("view.sel") is None
     page.mouse.click(*screen_pos(page, 160, 120))
     assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [160, 120]
 

@@ -55,8 +55,11 @@ Ok/Cancel buttons in the middle of the floating selection.
 
 - Apply ends paste mode: it switches the toolbar to the Copy tool, so users cannot get stuck in
   paste mode.
-- Paste mode with an active selection: dragging INSIDE the selection moves it (a click outside it
-  drops a new copy). The cursor is `move` only inside the selection.
+- Paste mode with an active selection: dragging INSIDE the selection moves it; the cursor is
+  `move` only inside the selection.
+- A click OUTSIDE an active selection does NOT drop a new copy (it never replaces what the user
+  positioned): it only reports `Apply or cancel active selection first`. A new drop needs Apply or
+  Cancel (or a fresh Paste) first.
 - Handle cursors: `ns-resize` (top/bottom edge), `ew-resize` (left/right edge), `nesw-resize`
   (TR/BL aspect corners), `grabbing` (TL/BR rotate corners).
 - The Apply/Cancel pair is a zero-size anchor point at the selection centre with the buttons
