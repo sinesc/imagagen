@@ -112,6 +112,7 @@ import hashlib
 import logging
 import threading
 import warnings
+from pathlib import Path
 
 import numpy as np
 
@@ -724,7 +725,16 @@ class SdxlBackend(ModelBackend):
         adapters would default to alpha == rank (scaling 1.0) and run
         ``rank / alpha`` times too strong vs the A1111/Forge slider
         convention (``delta = slider * (alpha/rank) * B@A``).
+
+        Unsupported LoRA families (LoKr/LoHa/DoRA/GaLore/GGUF) are
+        rejected up front with a named diagnosis; diffusers would
+        otherwise fail with a cryptic empty-mapping error.
         """
+        from ..flux_lora import sniff_lora_format
+
+        if why := sniff_lora_format(path):
+            raise ValueError(
+                f"unsupported SDXL LoRA format in {Path(path).name}: {why}")
         sd, alphas, _meta = self.pipe.lora_state_dict(
             str(path),
             unet_config=self.pipe.unet.config,

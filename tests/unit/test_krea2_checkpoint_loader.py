@@ -10,6 +10,7 @@ Covers the two checkpoint layouts:
   dequantized and de-rotated to plain bf16.
 """
 
+import pytest
 import torch
 from safetensors.torch import save_file
 from torch import nn
@@ -225,13 +226,22 @@ def test_int4_checkpoint_loads_a_real_transformer(tmp_path):
     torch.testing.assert_close(model(x, sigma, ctx), ref(x, sigma, ctx))
 
 
+def _marker(text: str) -> torch.Tensor:
+    """A comfy_quant marker tensor (the JSON as a U8 tensor)."""
+    return torch.tensor(list(text.encode()), dtype=torch.uint8)
+
+
+_INT8_MARKER = ('{"format": "int8_tensorwise", "convrot": true, '
+                '"convrot_groupsize": 256, "per_row": true}')
+
+
 def test_int8_checkpoint_passthrough(tmp_path):
     """The int8_tensorwise layout (no quantization metadata, (out, 1)
     scales) loads unchanged."""
     w = torch.randint(-128, 127, (64, 512), dtype=torch.int8)
     s = torch.rand(64, 1) + 0.5
     sd = {"blocks.0.attn.wq.weight": w, "blocks.0.attn.wq.weight_scale": s,
-          "blocks.0.attn.wq.comfy_quant": torch.zeros(3, dtype=torch.uint8)}
+          "blocks.0.attn.wq.comfy_quant": _marker(_INT8_MARKER)}
     path = str(tmp_path / "fake_int8.safetensors")
     save_file(sd, path)
     out, layout = _load_krea2_state_dict(path)
@@ -240,3 +250,105 @@ def test_int8_checkpoint_passthrough(tmp_path):
                         "blocks.0.attn.wq.weight_scale"}
     torch.testing.assert_close(out["blocks.0.attn.wq.weight"], w)
     torch.testing.assert_close(out["blocks.0.attn.wq.weight_scale"], s)
+
+
+def test_int8_marker_driven_classification(tmp_path):
+    """No file metadata at all: the comfy_quant markers alone classify
+    the layout (the int8 checkpoint's real signature)."""
+    w = torch.randint(-128, 127, (64, 512), dtype=torch.int8)
+    s = torch.rand(64, 1) + 0.5
+    sd = {
+        "blocks.0.attn.wq.weight": w,
+        "blocks.0.attn.wq.weight_scale": s,
+        "blocks.0.attn.wq.comfy_quant": _marker(_INT8_MARKER),
+        "txtfusion.layerwise_blocks.0.attn.wq.weight":
+            torch.ones(64, 512, dtype=torch.bfloat16),
+    }
+    save_file(sd, str(tmp_path / "int8_markers.safetensors"))
+    out, layout = _load_krea2_state_dict(str(tmp_path / "int8_markers.safetensors"))
+    assert layout == "int8"
+    assert out["blocks.0.attn.wq.weight"].dtype == torch.int8
+    assert out["txtfusion.layerwise_blocks.0.attn.wq.weight"].dtype         == torch.bfloat16
+
+
+def test_fp8_checkpoint_load(tmp_path):
+    """The fp8_scaled layout (float8_e4m3fn weight + ONE scalar scale per
+    tensor, no ConvRot): the block weights stay fp8 with the (1, 1)
+    scale for Krea2Fp8Linear; the txtfusion weights are folded to plain
+    bf16 with the scale dropped."""
+    w = (torch.randn(64, 512) * 0.05).to(torch.float8_e4m3fn)
+    s = torch.tensor(0.002)
+    wt = (torch.randn(64, 512) * 0.05).to(torch.float8_e4m3fn)
+    st = torch.tensor(0.003)
+    marker = ('{"format": "float8_e4m3fn", "per_row": false, '
+              '"convrot": false}')
+    sd = {
+        "model.diffusion_model.blocks.0.attn.wq.weight": w,
+        "model.diffusion_model.blocks.0.attn.wq.weight_scale": s,
+        "model.diffusion_model.blocks.0.attn.wq.comfy_quant": _marker(marker),
+        "model.diffusion_model.txtfusion.layerwise_blocks.0.attn.wq.weight": wt,
+        "model.diffusion_model.txtfusion.layerwise_blocks.0.attn.wq.weight_scale": st,
+        "model.diffusion_model.first.weight": torch.ones(64, 64),
+    }
+    save_file(sd, str(tmp_path / "fake_fp8.safetensors"))
+    out, layout = _load_krea2_state_dict(str(tmp_path / "fake_fp8.safetensors"))
+    assert layout == "fp8"
+    wq = out["blocks.0.attn.wq.weight"]
+    sq = out["blocks.0.attn.wq.weight_scale"]
+    assert wq.dtype == torch.float8_e4m3fn and wq.shape == (64, 512)
+    assert sq.shape == (1, 1)
+    torch.testing.assert_close(sq, s.reshape(1, 1))
+    wtxt = out["txtfusion.layerwise_blocks.0.attn.wq.weight"]
+    assert wtxt.dtype == torch.bfloat16
+    assert "txtfusion.layerwise_blocks.0.attn.wq.weight_scale" not in out
+    torch.testing.assert_close(wtxt.to(torch.float32),
+                               wt.to(torch.float32) * st,
+                               rtol=1e-2, atol=1e-3)
+
+
+def test_fp8_module_dequantize():
+    """Krea2Fp8Linear: forward == x @ (fp8_weight * scalar_scale)^T, no
+    activation rotation (convrot disabled)."""
+    from imagagen.backends.krea2.transformer import Krea2Fp8Linear
+
+    with quant_dtype_scope(torch.device("cpu"), torch.bfloat16):
+        m = Krea2Fp8Linear(64, 32, bias=False)
+    w = (torch.randn(32, 64) * 0.1).to(torch.float8_e4m3fn)
+    m.load_state_dict({
+        "weight": nn.Parameter(w, requires_grad=False),
+        "weight_scale": nn.Parameter(torch.tensor([[0.05]]),
+                                     requires_grad=False),
+    })
+    assert m._convrot_group is None
+    x = torch.randn(3, 64, dtype=torch.bfloat16)
+    expected = x.to(torch.float32) @ (w.to(torch.float32) * 0.05).T
+    rel = (m(x).to(torch.float32) - expected).norm() / expected.norm()
+    assert rel < 0.01
+
+
+def test_unknown_marker_format_raises(tmp_path):
+    sd = {
+        "blocks.0.attn.wq.weight": torch.zeros(64, 512, dtype=torch.int8),
+        "blocks.0.attn.wq.weight_scale": torch.ones(64, 1),
+        "blocks.0.attn.wq.comfy_quant": _marker(
+            '{"format": "nf4_tensorwise", "per_row": true}'),
+    }
+    save_file(sd, str(tmp_path / "weird.safetensors"))
+    with pytest.raises(ValueError, match="nf4_tensorwise"):
+        _load_krea2_state_dict(str(tmp_path / "weird.safetensors"))
+
+
+def test_mixed_layouts_raise(tmp_path):
+    sd = {
+        "blocks.0.attn.wq.weight": torch.zeros(64, 512, dtype=torch.int8),
+        "blocks.0.attn.wq.weight_scale": torch.ones(64, 1),
+        "blocks.0.attn.wq.comfy_quant": _marker(_INT8_MARKER),
+        "blocks.1.attn.wq.weight":
+            (torch.randn(64, 512) * 0.05).to(torch.float8_e4m3fn),
+        "blocks.1.attn.wq.weight_scale": torch.tensor(0.01),
+        "blocks.1.attn.wq.comfy_quant": _marker(
+            '{"format": "float8_e4m3fn", "per_row": false}'),
+    }
+    save_file(sd, str(tmp_path / "mixed.safetensors"))
+    with pytest.raises(ValueError, match="mixed quantized layouts"):
+        _load_krea2_state_dict(str(tmp_path / "mixed.safetensors"))

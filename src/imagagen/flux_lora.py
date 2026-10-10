@@ -49,6 +49,24 @@ class FluxLoraSpec:
     ``swap`` swaps B's two row halves on apply (``norm_out.linear``:
     the standard layout is ``[scale, shift]``, ours is ``[shift, scale]``
     -- Forge's ``swap_scale_shift``).
+
+    Krea 2 extensions (see ``backends/krea2/lora.py``; unused by the
+    Flux/Z-Image parsers):
+
+    ``kron``: a LoKr factorized delta ``(w1, w2)`` -- the weight delta
+    is ``scale * kron(w1, w2)`` (``A`` carries ``w1``, ``B`` is unused);
+    the backend applies it as the nested grouped GEMM of ComfyUI's LoKr
+    bypass, never materializing the full Kronecker product.
+
+    ``dora_scale``: a DoRA weight-decomposition scale vector (length
+    ``in_features``, the INPUT axis -- the Krea 2 releases ship the
+    input-axis variant). The effective delta is ``c * (W + d) - W``
+    with ``d`` the scaled A/B delta, ``W`` the module's base weight and
+    ``c = dora_scale / ||W + d||`` per input column -- the backend
+    folds ``c`` into the delta's A columns at apply time (it needs the
+    base weight, so it cannot be pre-folded into ``A``). LoKr + DoRA
+    on one module is rejected (the column scaling does not factor
+    through the Kronecker application).
     """
 
     module: str
@@ -58,6 +76,8 @@ class FluxLoraSpec:
     A: torch.Tensor
     B: torch.Tensor
     scale: float
+    kron: tuple[torch.Tensor, torch.Tensor] | None = None
+    dora_scale: torch.Tensor | None = None
 
 
 _LORA_KEY = re.compile(r"^transformer\.(.+)\.lora_(A|B|down|up)\.weight$")
@@ -182,14 +202,60 @@ def map_base_key(base: str) -> tuple[str, int, int, bool]:
     raise ValueError(f"unknown Flux LoRA key: {base!r}")
 
 
+def sniff_lora_format(path: str | Path,
+                      *, skip: tuple[str, ...] = ()) -> str | None:
+    """Name an unsupported LoRA family from the file's key names, or
+    ``None`` when nothing recognizable fires.
+
+    Every LoRA loader in imagagen (SDXL, Flux, Krea 2) runs this on the
+    file BEFORE parsing, so a LoKr / LoHa / DoRA / GaLore / GGUF file
+    fails with a named diagnosis ("LoKr: needs Kronecker product
+    support") instead of a cryptic key-mismatch stack from the library
+    loader. Reads only the safetensors header (cheap). ``skip`` lists
+    kinds a caller supports (e.g. ``("lokr",)`` on Krea 2).
+    """
+    path = Path(path)
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(4) == b"GGUF":
+                return ("GGUF container: quantized LoRAs need dequantization "
+                        "support (not implemented)")
+    except OSError:
+        return None
+    try:
+        from safetensors import safe_open
+
+        with safe_open(str(path), framework="pt") as f:
+            names = list(f.keys())
+    except Exception:
+        return None
+    kinds = []
+    if ("lokr" not in skip
+            and any("lokr_w1" in k or "lokr_w2" in k for k in names)):
+        kinds.append("LoKr (Kronecker-product LoRA, needs kron factor "
+                     "support)")
+    if ("loha" not in skip
+            and any("loha_w1" in k or "loha_w2" in k for k in names)):
+        kinds.append("LoHa (Hadamard-product LoRA, not implemented)")
+    if "galore" not in skip and any("galore" in k for k in names):
+        kinds.append("GaLore (projection-matrix LoRA, not implemented)")
+    if ("dora" not in skip and any(".dora_scale" in k for k in names)):
+        kinds.append("DoRA (direction-aware scaling, needs dora support)")
+    return ", ".join(kinds) if kinds else None
+
+
 def parse_lora(path: str | Path) -> list[FluxLoraSpec]:
     """A Flux LoRA ``.safetensors`` file -> its delta specs (CPU tensors).
 
     Raises :class:`ValueError` listing every key that is neither a
     mappable A/B pair nor an alpha scalar, and for incomplete pairs.
+    Unsupported families (LoKr/LoHa/DoRA/GaLore/GGUF) are named first.
     """
     from safetensors.torch import load_file
 
+    if why := sniff_lora_format(path):
+        raise ValueError(
+            f"unsupported Flux LoRA format in {Path(path).name}: {why}")
     data = load_file(str(path))
     parts: dict[str, dict[str, torch.Tensor | float]] = {}
     unknown: list[str] = []

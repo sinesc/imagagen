@@ -91,8 +91,15 @@ from .. import (
     format_loras,
     shared_enc_cache,
 )
-from .lora import parse_krea2_lora
-from .transformer import DeltaLinear, Int4Linear, Int8Linear, Krea2Transformer
+from .lora import module_in_features, parse_krea2_lora
+from .transformer import (
+    DeltaLinear,
+    Int4Linear,
+    Int8Linear,
+    Krea2Fp8Linear,
+    Krea2Transformer,
+    _rotate,
+)
 from .vae import denormalize_latent, load_krea2_vae, normalize_latent
 
 
@@ -140,29 +147,36 @@ def _unpack_int4_row_major(packed: torch.Tensor) -> torch.Tensor:
 def _load_krea2_state_dict(path: str) -> tuple[dict, str]:
     """Read the K2 transformer checkpoint into ``({key: Parameter},
     layout)`` (keys relative to the transformer root; the ``*.comfy_quant``
-    U8 markers are skipped; ``layout`` is ``"int8" | "int4" | "bf16"``,
-    which selects the block ``quant_cls`` in the backend). Three
-    checkpoint layouts are handled:
+    U8 markers are consumed by the format classifier; ``layout`` is
+    ``"int8" | "int4" | "fp8" | "bf16"``, which selects the block
+    ``quant_cls`` in the backend).
+
+    The format is classified per quantized tensor from the ``comfy_quant``
+    marker JSON, falling back to the ``_quantization_metadata`` file
+    metadata and finally to the dtype shapes; a checkpoint whose tensors
+    declare mixed layouts, or whose markers declare a format this loader
+    does not implement, raises with the observed marker JSON.
 
     - ``int8_tensorwise`` (``krea2_Int8Extended``): the int8 tensors stay
-      int8 and the per-row ``weight_scale`` ``(out, 1)`` ride along;
-    - ``int4_convrot`` (``convrot_w4a4``, e.g. ``krea2_finetuned_int4``,
-      declared by the ``_quantization_metadata`` safetensors metadata
-      instead of the per-tensor ``comfy_quant`` markers): keys carry a
-      ``model.diffusion_model.`` prefix and every quantized projection is
-      packed two signed nibbles per byte (``weight`` ``(out, in/2)``,
-      per-row ``weight_scale`` ``(out,)``), Hadamard-rotated along the
-      input axis like the int8 checkpoint. The loader strips the prefix
-      and keeps the blocks weights PACKED (int8 ``(out, in/2)`` plus the
-      scale reshaped to ``(out, 1)``), so they load into
-      :class:`Int4Linear` modules and unpack on the GPU per op (the
-      runtime activation rotation still cancels the stored weight
-      rotation). The ``txtfusion`` projections are the exception: their
-      modules are plain bf16 DeltaLinears WITHOUT ConvRot, so those
-      weights are additionally dequantized and de-rotated (H is
-      symmetric, H^2 = I) to bf16 and their scales dropped.
-    - plain ``bf16`` (no quantization metadata, no packed tensors): every
-      tensor rides through unchanged.
+      int8 and the per-row ``weight_scale`` ``(out, 1)`` ride along
+      (ConvRot-rotated weights, ``Int8Linear``);
+    - ``convrot_w4a4`` / ``int4_convrot`` (``krea2_finetuned_int4``,
+      declared by ``_quantization_metadata``: ``model.diffusion_model.``
+      prefix, packed two signed nibbles per byte, ``weight``
+      ``(out, in/2)``, per-row ``weight_scale`` ``(out,)``): the loader
+      strips the prefix and keeps the blocks weights PACKED (int8
+      ``(out, in/2)`` plus the scale reshaped to ``(out, 1)``) for the
+      ``Int4Linear`` modules (unpacked on the GPU per op). The
+      ``txtfusion`` projections are the exception: their modules are
+      plain bf16 DeltaLinears WITHOUT ConvRot, so those weights are
+      additionally dequantized and de-rotated (H is symmetric, H^2 = I)
+      to bf16 and their scales dropped.
+    - ``float8_e4m3fn`` (the ``krea2_*_fp8_scaled`` releases): fp8
+      weights + ONE scalar ``weight_scale`` per tensor, NO ConvRot; the
+      blocks weights stay fp8 with the scalar scale for ``Krea2Fp8Linear``
+      (the txtfusion weights are folded to plain bf16, scales dropped).
+    - plain ``bf16`` (no quantization markers): every tensor rides
+      through unchanged (the int8 modules treat a missing scale as 1.0).
 
     Slow disk I/O; run OUTSIDE ``_PARAM_INIT_LOCK`` (it only reads
     tensors, it does not register them in a module). The tensors are
@@ -175,69 +189,146 @@ def _load_krea2_state_dict(path: str) -> tuple[dict, str]:
 
     from .transformer import _rotate
 
+    #: comfy_quant / _quantization_metadata format names -> our layout
+    formats = {
+        "int8_tensorwise": "int8",
+        "convrot_w4a4": "int4",
+        "int4_convrot": "int4",
+        "float8_e4m3fn": "fp8",
+        "fp8_scaled": "fp8",
+    }
+
     with safe_open(path, framework="pt") as f:
         meta = f.metadata() or {}
-        names = {k: k for k in f.keys() if not k.endswith(".comfy_quant")}
+        names = {k: k for k in f.keys()}
 
-        # the int4 converter records the quantization only in the file
-        # metadata: {"format": "int4_convrot", "layers": {..:
-        # {"convrot_groupsize": 256, ...}}}; the int8 checkpoint has no
-        # such entry
-        fmt, group = "", 256
+        # the converters record the quantization in the file metadata:
+        # {"format": "int4_convrot", "layers": {name: {"format":
+        # "convrot_w4a4", "convrot_groupsize": 256, ...}}} (the int8
+        # checkpoint has the per-layer table WITHOUT a top-level format;
+        # its per-tensor comfy_quant markers are opaque bytes, not the
+        # JSON of older releases, so the layers table is the primary
+        # classifier)
+        file_fmt, def_group = "", 256
+        layers: dict = {}
         if qm := meta.get("_quantization_metadata"):
-            qm = json.loads(qm)
-            fmt = qm.get("format", "")
-            for layer in qm.get("layers", {}).values():
-                group = int(layer.get("convrot_groupsize", group))
+            try:
+                qm = json.loads(qm)
+            except Exception as exc:
+                raise ValueError(
+                    f"Krea 2 checkpoint {Path(path).name}: unreadable "
+                    "_quantization_metadata") from exc
+            file_fmt = qm.get("format", "")
+            layers = qm.get("layers", {}) or {}
+            for layer in layers.values():
+                def_group = int(layer.get("convrot_groupsize", def_group))
                 break
-        int4 = "int4" in fmt
-        layout = "int4" if int4 else "bf16"
 
         prefix = "model.diffusion_model."
-        if names and all(k.startswith(prefix) for k in names):
+        if all(k.startswith(prefix) for k in names):
             names = {k[len(prefix):]: k for k in names}
 
-        # the quantized projections of the int4 layout: int8 weight + a
-        # 1-D per-row scale (the int8 checkpoint's scales are (out, 1))
-        packed = set()
-        if int4:
-            for name in names:
-                if not name.endswith(".weight"):
+        # classify every weight tensor: the metadata layers table first,
+        # then a JSON comfy_quant marker, then the dtype shapes
+        # (int8 + 1-D scale = packed int4; int8 + 2-D scale = int8;
+        # fp8 + scale = fp8)
+        fmt_of: dict[str, str] = {}
+        group_of: dict[str, int] = {}
+        for name in names:
+            if not name.endswith(".weight"):
+                continue
+            base = name[: -len(".weight")]
+            layer = layers.get(base) or layers.get(f"{prefix}{base}")
+            if layer is not None:
+                fmt = layer.get("format", "")
+                if fmt not in formats:
+                    raise ValueError(
+                        f"Krea 2 checkpoint {Path(path).name}: unsupported "
+                        f"quantized layer format for {base!r} (metadata: "
+                        f"{json.dumps(layer)})")
+                fmt_of[name] = formats[fmt]
+                group_of[name] = int(
+                    layer.get("convrot_groupsize", def_group))
+                continue
+            if (marker := names.get(f"{base}.comfy_quant")) is not None:
+                try:
+                    mj = json.loads(
+                        f.get_tensor(marker).numpy().tobytes().decode())
+                    fmt = mj.get("format", "")
+                except Exception:
+                    fmt = ""  # opaque marker bytes: fall through
+                if fmt and fmt not in formats:
+                    raise ValueError(
+                        f"Krea 2 checkpoint {Path(path).name}: unsupported "
+                        f"quantized layer format (comfy_quant marker: "
+                        f"{json.dumps(mj)})")
+                if fmt:
+                    fmt_of[name] = formats[fmt]
+                    group_of[name] = int(
+                        mj.get("convrot_groupsize", def_group))
                     continue
-                scale = f"{name}_scale"
-                if (f.get_slice(names[name]).get_dtype() == "I8"
-                        and scale in names
-                        and len(f.get_slice(names[scale]).get_shape()) == 1):
-                    packed.add(name)
+            # dtype heuristics: fp8 weight = fp8; int8 + 1-D scale =
+            # packed int4; int8 + 2-D scale = int8_tensorwise
+            dtype = f.get_slice(names[name]).get_dtype()
+            scale_key = f"{name}_scale"
+            has_scale = scale_key in names
+            ndim = (f.get_slice(names[scale_key]).get_shape()
+                    if has_scale else None)
+            if dtype == "F8_E4M3" and has_scale:
+                fmt_of[name] = "fp8"
+            elif dtype == "I8" and has_scale and len(ndim) == 1:
+                fmt_of[name] = "int4"
+            elif dtype == "I8" and has_scale and len(ndim) == 2:
+                fmt_of[name] = "int8"
+            elif has_scale and file_fmt in formats:
+                # the file metadata declares a quantization format and
+                # this tensor rides with a scale -> trust it
+                fmt_of[name] = formats[file_fmt]
+
+        layouts = set(fmt_of.values())
+        if len(layouts) > 1:
+            raise ValueError(
+                f"Krea 2 checkpoint {Path(path).name}: mixed quantized "
+                f"layouts {sorted(layouts)} are not supported")
+        layout = layouts.pop() if layouts else "bf16"
 
         sd: dict = {}
         for name, file_key in names.items():
+            if name.endswith(".comfy_quant"):
+                continue  # consumed by the classifier above
+            scale_key = f"{name}_scale"
             if name.endswith(".weight_scale") and name.removesuffix(
-                    "_scale") in packed:
+                    "_scale") in fmt_of:
                 continue  # the scale is consumed (reshaped/folded) below
-            if name not in packed:
+            if name not in fmt_of:
                 if name.endswith(".weight_scale"):
                     layout = "int8"  # int8_tensorwise per-row scales
                 sd[name] = torch.nn.Parameter(
                     f.get_tensor(file_key), requires_grad=False)
                 continue
-            scale = f.get_tensor(names[f"{name}_scale"])
-            if name.removesuffix(".weight").startswith("txtfusion."):
-                # plain DeltaLinear target: unpack the nibbles, fold the
-                # scale in and undo the ConvRot rotation, leaving a plain
-                # bf16 weight
-                w = _unpack_int4_row_major(f.get_tensor(file_key))
-                w = _rotate(w.to(torch.float32) * scale.reshape(-1, 1),
-                            group)
-                sd[name] = torch.nn.Parameter(
-                    w.to(torch.bfloat16), requires_grad=False)
-            else:
-                # Int4Linear target: the PACKED int8 bytes (out, in/2)
-                # stay packed and unpack on the GPU per op
+            fmt = fmt_of[name]
+            if not name.startswith("txtfusion."):
+                # quantized block projection: weight + scale stay resident
                 sd[name] = torch.nn.Parameter(
                     f.get_tensor(file_key), requires_grad=False)
-                sd[f"{name}_scale"] = torch.nn.Parameter(
-                    scale.reshape(-1, 1), requires_grad=False)
+                sd[scale_key] = torch.nn.Parameter(
+                    f.get_tensor(names[scale_key]).reshape(-1, 1),
+                    requires_grad=False)
+                continue
+            # txtfusion: plain bf16 DeltaLinear target -- fold the scale
+            # in (and undo the ConvRot rotation for the int formats),
+            # drop the scale
+            scale = f.get_tensor(names[scale_key])
+            w = f.get_tensor(file_key)
+            if fmt == "fp8":
+                w = w.to(torch.float32) * scale.to(torch.float32)
+            else:
+                if fmt == "int4":
+                    w = _unpack_int4_row_major(w)
+                w = _rotate(w.to(torch.float32) * scale.reshape(-1, 1),
+                            group_of.get(name, def_group))
+            sd[name] = torch.nn.Parameter(
+                w.to(torch.bfloat16), requires_grad=False)
     return sd, layout
 
 
@@ -280,9 +371,11 @@ class Krea2Backend(ModelBackend):
         #     concurrent parameter work on another GPU for the whole read.
         sd, layout = _load_krea2_state_dict(self.model_path)
         # the packed int4 checkpoint keeps its nibble-packed blocks weights
-        # resident (Int4Linear unpacks them on the GPU per op); int8/bf16
-        # checkpoints use the int8 dequantize path
-        quant_cls = Int4Linear if layout == "int4" else Int8Linear
+        # resident (Int4Linear unpacks them on the GPU per op); fp8_scaled
+        # checkpoints keep fp8 weights + a scalar scale (Krea2Fp8Linear,
+        # unrotated); int8/bf16 checkpoints use the int8 dequantize path
+        quant_cls = {"int4": Int4Linear, "int8": Int8Linear,
+                     "fp8": Krea2Fp8Linear, "bf16": Int8Linear}[layout]
 
         # Every step below CREATES or MOVES module parameters (VAE,
         # transformer, text encoder). The .to() device moves route through
@@ -586,16 +679,25 @@ class Krea2Backend(ModelBackend):
         return module
 
     def _merge_lora_deltas(self, loras: tuple[tuple[str, float], ...]):
-        """Resolve + map + merge a LoRA set into per-module delta specs.
+        """Resolve + map + merge a LoRA set into per-module delta plans.
 
-        Pure: returns ``{module path: [(A, B, r0, r1), ...]}`` (CPU tensors;
-        the LoRA *weight scale factor is pre-folded into A, and deltas
-        covering adjacent row slices of one module are merged so each
-        module costs ONE extra GEMM pair). Raises ``ValueError`` on a
-        missing file, an unmappable key, or a shape mismatch -- nothing is
-        mutated here, so a failing set leaves no partial state.
+        Pure: returns ``{module path: {"deltas": [(A, B, r0, r1), ...],
+        "kron": [(w1, w2), ...], "dora": Tensor(out) | None}}`` (CPU
+        tensors; the LoRA *weight scale factor is pre-folded into A /
+        w1, and deltas covering adjacent row slices of one module are
+        merged so each module costs ONE extra GEMM pair). LoKr specs
+        keep their Kronecker factors (applied as nested GEMMs, never
+        materialized); DoRA scales of several LoRAs on one module sum
+        (the same order ComfyUI merges them in). Raises ``ValueError``
+        on a missing file, an unmappable key, or a shape mismatch --
+        nothing is mutated here, so a failing set leaves no partial
+        state.
         """
         per_module: dict[str, dict[tuple[int, int], list[tuple[torch.Tensor, torch.Tensor]]]] = {}
+        kron: dict[str, list[tuple[torch.Tensor, torch.Tensor]]] = {}
+        dora: dict[str, torch.Tensor] = {}
+        kron_by: dict[str, list[str]] = {}
+        dora_by: dict[str, list[str]] = {}
         for name, weight in loras:
             if weight == 0.0:  # zero-weight LoRA: no delta at all
                 continue
@@ -604,6 +706,27 @@ class Krea2Backend(ModelBackend):
                 raise ValueError(
                     f"Krea 2 LoRA not found: {name!r} (looked in loras/krea2/)")
             for spec in self._parse_lora(path):
+                if spec.dora_scale is not None:
+                    # DoRA scale is the INPUT axis (module_in_features
+                    # long, NOT r1 - r0); several DoRA LoRAs on one
+                    # module sum, the order ComfyUI merges them in
+                    fin = module_in_features(spec.module)
+                    d = dora.setdefault(
+                        spec.module,
+                        torch.zeros(fin, dtype=torch.float32))
+                    v = spec.dora_scale.reshape(-1).to(torch.float32)
+                    if v.numel() != fin:
+                        raise ValueError(
+                            f"{name!r}: {spec.module} DoRA scale covers "
+                            f"{v.numel()} columns, module has {fin}")
+                    d += v
+                    dora_by.setdefault(spec.module, []).append(name)
+                if spec.kron is not None:
+                    w1, w2 = spec.kron
+                    kron.setdefault(spec.module, []).append(
+                        (w1 * (weight * spec.scale), w2))
+                    kron_by.setdefault(spec.module, []).append(name)
+                    continue
                 rank = spec.A.shape[0]
                 if spec.B.shape[1] != rank:
                     raise ValueError(
@@ -618,7 +741,74 @@ class Krea2Backend(ModelBackend):
                 a = spec.A * (weight * spec.scale)
                 per_module.setdefault(spec.module, {}) \
                     .setdefault((spec.r0, spec.r1), []).append((a, spec.B))
-        return merge_module_deltas(per_module)
+        merged = merge_module_deltas(per_module)
+        out: dict[str, dict] = {}
+        for module in set(merged) | set(kron) | set(dora):
+            out[module] = {
+                "deltas": merged.get(module, []),
+                "kron": kron.get(module, []),
+                "kron_by": kron_by.get(module, []),
+                "dora": dora.get(module),
+                "dora_by": dora_by.get(module, []),
+            }
+        return out
+
+    def _fold_dora(self, module, deltas, kron, dora_scale):
+        """Fold a DoRA weight-decomposition scale into the module's deltas.
+
+        ComfyUI's ``weight_decompose`` (input-axis branch) with the LoRA
+        set's merged (strength-folded) delta ``d`` and the module's base
+        weight ``W``: the effective weight is ``W + c * (W + d) - W``
+        with ``c = dora_scale / ||W + d||_col`` (per-INPUT-column norms,
+        fp32, +eps). ``c`` multiplies whole input columns, so it folds
+        exactly into the delta's A columns (``A' = A * c``): the runtime
+        path then emits ``(x c) A^T B^T = c * d``. Runs on the module's
+        device (the base weight is needed, so this cannot happen in the
+        pure merge); the dequantized weight + delta are the only
+        transients (one module at a time, fp32). ConvRot blocks store
+        the Hadamard-rotated weight; the norms are taken over the
+        PLAIN-space weight the LoRA was trained against, so the stored
+        weight is de-rotated first (H^2 = I; de-rotating the quantized
+        stored bytes recovers the plain quantized weight exactly --
+        computing the norms on the ROTATED one would add the int8
+        quantization noise, which is not rotation-invariant per column).
+        """
+        if kron:
+            raise ValueError(
+                "LoKr + DoRA on one module is not supported")
+        if not deltas:
+            raise ValueError(
+                "DoRA needs at least one LoRA delta on the module")
+        weight = module.weight
+        if weight is None:
+            raise ValueError("DoRA: module has no weight")
+        device = weight.data.device
+        w = weight.to(device=device)
+        if deq := getattr(module, "_dequantize", None):
+            w = deq(w).to(torch.float32)  # quantized module (int8/int4)
+        else:
+            w = w.to(torch.float32)  # plain DeltaLinear (txtfusion)
+        group = getattr(module, "_convrot_group", None)
+        if group is not None:
+            w = _rotate(w, group)  # stored rotated -> plain (H^2 = I)
+        w = w.reshape(module.out_features, -1)
+        d = torch.zeros_like(w)
+        for a, b, r0, r1 in deltas:
+            # the delta in weight space: out x in (the forward computes
+            # (x A^T) B^T, i.e. the weight delta is B @ A)
+            d[r0:r1] = (b.to(device=device, dtype=torch.float32)
+                        @ a.to(device=device, dtype=torch.float32))
+        merged_norm = torch.linalg.vector_norm(w + d, dim=0)
+        c = dora_scale.to(device=device, dtype=torch.float32).reshape(-1) \
+            / (merged_norm + torch.finfo(torch.float32).eps)
+        # c rounded to the LoRA dtype (ComfyUI casts it before the row
+        # multiply) then applied on the CPU side (the merged deltas are
+        # CPU tensors; set_lora_deltas moves the result back)
+        c = c.to(torch.bfloat16).to(torch.float32).cpu()
+        del w, d, merged_norm
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        return [(a * c, b, r0, r1) for a, b, r0, r1 in deltas], []
 
     def _apply_loras(self, loras: list[tuple[str, float]]) -> None:
         """Attach the requested LoRAs to the transformer (cached per set).
@@ -635,7 +825,13 @@ class Krea2Backend(ModelBackend):
         exactly; lossless, reversible; the deltas are registered
         parameters so ``.to()``/``unload()`` moves them and VRAM scales
         with them); the bf16 :class:`DeltaLinear` txtfusion targets take
-        the same deltas on the plain input.
+        the same deltas on the plain input. LoKr specs install ``kron``
+        factor pairs (``set_lora_kron``, nested-GEMM application, w1
+        rotated into the ConvRot space for the int8 blocks). DoRA
+        scales are folded into the merged deltas via
+        :meth:`_fold_dora` (needs the base weight, runs on the compute
+        device, once per LoRA-set change -- cached via
+        ``_active_loras``).
 
         All-or-nothing: a set becomes ``_active_loras`` only once every
         module is patched: :meth:`_merge_lora_deltas` (parsing, mapping,
@@ -649,24 +845,57 @@ class Krea2Backend(ModelBackend):
         merged = self._merge_lora_deltas(key)  # may raise
         with _PARAM_INIT_LOCK:
             # resolve + validate every target BEFORE mutating anything
-            plan: list[tuple[object, object]] = []
-            for path, deltas in merged.items():
+            plan: list[tuple[object, list, list]] = []
+            for path, spec in merged.items():
                 module = self._module_for(path)
                 if not isinstance(module, (QuantLinear, DeltaLinear)):
                     raise TypeError(
                         f"{path!r} is not a delta-capable Linear "
                         f"({type(module).__name__})")
-                for a, _b, _r0, _r1 in deltas:
+                for a, _b, _r0, _r1 in spec["deltas"]:
                     if a.shape[1] != module.in_features:
                         raise ValueError(
                             f"{path!r}: LoRA input dim {a.shape[1]} != "
                             f"module in_features {module.in_features}"
                         )
-                plan.append((module, deltas))
+                for w1, w2 in spec["kron"]:
+                    if w1.shape[0] * w2.shape[0] != module.out_features \
+                            or w1.shape[1] * w2.shape[1] != module.in_features:
+                        raise ValueError(
+                            f"{path!r}: LoKr kron shape "
+                            f"{w1.shape[0] * w2.shape[0]}x"
+                            f"{w1.shape[1] * w2.shape[1]} != module "
+                            f"{module.out_features}x{module.in_features}"
+                        )
+                if spec["dora"] is not None:
+                    if spec["kron"]:
+                        raise ValueError(
+                            f"{path!r}: LoKr + DoRA on one module is not "
+                            f"supported (LoKr: {sorted(set(spec['kron_by']))}, "
+                            f"DoRA: {sorted(set(spec['dora_by']))}; drop one "
+                            "of these LoRAs for this combination")
+                    if spec["dora"].numel() != module.in_features:
+                        raise ValueError(
+                            f"{path!r}: DoRA scale covers "
+                            f"{spec['dora'].numel()} columns, module has "
+                            f"{module.in_features} input features")
+                plan.append((module, spec["deltas"], spec["kron"],
+                             spec["dora"]))
+            # DoRA folding needs the base weights (compute device, transient
+            # dequantize per module) before anything is installed
+            folded: list[tuple[object, list, list]] = []
+            for module, deltas, kron, dora in plan:
+                if dora is not None:
+                    deltas, kron = self._fold_dora(
+                        module, deltas, kron, dora)
+                folded.append((module, deltas, kron))
             # drop whatever is currently applied, then install the new set
             self._unload_loras()
-            for module, deltas in plan:
-                module.set_lora_deltas(deltas)
+            for module, deltas, kron in folded:
+                if deltas:
+                    module.set_lora_deltas(deltas)
+                if kron:
+                    module.set_lora_kron(kron)
         self._active_loras = key
         log.info("Krea 2 LoRA load: %s", format_loras(list(key)))
 
@@ -678,7 +907,8 @@ class Krea2Backend(ModelBackend):
         state are removed too.
         """
         for module in self.transformer.modules():
-            if getattr(module, "lora_deltas", None):
+            if getattr(module, "lora_deltas", None) \
+                    or getattr(module, "lora_kron", None):
                 module.clear_lora_deltas()
 
     # ----------------------------------------------------------- generate ----

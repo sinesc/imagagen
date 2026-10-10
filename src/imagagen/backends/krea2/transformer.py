@@ -59,22 +59,27 @@ _H4 = torch.tensor(
     dtype=torch.float32,
 )
 
-#: (str(device), dtype) -> the Hadamard matrix
+#: (group, str(device), dtype) -> the Hadamard matrix
 _HADAMARD_CACHE: dict[tuple, torch.Tensor] = {}
 
 
 def _build_hadamard(size: int) -> torch.Tensor:
-    """The ``size``-x-``size`` Hadamard matrix (size a power of 4):
-    the 4x4 base kron-recursed up to ``size`` and scaled by
-    ``1 / sqrt(size)`` so it is orthogonal (``H @ H.T == I``)."""
-    h = _H4
+    """The ``size``-x-``size`` Hadamard matrix (size a power of two): the
+    2x2 Sylvester base kron-recursed up to ``size`` and scaled by
+    ``1 / sqrt(size)`` so it is orthogonal (``H @ H.T == I``). The
+    recursion is the same matrix as the reference's 4x4-base one for
+    every power of four (``H4 = H2 \u2297 H2``), and it additionally
+    gives the powers of two (``H_8 = H_2 \u2297 H_4``, ``H_32 = H_2 \u2297
+    H_16``) that the LoKr ConvRot folding needs
+    (``H_256 = H_8 \u2297 H_32``)."""
+    h = torch.tensor([[1.0, 1.0], [1.0, -1.0]])
     while h.shape[0] < size:
-        h = torch.kron(h, _H4)
+        h = torch.kron(h, torch.tensor([[1.0, 1.0], [1.0, -1.0]]))
     return (h / math.sqrt(size)).contiguous()
 
 
 def _hadamard(group: int, device, dtype) -> torch.Tensor:
-    key = (str(device), dtype)
+    key = (group, str(device), dtype)
     h = _HADAMARD_CACHE.get(key)
     if h is None:
         h = _HADAMARD_CACHE.setdefault(key, _build_hadamard(group).to(
@@ -159,12 +164,19 @@ class Int8Linear(QuantLinear):
     ``(x H) (A H)^T B^T == x A^T B^T`` (H is symmetric, H^2 = I).
     """
 
+    #: the ConvRot group the block projections are built with (the
+    #: checkpoint's convrot_groupsize); None disables the rotation
+    _CONVROT_GROUP: int | None = 256
+
     def __init__(self, in_features: int, out_features: int, bias: bool,
-                 convrot_group: int | None = 256) -> None:
+                 convrot_group: int | None = None) -> None:
         super().__init__(in_features, out_features, bias)
         self.weight_scale = None  # f32 (out, 1), filled at load
-        self._convrot_group = (convrot_group
-                               if in_features % convrot_group == 0 else None)
+        group = convrot_group if convrot_group is not None \
+            else self.__class__._CONVROT_GROUP
+        self._convrot_group = (group
+                               if group is not None
+                               and in_features % group == 0 else None)
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                              missing_keys, unexpected_keys, error_msgs):
@@ -184,6 +196,8 @@ class Int8Linear(QuantLinear):
         return out
 
     def _dequantize(self, w):
+        if self.weight_scale is None:
+            return w.to(self.computation_dtype)  # unquantized (bf16) weight
         return w.to(self.computation_dtype) * \
             self.weight_scale.to(self.computation_dtype)
 
@@ -197,6 +211,35 @@ class Int8Linear(QuantLinear):
             deltas = [(_rotate(a, self._convrot_group), b, r0, r1)
                       for a, b, r0, r1 in deltas]
         super().set_lora_deltas(deltas)
+
+    def set_lora_kron(self, kron) -> None:
+        """Install LoKr deltas, folding the ConvRot rotation into w2.
+
+        ``kron(w1, w2)`` is the PLAIN-space delta and the rotation acts
+        on the input axis: ``in = in_l * in_k`` with the input index
+        ``i = i_l * in_k + i_k``, so a ConvRot group of ``g = 256``
+        consecutive columns is a run of ``g`` w2-columns (K2: ``in_k =
+        768`` main blocks / ``864`` txtfusion, both multiples of 256;
+        ``in_l = 8`` is not). The rotation is therefore ``I \u2297 H_g``
+        on the Kronecker column grid and folds as ``kron(w1, w2 @ H) =
+        kron(w1, w2) @ H`` (H symmetric, H^2 = I); the inherited
+        rotated-input path then reproduces the plain delta exactly.
+        """
+        g = self._convrot_group
+        if g is not None:
+            folded = []
+            for w1, w2 in kron:
+                if w2.shape[1] % g == 0:
+                    folded.append((w1, _rotate(w2, g)))
+                elif w1.shape[1] % g == 0:
+                    folded.append((_rotate(w1, g), w2))
+                else:
+                    raise ValueError(
+                        f"LoKr factors ({tuple(w1.shape)}, "
+                        f"{tuple(w2.shape)}) do not align with the "
+                        f"ConvRot group {g}")
+            kron = folded
+        super().set_lora_kron(kron)
 
     def forward(self, x):
         if self._convrot_group is not None:
@@ -227,6 +270,23 @@ class Int4Linear(Int8Linear):
             self.weight_scale.to(self.computation_dtype)
 
 
+class Krea2Fp8Linear(Int8Linear):
+    """``float8_e4m3fn`` (the ``krea2_*_fp8_scaled`` releases): the
+    ``F8_E4M3`` weight stays resident with ONE scalar fp32
+    ``weight_scale`` per tensor; the dequantize is ``w.to(bf16) *
+    scale``. These checkpoints are NOT ConvRot-rotated (the loader
+    builds them with ``convrot_group=None``, so the activation rotation
+    and the LoRA A-rotation are inert) -- the LoKr/DoRA delta contract
+    is inherited from :class:`Int8Linear`/``QuantLinear`` on the plain
+    input."""
+
+    _CONVROT_GROUP: int | None = None  # fp8_scaled checkpoints are unrotated
+
+    def _dequantize(self, w):
+        return w.to(self.computation_dtype) * \
+            self.weight_scale.to(self.computation_dtype)
+
+
 class DeltaLinear(nn.Linear):
     """Plain bf16 ``nn.Linear`` that also accepts runtime LoRA weight
     deltas (the same ``set_lora_deltas``/``clear_lora_deltas`` contract
@@ -237,11 +297,19 @@ class DeltaLinear(nn.Linear):
                  bias: bool) -> None:
         super().__init__(in_features, out_features, bias=bias)
         self.lora_deltas: list[tuple[nn.Parameter, nn.Parameter, int, int]] = []
+        self.lora_kron: list[tuple[nn.Parameter, nn.Parameter]] = []
 
     def forward(self, x):
         out = F.linear(x, self.weight, self.bias)
         for a, b, r0, r1 in self.lora_deltas:
             out[..., r0:r1] += (x @ a.t()) @ b.t()
+        for w1, w2 in self.lora_kron:
+            # LoKr delta kron(w1, w2) @ x as nested GEMMs (ComfyUI's
+            # LoKr bypass math, see QuantLinear.forward)
+            uq = w1.shape[1]
+            hb = F.linear(x.reshape(*x.shape[:-1], uq, -1), w2)
+            hc = F.linear(hb.transpose(-1, -2), w1)
+            out += hc.transpose(-1, -2).reshape(*hc.shape[:-2], -1)
         return out
 
     def set_lora_deltas(self, deltas) -> None:
@@ -250,10 +318,11 @@ class DeltaLinear(nn.Linear):
         ``deltas``: ``(A, B, r0, r1)`` tuples; ``A`` is ``(rank,
         in_features)``, ``B`` is ``(r1 - r0, rank)``. The A/B tensors are
         registered parameters (named ``lora_A_N`` / ``lora_B_N``) so
-        ``.to(device)`` moves them with the module. Call under the shared
+        ``.to(device)`` moves them with the module. Replaces any previous
+        A/B delta set (LoKr factors untouched). Call under the shared
         ``_PARAM_INIT_LOCK`` (see :meth:`QuantLinear.set_lora_deltas`).
         """
-        self.clear_lora_deltas()
+        self._clear_ab_deltas(keep_kron=True)
         device = self.weight.device
         dtype = self.weight.dtype
         self.lora_deltas = []
@@ -268,10 +337,42 @@ class DeltaLinear(nn.Linear):
 
     def clear_lora_deltas(self) -> None:
         """Remove every installed LoRA delta (the module goes back to
-        base)."""
-        self.lora_deltas = []
+        base; A/B set AND LoKr factors)."""
+        self._clear_ab_deltas()
+        self._clear_kron_deltas()
         for name in [n for n in self._parameters if n.startswith("lora_")]:
             self.register_parameter(name, None)
+
+    def _clear_ab_deltas(self, keep_kron: bool = False) -> None:
+        self.lora_deltas = []
+        for name in [n for n in self._parameters
+                     if (n.startswith("lora_A_") or n.startswith("lora_B_"))]:
+            self.register_parameter(name, None)
+
+    def _clear_kron_deltas(self) -> None:
+        self.lora_kron = []
+        for name in [n for n in self._parameters if n.startswith("lora_w")]:
+            self.register_parameter(name, None)
+
+    def set_lora_kron(self, kron) -> None:
+        """Install LoKr (Kronecker) deltas (replaces any previous set).
+
+        ``(w1, w2)`` pairs, weight delta ``kron(w1, w2)`` (see
+        :meth:`QuantLinear.set_lora_kron`; the txtfusion DeltaLinears
+        are the plain-space targets of LoKr'd K2 LoRAs).
+        """
+        self._clear_kron_deltas()
+        device = self.weight.device
+        dtype = self.weight.dtype
+        self.lora_kron = []
+        for i, (w1, w2) in enumerate(kron):
+            pw1 = nn.Parameter(
+                w1.detach().to(device=device, dtype=dtype), requires_grad=False)
+            pw2 = nn.Parameter(
+                w2.detach().to(device=device, dtype=dtype), requires_grad=False)
+            self.register_parameter(f"lora_w1_{i}", pw1)
+            self.register_parameter(f"lora_w2_{i}", pw2)
+            self.lora_kron.append((pw1, pw2))
 
 
 # ----------------------------------------------------------------- norms ----

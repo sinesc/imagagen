@@ -415,6 +415,10 @@ class QuantLinear(torch.nn.Module):
         self.weight = None
         self.bias = None
         self.lora_deltas: list[tuple[torch.nn.Parameter, torch.nn.Parameter, int, int]] = []
+        # LoKr (Kronecker) deltas: (w1, w2) pairs whose weight delta is
+        # kron(w1, w2); applied as the nested grouped GEMM of ComfyUI's
+        # LoKr bypass, never materializing the full product
+        self.lora_kron: list[tuple[torch.nn.Parameter, torch.nn.Parameter]] = []
         # optional additive bias delta (the Z-Image LoRA `.diff_b` keys):
         # registered as a parameter ONLY while installed (set_lora_bias);
         # read via getattr(self, "lora_bias", None) -- a plain None here
@@ -498,6 +502,17 @@ class QuantLinear(torch.nn.Module):
             # and they cost one extra GEMM pair per module.
             for a, b, r0, r1 in self.lora_deltas:
                 out[..., r0:r1] += (x @ a.t()) @ b.t()
+        for w1, w2 in self.lora_kron:
+            # LoKr delta kron(w1, w2) @ x applied as nested GEMMs (the
+            # exact ComfyUI LoKr bypass math): group the input axis by
+            # w1's column count, apply w2 inside each group, w1 across
+            # the groups -- the full Kronecker product is never built.
+            # Registered parameters, so .to(device)/unload moves them.
+            uq = w1.shape[1]
+            hb = torch.nn.functional.linear(
+                x.reshape(*x.shape[:-1], uq, -1), w2)
+            hc = torch.nn.functional.linear(hb.transpose(-1, -2), w1)
+            out += hc.transpose(-1, -2).reshape(*hc.shape[:-2], -1)
         return out
 
     def set_lora_deltas(self, deltas) -> None:
@@ -507,11 +522,12 @@ class QuantLinear(torch.nn.Module):
         in_features)``, ``B`` is ``(r1 - r0, rank)`` (any device/dtype,
         moved to the weight's). The A/B tensors are registered as
         parameters (named ``lora_A_N`` / ``lora_B_N``) so ``.to(device)``
-        moves them with the module. Call under the shared
+        moves them with the module. Replaces any previous A/B delta set
+        (LoKr factors are untouched). Call under the shared
         ``_PARAM_INIT_LOCK`` (parameter creation is not thread-safe across
         backends, see backends.py).
         """
-        self.clear_lora_deltas()
+        self._clear_ab_deltas()
         w = self.weight
         device = w.data.device if w is not None else None
         dtype = (getattr(w, "computation_dtype", None)
@@ -551,19 +567,66 @@ class QuantLinear(torch.nn.Module):
         if "lora_bias" in self._parameters:
             self.register_parameter("lora_bias", None)
 
-    def clear_lora_deltas(self) -> None:
-        """Remove every installed LoRA delta (the module goes back to base).
-
-        Also sweeps stray ``lora_A_*`` / ``lora_B_*`` plain-tensor attributes
-        (defensive: older versions demoted them to __dict__ on device
-        moves) so no stale delta storage lingers.
-        """
+    def _clear_ab_deltas(self) -> None:
+        """Remove only the A/B delta set (LoKr factors stay)."""
         self.lora_deltas = []
-        for name in [n for n in self._parameters if n.startswith("lora_")]:
+        for name in [n for n in self._parameters
+                     if n.startswith("lora_A_") or n.startswith("lora_B_")]:
             self.register_parameter(name, None)
         for name in [n for n in list(self.__dict__)
                      if n.startswith(("lora_A_", "lora_B_"))]:
             delattr(self, name)
+
+    def _clear_kron_deltas(self) -> None:
+        """Remove only the LoKr factor set (A/B deltas stay)."""
+        self.lora_kron = []
+        for name in [n for n in self._parameters if n.startswith("lora_w")]:
+            self.register_parameter(name, None)
+        for name in [n for n in list(self.__dict__)
+                     if n.startswith(("lora_w1_", "lora_w2_"))]:
+            delattr(self, name)
+
+    def clear_lora_deltas(self) -> None:
+        """Remove every installed LoRA delta -- A/B set AND the LoKr
+        factors (the module goes back to base).
+
+        Also sweeps stray ``lora_A_*`` / ``lora_B_*`` plain-tensor
+        attributes (defensive: older versions demoted them to __dict__
+        on device moves) so no stale delta storage lingers.
+        """
+        self._clear_ab_deltas()
+        self._clear_kron_deltas()
+        for name in [n for n in self._parameters if n.startswith("lora_")]:
+            self.register_parameter(name, None)
+
+    def set_lora_kron(self, kron) -> None:
+        """Install LoKr (Kronecker) deltas (replaces any previous set).
+
+        ``kron``: ``(w1, w2)`` pairs; the module's weight delta is
+        ``kron(w1, w2)`` (``w1`` is ``(out_l, in_l)``, ``w2`` is
+        ``(out_k, in_k)``, ``out_l*out_k == out_features``,
+        ``in_l*in_k == in_features``; the strength/scale is expected
+        pre-folded into ``w1``). Registered as ``lora_w1_N`` /
+        ``lora_w2_N`` parameters so ``.to(device)`` moves them with the
+        module. Replaces any previous LoKr set (A/B deltas untouched).
+        Call under the shared ``_PARAM_INIT_LOCK``.
+        """
+        self._clear_kron_deltas()
+        w = self.weight
+        device = w.data.device if w is not None else None
+        dtype = (getattr(w, "computation_dtype", None)
+                 or self.computation_dtype
+                 or (w.dtype if w is not None else None))
+        self.lora_kron = []
+        for i, (w1, w2) in enumerate(kron):
+            if device is not None:
+                w1 = w1.to(device=device, dtype=dtype)
+                w2 = w2.to(device=device, dtype=dtype)
+            pw1 = torch.nn.Parameter(w1.detach(), requires_grad=False)
+            pw2 = torch.nn.Parameter(w2.detach(), requires_grad=False)
+            self.register_parameter(f"lora_w1_{i}", pw1)
+            self.register_parameter(f"lora_w2_{i}", pw2)
+            self.lora_kron.append((pw1, pw2))
         self.clear_lora_bias()
 
 

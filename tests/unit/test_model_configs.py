@@ -35,6 +35,29 @@ def test_default_entries_for_unconfigured_models(tmp_path):
     assert all(e.t2i == ModeConfig() and e.i2i == ModeConfig() for e in entries)
 
 
+def test_turbo_auto_detection_for_krea2_defaults(tmp_path):
+    """An unconfigured Krea 2 model whose name contains "turbo" gets the
+    turbo class (8 steps / no CFG / mu 1.15) with zero setup; other
+    families and non-turbo names stay raw; an explicit file config
+    overrides the auto-detection."""
+    mocks = [{"id": "krea2/krea2_finetuned_turbo", "name": "krea2_finetuned_turbo",
+              "family": "krea2"},
+             {"id": "krea2/krea2_Int8Extended", "name": "krea2_Int8Extended",
+              "family": "krea2"},
+             {"id": "flux/FLUX1-turbo", "name": "FLUX1-turbo", "family": "flux"}]
+    s = ConfigStore(Config(root=tmp_path), lambda: mocks)
+    by_id = {e.id: e for e in s.entries()}
+    assert by_id["krea2/krea2_finetuned_turbo"].turbo is True
+    assert by_id["krea2/krea2_Int8Extended"].turbo is False
+    assert by_id["flux/FLUX1-turbo"].turbo is False  # krea2-only flag
+    # the explicit config wins (turbo False on a turbo-named model)
+    s.save(ModelConfig(name="Raw run", model="krea2/krea2_finetuned_turbo",
+                       turbo=False))
+    by_id = {e.id: e for e in s.entries()}
+    assert by_id["raw-run"].is_default is False
+    assert by_id["raw-run"].turbo is False
+
+
 def test_file_config_replaces_default_of_its_model(tmp_path):
     s = store(tmp_path)
     s.save(ModelConfig(name="My A tuned", model="sdxl/a.safetensors",

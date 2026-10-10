@@ -109,10 +109,12 @@ class TestInt8Linear:
                 torch.zeros(64, 256, dtype=torch.int8), requires_grad=False),
             "weight_scale": nn.Parameter(torch.ones(64, 1), requires_grad=False),
         })
-        a = torch.randn(4, 256)
-        b = torch.randn(64, 4)
+        gen = torch.Generator().manual_seed(3)  # fixed: the "not the
+        # old bug" margin below is seed-sensitive
+        a = torch.randn(4, 256, generator=gen)
+        b = torch.randn(64, 4, generator=gen)
         m.set_lora_deltas([(a, b, 0, 64)])
-        x = torch.randn(2, 256, dtype=torch.bfloat16)
+        x = torch.randn(2, 256, dtype=torch.bfloat16, generator=gen)
         out = m(x).float()
         # the emitted delta is the PLAIN-space one: x @ (B A)^T
         expected = x.float() @ (b @ a).T
@@ -122,7 +124,11 @@ class TestInt8Linear:
         # but a different direction (invisible at low LoRA weights)
         x_rot = _rotate(x.float(), 256)
         wrong = x_rot @ a.T @ b.T
-        assert _rel_err(out, wrong) > 1.0
+        # two random delta paths of equal norm sit at rel_err ~ sqrt(2)
+        # when they are INDEPENDENT (the correct case); the old bug
+        # (scrambled delta direction) lands near 1.0 -- the margin must
+        # stay below sqrt(2) to keep the seed sensitivity benign
+        assert _rel_err(out, wrong) > 1.2
         m.clear_lora_deltas()
         assert m.lora_deltas == []
 

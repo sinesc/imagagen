@@ -52,8 +52,31 @@ The A/B pairs become runtime additive deltas exactly as Z-Image/Flux:
 :func:`flux_lora.merge_module_deltas` (one GEMM pair per module) and
 ``Int8Linear.set_lora_deltas`` (ConvRot blocks -- the deltas are trained
 on the de-rotated weights, so the A matrices are rotated into the ConvRot
-space at install) / ``DeltaLinear.set_lora_deltas`` (txtfusion). Everything is all-or-nothing: an unmappable key
-raises :class:`ValueError` before any module is touched.
+space at install) / ``DeltaLinear.set_lora_deltas`` (txtfusion).
+Everything is all-or-nothing: an unmappable key raises :class:`ValueError`
+before any module is touched.
+
+**LoKr** (ai-toolkit, e.g. ``BenchesKII1.0.safetensors``): native naming
+with ``.lokr_w1`` / ``.lokr_w2`` (+ ``.alpha``) per module -- the weight
+delta is the Kronecker product ``kron(w1, w2)`` (w1 is the small
+factor, w2 the big one; the file's ``alpha`` is the ai-toolkit
+sentinel ``9999220736`` == alpha-as-rank, and ComfyUI's LoKr applies
+scale 1.0 when ``lokr_w2`` is stored full, so the alpha is ignored).
+These parse to a spec with :attr:`FluxLoraSpec.kron` and are applied
+as the nested grouped GEMM of ComfyUI's LoKr bypass
+(``Int8Linear/DeltaLinear.set_lora_kron``). Factorized LoKr
+(``lokr_w1_a/b``, ``lokr_w2_a/b``), Tucker (``lokr_t2``) and LoHa
+(``loha_*``) are rejected with a named diagnosis, as are DoRA scales
+whose length matches the input axis (input-axis decomposition).
+
+**DoRA** (e.g. ``HighcutKII1.0.safetensors`` / ``StreamlineKII1.0``,
+flat native naming): a standard LoRA pair plus ``.dora_scale``
+(``[1, in_features]``, the input-axis variant). The weight-decompose
+math (ComfyUI's ``weight_decompose``, input-axis branch) needs the
+module's base weight, so the parser only carries the vector
+(:attr:`FluxLoraSpec.dora_scale`) and the backend folds the per-column
+ratio ``dora_scale / ||W + d||`` into the delta's A columns at apply
+time.
 """
 
 from __future__ import annotations
@@ -81,6 +104,18 @@ _LORA_KEY_UNET = re.compile(
 )
 _ALPHA_KEY = re.compile(r"^(?:transformer|diffusion_model)\.(.+)\.alpha$")
 _ALPHA_KEY_UNET = re.compile(r"^lora_unet_(.+)\.alpha$")
+_LOKR_KEY = re.compile(
+    r"^(?:transformer|diffusion_model)\.(.+)\.(lokr_w1|lokr_w2|lokr_w1_a"
+    r"|lokr_w1_b|lokr_w2_a|lokr_w2_b|lokr_t2)$"
+)
+_LOKR_KEY_UNET = re.compile(
+    r"^lora_unet_(.+)\.(lokr_w1|lokr_w2|lokr_w1_a|lokr_w1_b|lokr_w2_a"
+    r"|lokr_w2_b|lokr_t2)$"
+)
+_DORA_KEY = re.compile(
+    r"^(?:transformer|diffusion_model)\.(.+)\.dora_scale$"
+)
+_DORA_KEY_UNET = re.compile(r"^lora_unet_(.+)\.dora_scale$")
 
 #: native top-level (non-block) module -> row count of its weight
 _NATIVE_TOP = {
@@ -107,6 +142,48 @@ _NATIVE_ROWS = {
 
 def _strip_dot0(base: str) -> str:
     return base[:-2] if base.endswith(".0") else base
+
+
+#: main-block / txtfusion projection input widths (columns of each
+#: module's weight) -- LoKr factor-shape validation
+_NATIVE_IN = {
+    "blocks": {
+        "attn.wq": _D, "attn.wk": _D, "attn.wv": _D, "attn.gate": _D,
+        "attn.wo": _D, "mlp.gate": _D, "mlp.up": _D, "mlp.down": _M,
+    },
+    "txtfusion": {
+        "attn.wq": _TD, "attn.wk": _TD, "attn.wv": _TD, "attn.gate": _TD,
+        "attn.wo": _TD, "mlp.gate": _TD, "mlp.up": _TD, "mlp.down": _TM,
+    },
+}
+_NATIVE_TOP_IN = {
+    "first": _D,
+    "last.linear": _D,
+    "tmlp.0": _D, "tmlp.2": _M,
+    "txtmlp.1": _D, "txtmlp.3": _M,
+    "tproj.1": 256,
+    "txtfusion.projector": _TD,
+}
+
+
+def module_in_features(module: str) -> int:
+    """Row count -> column count of a mapped K2 module's weight.
+
+    The inverse of :func:`map_base_key`'s row table (the LoKr factor
+    shapes must multiply out to ``(r1 - r0) x in_features`).
+    """
+    if module in _NATIVE_TOP_IN:
+        return _NATIVE_TOP_IN[module]
+    nm = re.match(
+        r"^(blocks|txtfusion\.(?:layerwise_blocks|refiner_blocks))"
+        r"\.\d+\.(.+)$",
+        module,
+    )
+    if nm is not None:
+        width = _NATIVE_IN[nm.group(1).split(".")[0]].get(nm.group(2))
+        if width is not None:
+            return width
+    raise ValueError(f"no input width for Krea 2 module {module!r}")
 
 
 def _flat_to_native(name: str) -> str:
@@ -216,15 +293,42 @@ def map_base_key(base: str) -> tuple[str, int, int]:
     return _map_block(m.group(1), int(m.group(3)), m.group(4), module_prefix)
 
 
+def _sniff_unsupported(unknown: list[str]) -> str | None:
+    """Name an unsupported LoRA family from its keys (LoHa, GaLore), or
+    None when the keys are simply unknown."""
+    keys = set(unknown)
+    if any(".loha_" in k or k.startswith("loha_") for k in keys):
+        return "LoHa (loha_* keys) is not supported for Krea 2"
+    if any(".galore_" in k for k in keys):
+        return "GaLore LoRAs are not supported for Krea 2"
+    return None
+
+
 def parse_krea2_lora(path: str | Path) -> list[FluxLoraSpec]:
     """A Krea 2 LoRA ``.safetensors`` file -> its delta specs (CPU tensors).
 
     Raises :class:`ValueError` listing every key that is neither a
-    mappable A/B pair nor an alpha scalar, and for incomplete pairs.
+    mappable A/B (or LoKr/DoRA) key nor an alpha scalar, and for
+    incomplete pairs.
     """
     from safetensors.torch import load_file
 
-    data = load_file(str(path))
+    from ...flux_lora import sniff_lora_format
+
+    if why := sniff_lora_format(path, skip=("lokr", "dora")):
+        raise ValueError(
+            f"unsupported Krea 2 LoRA format in {Path(path).name}: {why}")
+    try:
+        data = load_file(str(path))
+    except Exception as exc:  # safetensors rejects a GGUF magic header
+        with open(path, "rb") as fh:
+            magic = fh.read(4)
+        if magic == b"GGUF":
+            raise ValueError(
+                f"{Path(path).name}: GGUF-quantized LoRAs are not "
+                "supported; use the plain .safetensors release"
+            ) from exc
+        raise
     parts: dict[str, dict[str, torch.Tensor | float]] = {}
     unknown: list[str] = []
     for key, t in data.items():
@@ -239,19 +343,81 @@ def parse_krea2_lora(path: str | Path) -> list[FluxLoraSpec]:
         if base is not None:
             parts.setdefault(base, {})["alpha"] = float(t)
             continue
+        m = _LOKR_KEY.match(key) or _LOKR_KEY_UNET.match(key)
+        if m is not None:
+            base = _strip_dot0(_flat_to_native(m.group(1))
+                               if key.startswith("lora_unet_")
+                               else m.group(1))
+            parts.setdefault(base, {})[m.group(2)] = t
+            continue
+        m = _DORA_KEY.match(key) or _DORA_KEY_UNET.match(key)
+        if m is not None:
+            base = _strip_dot0(_flat_to_native(m.group(1))
+                               if key.startswith("lora_unet_")
+                               else m.group(1))
+            parts.setdefault(base, {})["dora"] = t
+            continue
         unknown.append(key)
     if unknown:
+        diagnosis = _sniff_unsupported(unknown)
+        if diagnosis is not None:
+            raise ValueError(f"{Path(path).name}: {diagnosis}")
         raise ValueError(
             f"unknown Krea 2 LoRA keys in {Path(path).name}: "
             f"{sorted(set(unknown))}"
         )
     specs = []
     for base, p in parts.items():
+        module, r0, r1 = map_base_key(base)
+        dora = p.get("dora")
+        if dora is not None:
+            dora = dora.reshape(-1)
+            fin = module_in_features(module)
+            if dora.numel() != fin:
+                raise ValueError(
+                    f"{base!r}: DoRA scale covers {dora.numel()} values, "
+                    f"expected {fin} (input axis of {module}); output-axis "
+                    "DoRA is not supported"
+                )
+        if "lokr_w1" in p or "lokr_w2" in p:
+            if dora is not None:
+                raise ValueError(
+                    f"{base!r}: LoKr + DoRA on one module is not "
+                    "supported (the DoRA column scaling does not factor "
+                    "through the Kronecker application)"
+                )
+            for extra in ("lokr_w1_a", "lokr_w1_b", "lokr_w2_a",
+                          "lokr_w2_b", "lokr_t2"):
+                if extra in p:
+                    raise ValueError(
+                        f"{base!r}: factorized/Tucker LoKr "
+                        f"({extra}) is not supported (only full-matrix "
+                        "lokr_w1 + lokr_w2); train a plain LoRA/DoRA "
+                        "for Krea 2"
+                    )
+            if "lokr_w1" not in p or "lokr_w2" not in p:
+                raise ValueError(f"incomplete LoKr pair for {base!r}")
+            w1, w2 = p["lokr_w1"], p["lokr_w2"]
+            if w1.ndim != 2 or w2.ndim != 2:
+                raise ValueError(f"{base!r}: non-2D LoKr factors")
+            out, fin = r1 - r0, module_in_features(module)
+            if w1.shape[0] * w2.shape[0] != out \
+                    or w1.shape[1] * w2.shape[1] != fin:
+                raise ValueError(
+                    f"{base!r}: LoKr kron shape "
+                    f"{w1.shape[0] * w2.shape[0]}x"
+                    f"{w1.shape[1] * w2.shape[1]} != module weight "
+                    f"{out}x{fin}"
+                )
+            specs.append(FluxLoraSpec(
+                module, r0, r1, False, w1, torch.empty(0), 1.0,
+                kron=(w1, w2), dora_scale=dora))
+            continue
         if "A" not in p or "B" not in p:
             raise ValueError(f"incomplete LoRA A/B pair for {base!r}")
         A, B = p["A"], p["B"]
-        module, r0, r1 = map_base_key(base)
         rank = A.shape[0]
         alpha = p.get("alpha", float(rank))
-        specs.append(FluxLoraSpec(module, r0, r1, False, A, B, alpha / rank))
+        specs.append(FluxLoraSpec(
+            module, r0, r1, False, A, B, alpha / rank, dora_scale=dora))
     return specs

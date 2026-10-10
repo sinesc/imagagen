@@ -214,10 +214,17 @@ class ConfigStore:
             for m in self._models():
                 if m["id"] in covered:
                     continue
+                # Krea 2 turbo auto-detection: a CivitAI download named
+                # "...turbo..." gets the turbo class (8 steps, no CFG,
+                # mu 1.15) with zero setup; an explicit ModelConfig entry
+                # always overrides (the file branch above wins by the
+                # `covered` check)
+                turbo = (m.get("family") == "krea2"
+                         and "turbo" in m["name"].lower())
                 out.append(
                     ConfigEntry(id=m["id"], name=m["name"], model_id=m["id"],
                                 distilled=True,  # = current Flux behavior
-                                turbo=False,  # = current Krea 2 behavior (raw)
+                                turbo=turbo,
                                 t2i=ModeConfig(), i2i=ModeConfig(), is_default=True)
                 )
             out.sort(key=lambda e: e.name.lower())
