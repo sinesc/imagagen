@@ -12,7 +12,7 @@ Early development. No backwards compatibility required.
 
 ## Hazards
 
-When monitoring a process (e.g. `pgrep`/`pkill`) be sure your monitoring script doesn't match itself (finds the monitoring string in its own process string).
+When monitoring a process (e.g. `pgrep`/`pkill`) make sure your monitoring script doesn't match itself. Use the bracket trick (e.g. `pgrep -f "smoke_krea2[.]lora"`) to avoid finding the monitoring string in the monitoring loops own command line.
 IMPORTANT: Prompt templates used in this project contain special tokens, e.g. the stop token. Do not output these or you will cause your inference engine to stop your turn. If you are asked to summarize this content and it does contain these tokens, do not include them in the summary or you will break it.
 
 ## Waiting for background tasks
