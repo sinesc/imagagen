@@ -152,6 +152,8 @@ def test_mask_tool_shift_erase_and_morph(page, server):
     _open(page, base)
     _show(page, base, 100, 80)
 
+    # the mask tool is disabled in "generate" mode -> inpaint first
+    page.select_option("#mode", "inpaint_masked")
     # switch with the M hotkey
     page.keyboard.press("m")
     assert page.evaluate(
@@ -206,6 +208,7 @@ def test_mask_bbox_outline(page, server):
 
     assert page.evaluate("maskOutlineBox()") is None  # empty mask
 
+    page.select_option("#mode", "inpaint_masked")  # mask tool needs inpaint
     page.keyboard.press("m")
     dot(page, 100, 75)  # 30 px disc, dead centre
     m = None
@@ -268,6 +271,7 @@ def test_mask_preview_matches_commit(page, server):
     base, _ = server
     _open(page, base)
     _show(page, base, 100, 80)
+    page.select_option("#mode", "inpaint_masked")  # mask tool needs inpaint
     page.keyboard.press("m")
 
     page.mouse.move(*screen_pos(page, 25, 40))
@@ -294,6 +298,7 @@ def test_mask_stroke_does_not_double_existing_mask(page, server):
     base, _ = server
     _open(page, base)
     _show(page, base, 100, 80)
+    page.select_option("#mode", "inpaint_masked")  # mask tool needs inpaint
     page.keyboard.press("m")
 
     # first stroke: commit, and wait for the overlay to land (grey 128 at
@@ -353,6 +358,7 @@ def test_client_undo_redo_mask(page, server):
     base, _ = server
     _open(page, base)
     _show(page, base, 100, 80)
+    page.select_option("#mode", "inpaint_masked")  # mask tool needs inpaint
     page.keyboard.press("m")
     dot(page, 50, 40)
     assert wait_until(lambda: _mask_alpha(page, 50, 40) == 255)
@@ -549,6 +555,7 @@ def test_brush_screen_size_mode(page, server):
     base, _ = server
     _open(page, base)
     _show(page, base)  # 200x150
+    page.select_option("#mode", "inpaint_masked")  # mask tool needs inpaint
     page.keyboard.press("m")  # mask tool: default 30 px
     # zoom 2x (relative to the fit scale) anchored at the holder centre,
     # so the image centre stays put
@@ -1046,6 +1053,7 @@ def test_tool_state_persists_across_reload(page, server):
     _open(page, base)
     _show(page, base)
 
+    page.select_option("#mode", "inpaint_masked")  # mask tool needs inpaint
     page.keyboard.press("m")  # mask tool
     set_input(page, "#brush-size", "0.2973")  # 32 px (log scale, 10..500)
     set_input(page, "#brush-opacity", "0.4")
@@ -1060,6 +1068,10 @@ def test_tool_state_persists_across_reload(page, server):
     )
 
     page.reload()
+    # the mode is not persisted (back to "generate", where the mask tool
+    # is disabled and auto-falls back to the brush) -> inpaint, re-arm mask
+    page.select_option("#mode", "inpaint_masked")
+    page.click("#tool-mask")
     page.wait_for_function(
         "document.getElementById('tool-mask').classList.contains('active')")
     assert page.evaluate("Tools.get().size") == 32
@@ -1221,12 +1233,12 @@ def test_inpaint_source_thumbnail(page, server):
     base, _ = server
     _open(page, base)
     _show(page, base, 200, 150)
-    # paint a mask dot in the centre
+    # paint a mask dot in the centre (mask tool: inpaint mode only)
+    page.select_option("#mode", "inpaint_masked")
     page.click("#tool-mask")
     dot(page, 100, 75)
     assert wait_until(lambda: mask_arr(base) is not None and mask_arr(base).any())
 
-    page.select_option("#mode", "inpaint_masked")
     set_input(page, "#denoise", "0.6")
     page.click("#btn-generate")
 

@@ -1846,10 +1846,12 @@ function zoomCenter(f) {
 // inpainting has no main-form control: its enable flag and options live in
 // the model configuration (i2i section, all families).
 function syncMode() {
-  $("denoise").disabled = $("mode").value === "generate";
+  const gen = $("mode").value === "generate";
+  $("denoise").disabled = gen;
   $("mask-padding").disabled = $("mode").value !== "inpaint_masked";
-  $("oversample").disabled = $("mode").value === "generate";
+  $("oversample").disabled = gen;
   syncGenerateEnabled();
+  viewRedraw(); // "generate" hides the mask overlay (visual only)
 }
 
 // Inpaint with an empty mask is a server-side no-op (rejected with

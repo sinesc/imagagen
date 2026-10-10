@@ -125,9 +125,15 @@ function viewRedraw() {
   // mask -- so skip it while such a stroke is active
   const s0 = view.stroke;
   const maskLayered = !!s0 && (s0.tool === "mask" || s0.tool === "smudge");
-  if (view.mask && !maskLayered) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
+  // "Generate" mode never uses the mask, so hide it visually (overlay and
+  // outline only -- view.maskValues is untouched and the mask reappears
+  // when switching back to an inpaint mode; an in-flight mask stroke is
+  // still previewed so drawing stays visible)
+  const maskShown = $("mode").value !== "generate";
+  if (view.mask && !maskLayered && maskShown)
+    ctx.drawImage(view.mask, 0, 0, view.w, view.h);
   if (view.stroke && !view.stroke.sel) drawStrokePreview(ctx, view.stroke);
-  drawMaskOutline(ctx);
+  if (maskShown) drawMaskOutline(ctx);
   if (view.crop) drawCropOverlay(ctx);
   if (view.sel) drawSelectionOverlay(ctx);
   drawCursor(ctx);
@@ -1975,6 +1981,13 @@ function setupCanvasInput() {
     if (tool === "brush" && e.ctrlKey) {
       // colour-picker mode: set the brush colour from the clicked pixel
       pickBrushColor(p);
+      return;
+    }
+    if (tool === "mask" && $("mode").value === "generate") {
+      // the mask is unused (and hidden) in "generate" mode: refuse the
+      // stroke BEFORE arming it, so no mask preview overlay appears while
+      // the button is held
+      setStatus("Must be in inpaint/outpaint mode", true);
       return;
     }
     // with a floating selection active, the draw / clone / smudge strokes

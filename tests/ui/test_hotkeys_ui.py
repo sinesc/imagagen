@@ -44,6 +44,8 @@ def test_undo_redo_hotkeys(page, server):
     assert wait_until(lambda: page.evaluate(px, [100, 75]) == [255, 0, 0])
 
     # the target follows the active tool: mask -> mask stack
+    # (the mask tool is disabled in "generate" mode -> inpaint first)
+    page.select_option("#mode", "inpaint_masked")
     page.click("#tool-mask")
     dot(page, 60, 40)
     m = ("([x, y]) => view.maskValues.getContext('2d', "
@@ -66,6 +68,8 @@ def test_tool_and_view_hotkeys(page, server):
     base, _root = server
     _open(page, base)
 
+    # the mask tool is disabled in "generate" mode -> inpaint first
+    page.select_option("#mode", "inpaint_masked")
     for key, tool in {"d": "brush", "s": "smudge", "o": "clone",
                       "m": "mask", "p": "crop", "c": "copy", "v": "paste"}.items():
         page.keyboard.press(key)
