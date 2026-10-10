@@ -114,24 +114,18 @@ def test_model_default_sentinels_allowed(tmp_path):
         Preset(name="x", cfg=-1.5)
 
 
-def test_soft_inpaint_bool_roundtrip(tmp_path):
-    """The soft inpainting setting is an enable/disable boolean
-    (null = the checkbox stays untouched). SAG is not a preset field: its
-    enable flag lives in the model configuration."""
+def test_soft_inpaint_not_a_preset_field(tmp_path):
+    """Soft inpainting and SAG are not preset fields: their enable flags
+    and options live in the model configuration."""
     s = PresetStore(tmp_path / "presets")
     p = Preset(name="Inpaint", mode="inpaint_masked",
-               soft_inpaint=True,
-               controls={"soft_inpaint": True})
+               controls={"mode": True})
     s.save(p)
     on_disk = json.loads((tmp_path / "presets" / "inpaint.json").read_text())
-    assert on_disk["soft_inpaint"] is True
-    assert on_disk["controls"]["soft_inpaint"] is True
-    assert "sag" not in on_disk["controls"]
+    assert "soft_inpaint" not in on_disk
     got = s.get("inpaint")
-    assert got.controlled() == {"soft_inpaint": True}
-    # null = unchecked = the sidebar checkbox stays untouched
-    assert Preset(name="x").soft_inpaint is None
-    assert "soft_inpaint" in PRESET_FIELDS and "sag" not in PRESET_FIELDS
+    assert got.controlled() == {"mode": "inpaint_masked"}
+    assert "soft_inpaint" not in PRESET_FIELDS and "sag" not in PRESET_FIELDS
 
 
 def test_save_with_old_name_renames(tmp_path):

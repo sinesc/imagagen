@@ -74,6 +74,12 @@ def test_models_lists_default_entry(client):
     assert e["t2i"] == {"sampler": None, "scheduler": None, "steps": None,
                         "cfg": None, "sag": False, "sag_scale": 0.5,
                         "sag_blur_sigma": 2.0, "sag_threshold": 1.0,
+                        "soft": True, "soft_mask_blend_power": 1.0,
+                        "soft_mask_blend_scale": 0.5,
+                        "soft_inpaint_detail_preservation": 4.0,
+                        "soft_composite_mask_influence": 0.0,
+                        "soft_composite_difference_threshold": 0.5,
+                        "soft_composite_difference_contrast": 2.0,
                         "loras": []}
     assert body["current"] == MOCK_ID
 

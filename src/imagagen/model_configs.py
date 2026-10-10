@@ -11,11 +11,16 @@ selector as at least one *configuration*:
 
 Each configuration stores, separately for text-to-image ("t2i") and
 image-to-image/inpaint ("i2i"): sampler, scheduler, steps, CFG, a LoRA
-list and the self-attention-guidance (SAG) enable flag + options. Null
-means "no override" -- the built-in backend default is used. The LoRA
-list is special: it is *always* prepended to the user-selected LoRAs
-(concept.md), it is not a default-override. SAG is implemented for the
-SDXL UNet only (inert for the other families).
+list, the self-attention-guidance (SAG) enable flag + options and the
+soft-inpainting enable flag + options. Null means "no override" -- the
+built-in backend default is used. The LoRA list is special: it is *always*
+prepended to the user-selected LoRAs (concept.md), it is not a
+default-override. SAG is implemented for the SDXL UNet only (inert for the
+other families) and applies to both directions; soft inpainting works for
+all four families but is i2i-only (it needs an init mask; the t2i section's
+soft keys are inert). Soft inpainting is *enabled by default*: the flag
+defaults to true, so new configurations and old configuration files without
+the key have it on.
 
 File layout (one JSON per configuration, filename = sanitized name):
 
@@ -26,9 +31,19 @@ File layout (one JSON per configuration, filename = sanitized name):
       "turbo": false,  # Krea 2 only: the turbo checkpoint class (see ModelConfig)
       "t2i": {"sampler": null, "scheduler": null, "cfg": null, "sag": false,
               "sag_scale": 0.5, "sag_blur_sigma": 2.0, "sag_threshold": 1.0,
+              "soft": true, "soft_mask_blend_power": 1.0,
+              "soft_mask_blend_scale": 0.5, "soft_inpaint_detail_preservation": 4.0,
+              "soft_composite_mask_influence": 0.0,
+              "soft_composite_difference_threshold": 0.5,
+              "soft_composite_difference_contrast": 2.0,
               "loras": [{"name": "dmd2", "weight": 0.8}]},  # rel. to loras/<type>/
       "i2i": {"sampler": null, "scheduler": null, "cfg": null, "sag": false,
               "sag_scale": 0.5, "sag_blur_sigma": 2.0, "sag_threshold": 1.0,
+              "soft": true, "soft_mask_blend_power": 1.0,
+              "soft_mask_blend_scale": 0.5, "soft_inpaint_detail_preservation": 4.0,
+              "soft_composite_mask_influence": 0.0,
+              "soft_composite_difference_threshold": 0.5,
+              "soft_composite_difference_contrast": 2.0,
               "loras": []}
     }
 """
@@ -70,6 +85,22 @@ class ModeConfig(BaseModel):
     sag_scale: float = Field(default=0.5, ge=-2.0, le=5.0)
     sag_blur_sigma: float = Field(default=2.0, ge=0.0, le=10.0)
     sag_threshold: float = Field(default=1.0, ge=0.0, le=4.0)
+    # soft inpainting (Forge builtin extension) enabled flag + options.
+    # i2i ONLY: soft inpainting needs an init mask, so only the inpaint
+    # modes (which read the i2i section) use these keys; the t2i section's
+    # soft keys are inert (the UI shows the row in the i2i fieldset only).
+    # Implemented for every family (unlike SAG). ENABLED BY DEFAULT: the
+    # flag defaults to true, so new configurations and old files without
+    # the key have it on. The options carry the Forge slider names/ranges/
+    # defaults (like the SAG options: the generate request carries no soft
+    # fields, the configuration is the source of truth)
+    soft: bool = True
+    soft_mask_blend_power: float = Field(default=1.0, ge=0.0, le=8.0)
+    soft_mask_blend_scale: float = Field(default=0.5, ge=0.0, le=8.0)
+    soft_inpaint_detail_preservation: float = Field(default=4.0, ge=1.0, le=32.0)
+    soft_composite_mask_influence: float = Field(default=0.0, ge=0.0, le=1.0)
+    soft_composite_difference_threshold: float = Field(default=0.5, ge=0.0, le=8.0)
+    soft_composite_difference_contrast: float = Field(default=2.0, ge=0.0, le=8.0)
     loras: list[LoraRef] = Field(default_factory=list)
 
 

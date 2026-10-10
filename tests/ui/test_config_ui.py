@@ -455,45 +455,22 @@ def test_manage_dialogs_scroll_only_their_list(page, server):
     check("#lora-manage", None)
 
 
-def test_preset_soft_inpaint_checkbox_row(page, server):
-    # the dialog has a soft inpainting row with the usual controls
-    # checkbox PLUS a second checkbox that is the enable/disable value
-    # itself; applying the preset toggles the sidebar checkbox (even
-    # while it is disabled in "generate" mode). There is NO self
-    # attention guidance row: its enable flag lives in the model
-    # configuration
+def test_preset_dialog_has_no_soft_inpaint_row(page, server):
+    # soft inpainting is not a preset field any more: its enable flag and
+    # options live in the model configuration (like SAG), so the preset
+    # dialog offers no checkbox row for it (and none for SAG either)
     base, _ = server
     _open(page, base)
     page.click("#preset-manage")
     page.click("text=+ New preset")
     box = page.locator(".preset-dialog")
-    box.locator("label input").first.fill("Soft inpaint off")
-    srow = box.locator(".preset-row", has_text="soft inpainting")
-    assert srow.locator("input[type=checkbox]").count() == 2
-    srow.locator(".preset-cb").check()         # the preset controls it
-    # value stays unchecked: the preset actively disables soft inpainting
-    assert not srow.locator(".preset-val").is_checked()
-    # self attention guidance is no longer a preset field
+    assert box.locator(".preset-row", has_text="soft inpainting").count() == 0
     assert box.locator(".preset-row", has_text="self attention guidance").count() == 0
-    page.click("#dialog-ok")
-    # saving returns to the management list (the new preset is re-listed)
-    wait_until(lambda: page.evaluate(
-        "document.getElementById('dialog-title').textContent") == "Setting presets")
-    with httpx.Client(base_url=base, timeout=10) as c:
-        p = c.get("/api/presets/soft-inpaint-off").json()["preset"]
-    assert p["soft_inpaint"] is False
-    assert p["controls"]["soft_inpaint"] is True
-    # the enabled flag is a model configuration setting, not a preset key
-    assert "sag" not in p["controls"]
-    # close the management list to get back to the main UI
-    page.click("#dialog-ok")
+    # the sidebar has no soft inpainting checkbox either (moved to the
+    # model configuration dialog)
+    assert page.locator("#soft-inpaint, #soft-inpaint-cfg").count() == 0
+    page.click("#dialog-cancel")
     wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
-
-    # applying actively disables the sidebar checkbox (checked -> off,
-    # even though the checkbox is disabled in "generate" mode)
-    page.evaluate("document.getElementById('soft-inpaint').checked = true")
-    combo_pick(page, page.locator("#preset"), "Soft inpaint off")
-    wait_until(lambda: not page.is_checked("#soft-inpaint"))
 
 
 def test_preset_multiword_name_select(page, server):  

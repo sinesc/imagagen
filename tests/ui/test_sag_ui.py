@@ -31,17 +31,18 @@ def _open_config_dialog(page):
 
 
 def test_no_sag_row_in_main_ui(page, server):
-    """The main UI has no SAG row: the soft-inpainting row sits directly
-    above the Generate/Save buttons (the enable flag and options live in
-    the model configuration)."""
+    """The main UI has no SAG row: the enable flag and options live in the
+    model configuration (soft inpainting moved there too, so the row above
+    Generate/Save is the plain mode/denoise row)."""
     base, _ = server
     _open(page, base)
     rows = page.locator("#controls > .row")
     classes = [rows.nth(i).get_attribute("class") or "" for i in range(rows.count())]
     assert "actions" in classes[-1]
-    assert "soft-row" in classes[-2]
+    assert "soft-row" not in classes
     assert "sag-row" not in classes
     assert page.locator("#sag, #sag-cfg, #sag-note").count() == 0
+    assert page.locator("#soft-inpaint, #soft-inpaint-cfg").count() == 0
 
 
 def test_config_dialog_sag_checkbox_and_options_gear(page, server):

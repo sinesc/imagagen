@@ -19,9 +19,6 @@ const state = {
   styles: [], // styles from /api/styles ({name, prompt, negative_prompt, optgroup, temporary})
   segModels: [], // segmentation models from /api/segmentation/models
   segClasses: [], // last-used person-mask class selection ([] = default)
-  // soft inpainting (Forge builtin extension) options; the enabled flag
-  // lives on the checkbox. Defaults = Forge's built-in defaults.
-  soft: { power: 1, scale: 0.5, detail: 4, maskInf: 0, threshold: 0.5, contrast: 2 },
   // the preset currently matching the form: {name, keys} where keys are its
   // enabled control keys. While set, the preset stays selected; a user edit of
   // any covered field clears it (clearActivePreset).
@@ -958,7 +955,6 @@ async function generate() {
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
     oversample: parseFloat($("oversample").value) || 1,
-    soft_inpainting: softInpaintBody(), // null = off
   };
   // pinned thumbnails are retained across the generation (their images
   // stay pinned server-side): their jobs get dropped, so source snapshots
@@ -1111,9 +1107,10 @@ async function refreshModels(keepSelection = true) {
   else if (m.current) sel.value = m.current;
 }
 
-function modeFieldset(title, section, showSag, openSagOptions) {
+function modeFieldset(title, section, showSag, openSagOptions, openSoftOptions, showSoft) {
   // section: {sampler, scheduler, cfg, sag, sag_scale, sag_blur_sigma,
-  //           sag_threshold, loras: [{name, weight}]}
+  //           sag_threshold, soft, soft_mask_blend_power, ... (six soft
+  //           options), loras: [{name, weight}]}
   const fs = el("fieldset", { class: "cfg-mode" }, el("legend", {}, title));
   const s = el("select", { class: "cfg-sampler" });
   s.append(opt("", "Model default"));
@@ -1144,6 +1141,39 @@ function modeFieldset(title, section, showSag, openSagOptions) {
       el("label", { title: "steps override; empty = built-in default" }, "Steps", steps),
       el("label", { title: "CFG override; empty = model default" }, "CFG", cfg)),
   ];
+  // soft inpainting (Forge builtin extension): enable checkbox + options
+  // gear, offered for EVERY family (all four implement it, unlike SAG) but
+  // ONLY in the i2i section (showSoft) — soft inpainting needs an init
+  // mask, so the t2i section has no soft controls (the section's soft keys
+  // are inert there). The row sits directly under steps/CFG, aligned with
+  // the SAG row below it (same label+gear structure). Enabled by default: a
+  // section without the key (old config files, in-memory defaults) shows it
+  // checked. The six option values live in hidden inputs: the options
+  // dialog edits them and readCfgSection picks them up (cf. the SAG inputs)
+  const softInputs = [];
+  if (showSoft) {
+    const soft = el("input", { class: "cfg-soft", type: "checkbox" });
+    soft.checked = section.soft !== false;
+    const softGear = el("button", { type: "button", class: "mini icon cfg-soft-cfg",
+      title: "soft inpainting options" }, "⚙");
+    softGear.onclick = () => openSoftOptions(fs);
+    rows.push(el("div", { class: "row" },
+      el("label", { class: "cfg-soft-row", title: "soft inpainting (Forge builtin extension): the protected content is blended with the inpainted content according to the mask opacity instead of being locked exactly; a high mask blur is recommended" },
+        soft, "Soft inpainting"),
+      softGear));
+    for (const [cls, key, dflt] of [
+      ["cfg-soft-mask-blend-power", "soft_mask_blend_power", 1],
+      ["cfg-soft-mask-blend-scale", "soft_mask_blend_scale", 0.5],
+      ["cfg-soft-detail-preservation", "soft_inpaint_detail_preservation", 4],
+      ["cfg-soft-mask-influence", "soft_composite_mask_influence", 0],
+      ["cfg-soft-diff-threshold", "soft_composite_difference_threshold", 0.5],
+      ["cfg-soft-diff-contrast", "soft_composite_difference_contrast", 2],
+    ]) {
+      const i = el("input", { class: cls, type: "number", hidden: "" });
+      i.value = section[key] ?? dflt;
+      softInputs.push(i);
+    }
+  }
   // SAG is implemented for the SDXL UNet only; the checkbox row is omitted
   // (not shown disabled) for the other families. The option values live in
   // hidden inputs: the options dialog edits them and readCfgSection picks
@@ -1169,7 +1199,7 @@ function modeFieldset(title, section, showSag, openSagOptions) {
       sagInputs.push(i);
     }
   }
-  fs.append(...rows, ...sagInputs,
+  fs.append(...rows, ...sagInputs, ...softInputs,
     el("div", { class: "loras" }, loraList, loraAddButton(loraList, null, false)),
   );
   return fs;
@@ -1178,12 +1208,13 @@ function modeFieldset(title, section, showSag, openSagOptions) {
 function readCfgSection(fs) {
   // the .cfg-sag* inputs only exist for SDXL entries; undefined (dropped
   // by JSON.stringify) leaves the server-side defaults (false / Forge
-  // option values)
+  // option values). The .cfg-soft* inputs exist for every family.
   const num = (cls) => {
     const i = fs.querySelector(cls);
     return i ? parseFloat(i.value) : undefined;
   };
   const sag = fs.querySelector(".cfg-sag");
+  const soft = fs.querySelector(".cfg-soft");
   return {
     sampler: fs.querySelector(".cfg-sampler").value || null,
     scheduler: fs.querySelector(".cfg-scheduler").value || null,
@@ -1193,6 +1224,15 @@ function readCfgSection(fs) {
     sag_scale: num(".cfg-sag-scale"),
     sag_blur_sigma: num(".cfg-sag-blur-sigma"),
     sag_threshold: num(".cfg-sag-threshold"),
+    // the soft controls exist in the i2i fieldset only; undefined (dropped
+    // by JSON.stringify) in t2i leaves the server-side defaults (inert)
+    soft: soft ? soft.checked : undefined,
+    soft_mask_blend_power: num(".cfg-soft-mask-blend-power"),
+    soft_mask_blend_scale: num(".cfg-soft-mask-blend-scale"),
+    soft_inpaint_detail_preservation: num(".cfg-soft-detail-preservation"),
+    soft_composite_mask_influence: num(".cfg-soft-mask-influence"),
+    soft_composite_difference_threshold: num(".cfg-soft-diff-threshold"),
+    soft_composite_difference_contrast: num(".cfg-soft-diff-contrast"),
     loras: readLoraList(fs.querySelector(".lora-list")).map(([name, weight]) => ({ name, weight })),
   };
 }
@@ -1218,20 +1258,24 @@ function openConfigDialog(entry, prefill = null) {
   const turboIn = el("input", { class: "cfg-turbo", type: "checkbox" });
   turboIn.checked = prefill ? !!prefill.turbo : !!entry.turbo;
   // SAG is implemented for the SDXL UNet only: the per-direction checkbox
-  // + options gear are offered for SDXL entries only
+  // + options gear are offered for SDXL entries only. Soft inpainting has
+  // no family gate (all four families implement it) but lives in the i2i
+  // fieldset only (it needs an init mask; the inpaint modes read the i2i
+  // section) — see modeFieldset's showSoft.
   const showSag = entry.family === "sdxl";
   // the SAG options dialog replaces this one (single #dialog element), so
   // the click handler snapshots the whole dialog and reopens it
+  const snapCfg = () => ({
+    name: nameIn.value,
+    distilled: distilledIn.checked,
+    turbo: turboIn.checked,
+    t2i: readCfgSection(f1),
+    i2i: readCfgSection(f2),
+  });
   const openSagOptions = (fs) => {
     const key = fs === f1 ? "t2i" : "i2i";
     const cur = readCfgSection(fs);
-    const snap = {
-      name: nameIn.value,
-      distilled: distilledIn.checked,
-      turbo: turboIn.checked,
-      t2i: readCfgSection(f1),
-      i2i: readCfgSection(f2),
-    };
+    const snap = snapCfg();
     // on save AND on cancel the config dialog reopens with the captured
     // state, so unsaved edits survive the detour
     const reopen = () => openConfigDialog(entry, snap);
@@ -1245,10 +1289,34 @@ function openConfigDialog(entry, prefill = null) {
       reopen();
     }, reopen);
   };
+  // the soft inpainting options dialog: same detour pattern as the SAG one
+  const openSoftOptions = (fs) => {
+    const key = fs === f1 ? "t2i" : "i2i";
+    const cur = readCfgSection(fs);
+    const snap = snapCfg();
+    const reopen = () => openConfigDialog(entry, snap);
+    openSoftDialog({
+      power: cur.soft_mask_blend_power, scale: cur.soft_mask_blend_scale,
+      detail: cur.soft_inpaint_detail_preservation,
+      maskInf: cur.soft_composite_mask_influence,
+      threshold: cur.soft_composite_difference_threshold,
+      contrast: cur.soft_composite_difference_contrast,
+    }, (v) => {
+      snap[key] = {
+        ...snap[key],
+        soft_mask_blend_power: v.power, soft_mask_blend_scale: v.scale,
+        soft_inpaint_detail_preservation: v.detail,
+        soft_composite_mask_influence: v.maskInf,
+        soft_composite_difference_threshold: v.threshold,
+        soft_composite_difference_contrast: v.contrast,
+      };
+      reopen();
+    }, reopen);
+  };
   const f1 = modeFieldset("text to image", prefill?.t2i ?? entry.t2i, showSag,
-                          openSagOptions);
+                          openSagOptions, openSoftOptions, false);
   const f2 = modeFieldset("image to image / inpaint", prefill?.i2i ?? entry.i2i,
-                          showSag, openSagOptions);
+                          showSag, openSagOptions, openSoftOptions, true);
   const box = el("div", { class: "cfg-dialog" },
     el("label", {}, "Name", nameIn),
     el("label", { class: "muted" }, "Model", modelIn),
@@ -1337,8 +1405,9 @@ async function deleteConfig() {
 
 // ---------------- presets (Phase 4) ----------------
 const PRESET_KEYS = ["width", "height", "rotation", "steps", "cfg", "seed", "batch",
-  "sampler", "scheduler", "mode", "denoise", "mask_padding", "oversample", "loras",
-  "soft_inpaint"]; // enable/disable of the sidebar checkboxes
+  "sampler", "scheduler", "mode", "denoise", "mask_padding", "oversample", "loras"];
+// enable/disable of the sidebar checkboxes (soft inpainting and SAG are not
+// preset fields: their flags live in the model configuration)
 
 // The preset box keeps its selection while the form still matches the applied
 // preset. Programmatic changes (applyPreset itself, PNG import) don't fire
@@ -1378,7 +1447,6 @@ async function applyPreset(name) {
         $("mode").value = p[key];
         syncMode();
       }
-      else if (key === "soft_inpaint") $("soft-inpaint").checked = p[key];
       // sidebar ids are hyphenated but preset keys use underscores
       // (e.g. mask_padding -> #mask-padding); the rest map 1:1
       else $(key.replace(/_/g, "-")).value = p[key];
@@ -1441,12 +1509,6 @@ function presetValueInput(kind, value, emptyLabel = "—") {
     input.append(opt("", emptyLabel));
     return input;
   }
-  if (kind === "bool") {
-    // second checkbox in the row: the enable/disable value itself
-    const input = el("input", { class: "preset-val", type: "checkbox" });
-    input.checked = value === true;
-    return input;
-  }
   const input = el("input", { class: "preset-val", type: "number" });
   if (value !== null && value !== undefined) input.value = value;
   return input;
@@ -1488,14 +1550,13 @@ function openPresetDialog(existing, onClose = null, isClone = false) {
     ["mask_padding", "Mask padding", "number", p.mask_padding],
     ["oversample", "Scale", "number", p.oversample],
     ["loras", "LORAs", "loras", p.loras],
-    ["soft_inpaint", "Soft inpainting", "bool", p.soft_inpaint],
   ];
   const rows = el("div", { class: "preset-rows" });
   for (const [key, label, kind, value] of defs) {
     const cb = el("input", { type: "checkbox", class: "preset-cb", id: `preset-cb-${key}` });
     cb.checked = !!controls[key];
     let input;
-    if (kind === "number" || kind === "loras" || kind === "bool") {
+    if (kind === "number" || kind === "loras") {
       input = presetValueInput(kind, value);
     } else {
       // sampler/scheduler: "" means "Model default" (applied on select);
@@ -1781,13 +1842,13 @@ function zoomCenter(f) {
 }
 
 // denoising strength only applies to the inpaint modes (concept.md: "disabled
-// when not inpainting"); mask padding only to "inpaint masked"; soft
-// inpainting only makes sense with an inpaint region
+// when not inpainting"); mask padding only to "inpaint masked". Soft
+// inpainting has no main-form control: its enable flag and options live in
+// the model configuration (i2i section, all families).
 function syncMode() {
   $("denoise").disabled = $("mode").value === "generate";
   $("mask-padding").disabled = $("mode").value !== "inpaint_masked";
   $("oversample").disabled = $("mode").value === "generate";
-  $("soft-inpaint").disabled = $("mode").value === "generate";
   syncGenerateEnabled();
 }
 
@@ -1823,12 +1884,17 @@ const SOFT_PIXEL_OPTS = [
    "Contrast of the opacity transition between original and inpainted content. Low: gradual transitions (can ghost); high: abrupt transitions (no ghosting, but the seam can be visible)."],
 ];
 
-function openSoftInpaintDialog() {
+// The soft inpainting options dialog (from the model configuration's
+// per-direction gear). ``vals`` = {power, scale, detail, maskInf, threshold,
+// contrast} to initialize the sliders; onApply receives the edited values;
+// onClose (cancel/escape/backdrop) fires so the caller can restore the
+// dialog it replaced (cf. openSagDialog).
+function openSoftDialog(vals, onApply, onClose = null) {
   const fields = [];
   const make = ([key, label, min, max, step, help]) => {
     const input = el("input", { type: "range", min, max, step });
-    input.value = state.soft[key];
-    const val = el("b", {}, String(state.soft[key]));
+    input.value = vals[key];
+    const val = el("b", {}, String(vals[key]));
     input.oninput = () => { val.textContent = input.value; };
     fields.push({ key, input });
     return el("label", { class: "soft-opt" },
@@ -1844,29 +1910,22 @@ function openSoftInpaintDialog() {
     el("div", { class: "soft-section" }, "Pixel composite settings"),
     ...SOFT_PIXEL_OPTS.map(make),
   ), () => {
-    fields.forEach(({ key, input }) => { state.soft[key] = parseFloat(input.value); });
-    scheduleSaveUiState(0);
-  });
+    const v = {};
+    fields.forEach(({ key, input }) => { v[key] = parseFloat(input.value); });
+    onApply(v);
+    // the caller replaces this dialog (reopening the config dialog): skip
+    // the closeDialog() this handler would run after onApply returned
+    return false;
+  }, "Save", onClose);
 }
 
-// The generate body's soft_inpainting field: null in "generate" mode (the
-// backend only applies it with an init mask anyway); in the inpaint modes
-// it is always sent, enabled or not, so the PNG metadata carries
-// "Soft inpainting enabled" unconditionally (like the Forge extension) and
-// a dropped image can restore the checkbox in both states.
-function softInpaintBody() {
-  if ($("mode").value === "generate") return null;
-  const s = state.soft;
-  return {
-    enabled: $("soft-inpaint").checked,
-    mask_blend_power: s.power,
-    mask_blend_scale: s.scale,
-    inpaint_detail_preservation: s.detail,
-    composite_mask_influence: s.maskInf,
-    composite_difference_threshold: s.threshold,
-    composite_difference_contrast: s.contrast,
-  };
-}
+// The generate body carries no soft inpainting fields: the enabled flag AND
+// the option values are model-configuration settings (i2i section only —
+// soft inpainting needs an init mask — every family, enabled by default),
+// resolved server-side from the selected
+// configuration's section. The server builds the request object from the
+// configuration, so the inpaint PNG metadata carries Forge's "Soft
+// inpainting ..." lines unconditionally (like the extension).
 
 // ---------------- self attention guidance (Forge builtin extension) ----------------
 
@@ -1962,8 +2021,6 @@ function wireToolbar() {
   $("mask-clear").onclick = () => maskOp("clear");
   $("seg-model").onchange = () => scheduleSaveUiState(0);
   $("seg-run").onclick = () => openSegDialog();
-  $("soft-inpaint").onchange = () => { onUserFieldChange("soft-inpaint"); scheduleSaveUiState(0); };
-  $("soft-inpaint-cfg").onclick = openSoftInpaintDialog;
   $("rotation").onchange = () => { onUserFieldChange("rotation"); scheduleSaveUiState(0); };
   $("zoom-in").onclick = () => zoomCenter(1.25);
   $("zoom-out").onclick = () => zoomCenter(0.8);
@@ -2094,25 +2151,10 @@ async function applyPngMeta(meta, width, height) {
       console.error("styles/temp:", e);
     }
   }
-  // soft inpainting (Forge extra parameters) round-trips through the PNG;
-  // the enabled flag is written unconditionally, so a dropped image
-  // restores the checkbox in BOTH states (absent key = leave as-is)
-  if (meta["Soft inpainting enabled"] !== undefined
-      && meta["Soft inpainting enabled"] !== null) {
-    $("soft-inpaint").checked = String(meta["Soft inpainting enabled"]) === "True";
-    const softMeta = {
-      power: "Soft inpainting schedule bias",
-      scale: "Soft inpainting preservation strength",
-      detail: "Soft inpainting transition contrast boost",
-      maskInf: "Soft inpainting mask influence",
-      threshold: "Soft inpainting difference threshold",
-      contrast: "Soft inpainting difference contrast",
-    };
-    for (const [key, label] of Object.entries(softMeta)) {
-      const v = parseFloat(meta[label]);
-      if (Number.isFinite(v)) state.soft[key] = v;
-    }
-  }
+  // soft inpainting (Forge extra parameters) round-trips through the PNG,
+  // but is NOT imported: the enabled flag and the option values are
+  // model-configuration settings (i2i section, every family), not
+  // importable UI fields (cf. the SAG block below)
   // self attention guidance (Forge SAG extra parameters) round-trips
   // through the PNG under the extension's raw snake_case keys, but is NOT
   // imported: the enabled flag and the option values are model-configuration
@@ -2263,15 +2305,8 @@ function readUiState() {
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
     oversample: parseFloat($("oversample").value) || 1,
-    soft_inpainting: $("soft-inpaint").checked,
-    soft_mask_blend_power: state.soft.power,
-    soft_mask_blend_scale: state.soft.scale,
-    soft_inpaint_detail_preservation: state.soft.detail,
-    soft_composite_mask_influence: state.soft.maskInf,
-    soft_composite_difference_threshold: state.soft.threshold,
-    soft_composite_difference_contrast: state.soft.contrast,
-    // self attention guidance (enable flag + options) is a model
-    // configuration setting, not persisted here
+    // soft inpainting (enable flag + options) and self attention guidance
+    // are model configuration settings, not persisted here
     loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
     disabled_loras: getLoras().filter((x) => !x[2]).map(([n, w]) => [n, w]),
     styles: getStyles(),
@@ -2322,20 +2357,8 @@ function applyUiState(st) {
   // select is restored here (after loadSegModels populated the dropdown)
   if (Array.isArray(st.seg_classes)) state.segClasses = st.seg_classes;
   if (st.seg_model && $("seg-model").options.length) $("seg-model").value = st.seg_model;
-  // soft inpainting: enabled flag + the six options (JS state object)
-  if (typeof st.soft_inpainting === "boolean") $("soft-inpaint").checked = st.soft_inpainting;
-  for (const [key, k] of [
-    ["soft_mask_blend_power", "power"],
-    ["soft_mask_blend_scale", "scale"],
-    ["soft_inpaint_detail_preservation", "detail"],
-    ["soft_composite_mask_influence", "maskInf"],
-    ["soft_composite_difference_threshold", "threshold"],
-    ["soft_composite_difference_contrast", "contrast"],
-  ]) {
-    if (typeof st[key] === "number") state.soft[k] = st[key];
-  }
-  // self attention guidance (enable flag + options) is a model
-  // configuration setting, not persisted in the ui-state
+  // soft inpainting and self attention guidance (enable flags + options)
+  // are model configuration settings, not persisted in the ui-state
   // sidebar width set by dragging its right border
   if (typeof st.sidebar_width === "number") $("controls").style.width = `${st.sidebar_width}px`;
   // canvas tools: current tool + per-tool remembered settings

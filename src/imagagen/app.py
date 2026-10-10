@@ -200,9 +200,6 @@ class GenerateBody(BaseModel):
     model_id: str | None = None
     mode: str = "generate"  # "generate" | "inpaint_masked" | "inpaint_not_masked"
     denoise: float = Field(1.0, ge=0.0, le=1.0)  # denoising strength, inpaint only
-    # soft inpainting (Forge builtin extension); null = off. The UI only
-    # sends it for inpaint modes (the backend requires an init mask anyway)
-    soft_inpainting: SoftInpainting | None = None
     # context padding around the masked area (canvas px per side);
     # "inpaint_masked" only, capped at the mask's largest extent
     mask_padding: int = Field(default=INPAINT_PADDING, ge=0, le=2048)
@@ -670,7 +667,26 @@ def create_app(
             sampler=sampler,
             scheduler=scheduler,
             loras=loras,
-            soft_inpainting=body.soft_inpainting,
+            # soft inpainting: like SAG, the enabled flag AND the option
+            # values come from the model configuration — but i2i ONLY
+            # (mode_section returns the i2i section for the inpaint modes,
+            # which are the only ones with an init mask; enabled by
+            # default). Sent only for the inpaint modes, so generate-mode
+            # PNGs carry no soft metadata and the inpaint PNGs carry
+            # Forge's "Soft inpainting ..." lines unconditionally, like the
+            # extension
+            soft_inpainting=(
+                SoftInpainting(
+                    enabled=sag_section.soft,
+                    mask_blend_power=sag_section.soft_mask_blend_power,
+                    mask_blend_scale=sag_section.soft_mask_blend_scale,
+                    inpaint_detail_preservation=sag_section.soft_inpaint_detail_preservation,
+                    composite_mask_influence=sag_section.soft_composite_mask_influence,
+                    composite_difference_threshold=sag_section.soft_composite_difference_threshold,
+                    composite_difference_contrast=sag_section.soft_composite_difference_contrast,
+                )
+                if body.mode != "generate" else None
+            ),
             # self attention guidance: the enabled flag AND the option
             # values come from the model configuration's per-direction
             # section (SDXL only); the object is always present so the PNG

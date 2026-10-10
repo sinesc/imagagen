@@ -65,7 +65,45 @@ def test_file_layout(tmp_path):
                               "steps": None, "cfg": None, "sag": False,
                               "sag_scale": 0.5, "sag_blur_sigma": 2.0,
                               "sag_threshold": 1.0,
+                              "soft": True, "soft_mask_blend_power": 1.0,
+                              "soft_mask_blend_scale": 0.5,
+                              "soft_inpaint_detail_preservation": 4.0,
+                              "soft_composite_mask_influence": 0.0,
+                              "soft_composite_difference_threshold": 0.5,
+                              "soft_composite_difference_contrast": 2.0,
                               "loras": []}
+
+
+def test_soft_flag_defaults_enabled_and_roundtrips(tmp_path):
+    # soft inpainting is ENABLED by default (new configs and old files
+    # without the keys); the keys live in both sections (shared model) but
+    # only the i2i section is ever read (soft inpainting needs an init
+    # mask), the UI shows the row in the i2i fieldset only
+    s = store(tmp_path)
+    s.save(ModelConfig(name="Plain", model="sdxl/a.safetensors"))
+    e = s.resolve("plain")
+    assert e.t2i.soft is True and e.i2i.soft is True
+    s.save(ModelConfig(name="Soft off", model="sdxl/a.safetensors",
+                       i2i=ModeConfig(soft=False, soft_mask_blend_power=3.0)))
+    e = s.resolve("soft-off")
+    assert e.t2i.soft is True and e.i2i.soft is False
+    assert e.i2i.soft_mask_blend_power == 3.0
+    assert e.t2i.soft_mask_blend_power == 1.0  # Forge default
+    # an old file without any soft keys loads with the defaults (enabled)
+    cfg = tmp_path / "user" / "model-configs" / "soft-off.json"
+    data = json.loads(cfg.read_text())
+    for section in ("t2i", "i2i"):
+        data[section] = {k: v for k, v in data[section].items()
+                         if not k.startswith("soft")}
+    cfg.write_text(json.dumps(data))
+    e2 = store(tmp_path).resolve("soft-off")
+    assert e2.t2i.soft is True and e2.i2i.soft is True
+    assert e2.i2i.soft_mask_blend_power == 1.0
+    # outside the Forge slider ranges -> rejected
+    with pytest.raises(ValidationError):
+        store(tmp_path).save(ModelConfig(
+            name="Bad", model="sdxl/a.safetensors",
+            i2i=ModeConfig(soft_mask_blend_power=99.0)))
 
 
 def test_sag_flag_and_options_per_direction(tmp_path):

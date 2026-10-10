@@ -13,7 +13,6 @@ File layout (one JSON per preset, filename = sanitized name):
      "steps": null, "cfg": null, "seed": null, "batch": null,
      "sampler": null, "scheduler": null, "mode": null, "denoise": null,
      "mask_padding": null, "loras": null,
-     "soft_inpaint": null,
      "controls": {"width": true, "height": true}}
 """
 
@@ -43,7 +42,6 @@ PRESET_FIELDS = (
     "mask_padding",
     "oversample",
     "loras",
-    "soft_inpaint",
 )
 
 
@@ -73,10 +71,6 @@ class Preset(BaseModel):
     mask_padding: int | None = Field(default=None, ge=0, le=2048)
     oversample: float | None = Field(default=None, ge=0.1, le=4.0)
     loras: list[tuple[str, float]] | None = None
-    # the enable/disable checkbox of the soft inpainting row (bool;
-    # null = unchecked = leave as-is). Self attention guidance is not a
-    # preset field: its enable flag lives in the model configuration
-    soft_inpaint: bool | None = None
     controls: dict[str, bool] = Field(default_factory=dict)
 
     @field_validator("group", mode="before")

@@ -116,9 +116,10 @@ def build_parameters(
       under the legacy meta keys (``Soft inpainting enabled`` & co.,
       ``sag_enabled`` & co.). The enabled flags are written unconditionally
       (like the Forge extension) in BOTH states; absent = the option group
-      was not used. (On import the soft-inpainting flag restores its
-      checkbox; the sag flag is a model-configuration setting, so only its
-      option values are imported.)
+      was not used (soft inpainting: generate mode, which has no init
+      mask). Neither flag is imported: both are model-configuration
+      settings (per direction), so a dropped PNG leaves the UI state
+      untouched.
     * ``distilled``: Flux only (None = not a Flux model, key omitted);
       written in BOTH states like the SAG flags.
     * ``turbo``: Krea 2 only (None = not a Krea 2 model, key omitted),
