@@ -1871,19 +1871,19 @@ function syncGenerateEnabled() {
 // first group is the per-step latent blend, the second the pixel composite.
 const SOFT_LATENT_OPTS = [
   ["power", "Schedule bias", 0, 8, 0.1,
-   "Shifts when the original content is preserved during denoising. 1 is balanced; below 1 the original content is preserved more strongly at the end of denoising (low noise), above 1 more strongly at the beginning (high noise)."],
+   "Controls when the original image is preserved during generation. 1 is balanced; below 1 it is preserved more at the end, above 1 more at the start."],
   ["scale", "Preservation strength", 0, 8, 0.05,
-   "Skews whether partially masked regions preserve the original content or favour the inpainted content. Low values favour the inpainted content, high values the original. 0 ignores the mask in the per-step blend entirely."],
+   "Biases partially masked areas toward the original image or the new content. Low favours the new content, high the original. 0 ignores the mask entirely."],
   ["detail", "Transition contrast boost", 1, 32, 0.5,
-   "How the original and denoised latent vectors are interpolated: their magnitudes are interpolated under this exponent, biased towards the larger of the two. Low values blend more softly (can lose contrast); high values keep contrast but can over-sharpen or over-saturate the transition."],
+   "Controls the contrast where original and new content meet. Low blends softly and can look flat; high keeps contrast but can over-sharpen the transition."],
 ];
 const SOFT_PIXEL_OPTS = [
   ["maskInf", "Mask influence", 0, 1, 0.05,
-   "How strongly the original mask biases the pixel-composite difference threshold. 0 ignores the mask (only the image content decides where the original is kept), 1 follows it closely."],
+   "How much the mask guides where original pixels are kept. 0 lets the image content decide alone, 1 follows the mask closely."],
   ["threshold", "Difference threshold", 0, 8, 0.25,
-   "The latent-space distance at which the original pixels are kept at 50% opacity. Low: the generated content must be nearly identical for any original pixels to be kept. High: even clearly different content keeps the original pixels."],
+   "How far the new content may deviate from the original. Low: original pixels survive only when the content is nearly identical. High: they survive even clear differences."],
   ["contrast", "Difference contrast", 0, 8, 0.25,
-   "Contrast of the opacity transition between original and inpainted content. Low: gradual transitions (can ghost); high: abrupt transitions (no ghosting, but the seam can be visible)."],
+   "Sharpness of the blend between original and new content. Low fades gradually (can ghost); high switches abruptly (no ghosting, but seams can show)."],
 ];
 
 // The soft inpainting options dialog (from the model configuration's
@@ -1907,7 +1907,7 @@ function openSoftDialog(vals, onApply, onClose = null) {
   };
   openDialog("Soft inpainting options", el("div", {},
     el("div", { class: "soft-lead" },
-      "Soft inpainting (Forge builtin extension) blends the original content with the inpainted content according to the mask opacity instead of locking the protected region exactly. A high mask blur is recommended."),
+      "Soft inpainting blends the original image with the inpainted area according to the mask opacity instead of locking the masked region exactly. A high mask blur is recommended."),
     ...SOFT_LATENT_OPTS.map(make),
     el("div", { class: "soft-section" }, "Pixel composite settings"),
     ...SOFT_PIXEL_OPTS.map(make),

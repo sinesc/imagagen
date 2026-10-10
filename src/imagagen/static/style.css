@@ -658,7 +658,7 @@ button.danger:hover { background: #a33; }
 /* soft inpainting options dialog: slider rows with a live value + help,
    grouped into the per-step blend and the pixel composite settings */
 #dialog-body .soft-lead { font-size: 0.8rem; color: #888; line-height: 1.4; }
-#dialog-body .soft-opt { gap: 0.15rem; }
+#dialog-body .soft-opt { gap: 0.15rem; margin-top: 0.7rem; }
 #dialog-body .soft-opt-head { display: flex; justify-content: space-between; gap: 0.5rem; }
 #dialog-body .soft-opt-head b { color: #eee; }
 #dialog-body .soft-opt-help { font-size: 0.72rem; line-height: 1.35; color: #888; }
