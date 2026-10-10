@@ -13,6 +13,7 @@ full 12B checkpoint (the end-to-end numeric check is dev/smoke_krea2.py).
   delta contract (same shape/dtype rules as the int8 path).
 """
 
+import pytest
 import torch
 from torch import nn
 
@@ -28,6 +29,25 @@ from imagagen.gguf_ops import quant_dtype_scope
 
 
 class TestHadamard:
+    def test_matches_the_reference_h4_recursion(self):
+        # the checkpoint weights are rotated with the ComfyUI ConvRot
+        # matrix: h4 (row order [111-1, 11-11, 1-111, -1111]) kron-
+        # recursed. The Sylvester H2 base has a DIFFERENT row order
+        # (H4 != H2 (x) H2) and de-rotates the txtfusion weights into
+        # garbage (pure-noise renders) -- pin the exact matrix.
+        import math
+
+        h4 = torch.tensor([[1, 1, 1, -1], [1, 1, -1, 1],
+                           [1, -1, 1, 1], [-1, 1, 1, 1]], dtype=torch.float64)
+        h = h4
+        while h.shape[0] < 64:
+            h = torch.kron(h, h4)
+        torch.testing.assert_close(
+            _build_hadamard(64).double(), h / math.sqrt(64),
+            rtol=1e-9, atol=1e-9)
+        with pytest.raises(ValueError):
+            _build_hadamard(8)  # not a ConvRot group (reference raises)
+
     def test_orthogonal(self):
         h = _build_hadamard(256)
         assert h.shape == (256, 256)

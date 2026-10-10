@@ -64,17 +64,24 @@ _HADAMARD_CACHE: dict[tuple, torch.Tensor] = {}
 
 
 def _build_hadamard(size: int) -> torch.Tensor:
-    """The ``size``-x-``size`` Hadamard matrix (size a power of two): the
-    2x2 Sylvester base kron-recursed up to ``size`` and scaled by
-    ``1 / sqrt(size)`` so it is orthogonal (``H @ H.T == I``). The
-    recursion is the same matrix as the reference's 4x4-base one for
-    every power of four (``H4 = H2 \u2297 H2``), and it additionally
-    gives the powers of two (``H_8 = H_2 \u2297 H_4``, ``H_32 = H_2 \u2297
-    H_16``) that the LoKr ConvRot folding needs
-    (``H_256 = H_8 \u2297 H_32``)."""
-    h = torch.tensor([[1.0, 1.0], [1.0, -1.0]])
+    """The ``size``-x-``size`` Hadamard matrix (size a power of 4): the
+    reference's 4x4 base kron-recursed up to ``size`` and scaled by
+    ``1 / sqrt(size)`` so it is orthogonal (``H @ H.T == I``).
+
+    The base is the ComfyUI ConvRot ``h4``, which is NOT the Sylvester
+    ``H2 \u2297 H2`` (row order differs) -- the checkpoint weights are
+    rotated with THIS exact matrix, so every rotation/de-rotation
+    (activation rotation, txtfusion de-rotation, LoRA A rotation, LoKr
+    folding) must use it; a "equivalent" Hadamard de-rotates the
+    txtfusion weights into garbage (bitwise-different weights, pure
+    noise output). Powers of two that are not powers of four are not
+    ConvRot groups (the reference raises too).
+    """
+    if size < 4 or size & (size - 1) != 0 or math.log(size, 4) % 1 != 0:
+        raise ValueError(f"Regular Hadamard size must be a power of 4, got {size}")
+    h = _H4
     while h.shape[0] < size:
-        h = torch.kron(h, torch.tensor([[1.0, 1.0], [1.0, -1.0]]))
+        h = torch.kron(h, _H4)
     return (h / math.sqrt(size)).contiguous()
 
 
