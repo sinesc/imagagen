@@ -156,18 +156,26 @@ def _generate_caption(tower, tok, visual, image: np.ndarray,
         img_index, n_pad + 2, grid, len(stream), device)
     ids = list(stream)
     gen: list[int] = []
-    with torch.inference_mode():
+    from imagagen.encoders.krea2 import decode_weight_cache
+    # the dequantized decode weight cache needs ~6.5 GB extra VRAM
+    free_gib = torch.cuda.mem_get_info(device)[0] / 2**30
+    with torch.inference_mode(), decode_weight_cache(
+            tower, enabled=free_gib > 8.5):
+        # ONE prefill over the full stream, then cached single-token
+        # decodes (re-running the prefill per token costs minutes).
+        logits, cache = tower.forward_caption(
+            torch.tensor([ids], device=device), merged, deepstack, pos)
+        cur_pos = int(pos[0, -1])
         for _ in range(max_tokens):
-            logits = tower.forward_caption(
-                torch.tensor([ids], device=device), merged, deepstack, pos)
             nxt = int(logits[0].argmax())
             if nxt in (_END_OF_TEXT, _IM_START):
                 break
             gen.append(nxt)
-            ids.append(nxt)
-            nxt_pos = torch.full((3, 1), int(pos[0, -1]) + 1,
-                                 device=device, dtype=pos.dtype)
-            pos = torch.cat([pos, nxt_pos], dim=1)
+            cur_pos += 1
+            logits, cache = tower.forward_caption(
+                torch.tensor([[nxt]], device=device),
+                position_ids=torch.tensor([[cur_pos]] * 3, device=device),
+                kv_cache=cache)
     return tok.decode(gen, skip_special_tokens=True).strip()
 
 

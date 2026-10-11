@@ -29,6 +29,8 @@ and the 12-tap stack is flattened to ``(1, seq, 12 * 2560)``.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -55,9 +57,17 @@ IMAGE_PAD_ID = 151655
 
 class Fp8Linear(nn.Linear):
     """``nn.Linear`` with a plain ``F8_E4M3`` weight: the cast IS the
-    dequantize (the checkpoint stores no scale tensors)."""
+    dequantize (the checkpoint stores no scale tensors). ``_decode_cache``
+    (set by :func:`decode_weight_cache`) holds a pre-dequantized copy for
+    the caption decode phase: re-casting the full tower per op costs
+    ~250 casts per generated token."""
+
+    _decode_cache = None
 
     def forward(self, x):
+        w = self._decode_cache
+        if w is not None:
+            return F.linear(x, w)
         return F.linear(x, self.weight.to(x.dtype))
 
 
@@ -97,7 +107,7 @@ class Qwen3Attention(nn.Module):
         self.q_norm = Qwen3RMSNorm(head_dim)
         self.k_norm = Qwen3RMSNorm(head_dim)
 
-    def forward(self, x, cos, sin):
+    def forward(self, x, cos, sin, past_kv=None):
         b, s, _ = x.shape
         hd = self.head_dim
         xq = self.q_norm(self.q_proj(x).view(b, s, self.n_heads, hd))
@@ -110,17 +120,54 @@ class Qwen3Attention(nn.Module):
         xq = xq.transpose(1, 2)
         xk = xk.transpose(1, 2)
         xv = xv.transpose(1, 2)
+        if past_kv is None:
+            # prefill: preallocate a buffer with room for the generated
+            # tokens (growing the cache by torch.cat per step copies the
+            # whole prefix through 36 layers x 128 steps = tens of s)
+            cap = s + 768
+            kbuf = xk.new_zeros(b, self.n_kv_heads, cap, hd)
+            vbuf = xv.new_zeros(b, self.n_kv_heads, cap, hd)
+            kbuf[:, :, :s] = xk
+            vbuf[:, :, :s] = xv
+            kv = (kbuf, vbuf, s)
+        else:
+            # decode step: the new token attends to the cached prefix
+            kbuf, vbuf, n = past_kv
+            if n + s > kbuf.shape[2]:
+                kbuf = torch.cat([kbuf, kbuf.new_zeros(
+                    b, self.n_kv_heads, kbuf.shape[2], hd)], dim=2)
+                vbuf = torch.cat([vbuf, vbuf.new_zeros(
+                    b, self.n_kv_heads, vbuf.shape[2], hd)], dim=2)
+            kbuf[:, :, n:n + s] = xk
+            vbuf[:, :, n:n + s] = xv
+            kv = (kbuf, vbuf, n + s)
+            xk = kbuf[:, :, :n + s]
+            xv = vbuf[:, :, :n + s]
         n_rep = self.n_heads // self.n_kv_heads
-        if n_rep > 1:
-            xk = xk.repeat_interleave(n_rep, dim=1)
-            xv = xv.repeat_interleave(n_rep, dim=1)
-        # CAUSAL: this is a decoder-only LLM; the reference always applies
-        # the causal mask and the DiT was trained on the causal
-        # conditioning, so bidirectional attention here silently destroys
-        # prompt adherence.
-        out = F.scaled_dot_product_attention(xq, xk, xv, is_causal=True)
+        if s == 1 and n_rep > 1:
+            # cached decode: broadcast k/v over the GQA group instead of
+            # materializing the repeated cache every step
+            bk = b * self.n_kv_heads
+            n = xk.shape[2]
+            qg = xq.reshape(bk, n_rep, 1, hd)
+            kg = xk.reshape(bk, 1, n, hd)
+            vg = xv.reshape(bk, 1, n, hd)
+            out = F.scaled_dot_product_attention(qg, kg, vg)
+            out = out.reshape(b, self.n_heads, 1, hd)
+        else:
+            if n_rep > 1:
+                xk = xk.repeat_interleave(n_rep, dim=1)
+                xv = xv.repeat_interleave(n_rep, dim=1)
+            # CAUSAL: this is a decoder-only LLM; the reference always
+            # applies the causal mask and the DiT was trained on the
+            # causal conditioning, so bidirectional attention here
+            # silently destroys prompt adherence. During a cached decode
+            # step (s == 1) the single query attends to the whole cache,
+            # so causality is already satisfied by construction.
+            out = F.scaled_dot_product_attention(xq, xk, xv,
+                                                 is_causal=(s > 1))
         out = out.transpose(1, 2).reshape(b, s, self.n_heads * hd)
-        return self.o_proj(out)
+        return self.o_proj(out), kv
 
 
 class Qwen3MLP(nn.Module):
@@ -142,10 +189,11 @@ class Qwen3DecoderLayer(nn.Module):
         self.post_attention_layernorm = Qwen3RMSNorm(hidden)
         self.mlp = Qwen3MLP(hidden, intermediate)
 
-    def forward(self, x, cos, sin):
-        x = x + self.self_attn(self.input_layernorm(x), cos, sin)
+    def forward(self, x, cos, sin, past_kv=None):
+        attn, kv = self.self_attn(self.input_layernorm(x), cos, sin, past_kv)
+        x = x + attn
         x = x + self.mlp(self.post_attention_layernorm(x))
-        return x
+        return x, kv
 
 
 class Krea2Qwen3VLModel(nn.Module):
@@ -216,43 +264,96 @@ class Krea2Qwen3VLModel(nn.Module):
         cos, sin = self._rope(x.shape[1], x.device, COMPUTE_DTYPE)
         taps: list[torch.Tensor] = []
         for i, layer in enumerate(self.layers):
-            x = layer(x, cos, sin)
+            x, _ = layer(x, cos, sin)
             # layer i (0-based) outputs HF hidden_states[i + 1]
             if i + 1 in KREA2_TAP_LAYERS:
                 taps.append(x)
         return torch.stack(taps, dim=1)  # (b, 12, s, hidden)
 
-    def forward_caption(self, input_ids, visual_embeds, deepstack_embeds,
-                        position_ids=None):
-        """One greedy-decoding step of the caption path: the image-pad
-        token positions carry the vision-tower features instead of their
-        word embedding, the DeepStack features are ADDED to those
-        positions after decoder layers 0/1/2 (the HF
-        ``_deepstack_process`` convention), and the logits come from the
-        final norm + the TIED lm_head (the 4B ties word embeddings --
-        ``logits = norm(h[-1]) @ embed_tokens.T``, the reference's
-        ``BaseQwen3.logits``).
+    def forward_caption(self, input_ids, visual_embeds=None,
+                        deepstack_embeds=None, position_ids=None,
+                        kv_cache=None):
+        """One step of the caption path: the image-pad token positions
+        carry the vision-tower features instead of their word embedding,
+        the DeepStack features are ADDED to those positions after
+        decoder layers 0/1/2 (the HF ``_deepstack_process`` convention),
+        and the logits come from the final norm + the TIED lm_head (the
+        4B ties word embeddings -- ``logits = norm(h[-1]) @
+        embed_tokens.T``, the reference's ``BaseQwen3.logits``).
+
+        KV-cache decoding: call once with the full prompt stream
+        (``visual_embeds``/``deepstack_embeds`` set, ``kv_cache=None``),
+        then per generated token with ``input_ids`` = the single new
+        token, ``visual_embeds=None`` and the cache returned by the
+        previous call. Without a cache the loop would re-run the whole
+        ~1300-token prefill for every generated token (~3 min for 128
+        tokens on a 4060 Ti; with the cache it is one prefill + N tiny
+        decodes).
 
         ``visual_embeds``: (n_pad, 2560) rows in stream order; the
         DeepStack list has one (n_pad, 2560) entry per injection layer.
         ``position_ids``: (3, seq) MRoPE ids (None = plain 1D positions).
-        Returns the (1, vocab) logits of the last position.
+        Returns ``(logits, cache)``: the (1, vocab) logits of the last
+        position and the per-layer KV cache for the next step.
         """
-        x = F.embedding(input_ids, self.embed_tokens.weight.to(COMPUTE_DTYPE))
-        vis_mask = input_ids == IMAGE_PAD_ID
-        x = x.clone()
-        x[vis_mask] = visual_embeds.to(x.dtype)
+        x = F.embedding(input_ids, self._embed_weight())
+        if visual_embeds is not None:
+            vis_mask = input_ids == IMAGE_PAD_ID
+            x = x.clone()
+            x[vis_mask] = visual_embeds.to(x.dtype)
+        else:
+            vis_mask = None
         cos, sin = self._rope(x.shape[1], x.device, COMPUTE_DTYPE,
                               position_ids)
+        new_cache: list = []
         for i, layer in enumerate(self.layers):
-            x = layer(x, cos, sin)
-            if i < len(deepstack_embeds):
+            x, kv = layer(x, cos, sin,
+                          None if kv_cache is None else kv_cache[i])
+            new_cache.append(kv)
+            if vis_mask is not None and deepstack_embeds \
+                    and i < len(deepstack_embeds):
                 ds = deepstack_embeds[i].to(x.dtype)
                 x = x.clone()
                 x[vis_mask] = x[vis_mask] + ds
         x = self.norm(x)
         h = x[:, -1].to(COMPUTE_DTYPE)
-        return h @ self.embed_tokens.weight.to(COMPUTE_DTYPE).T
+        return h @ self._embed_weight().T, new_cache
+
+    def _embed_weight(self):
+        cached = getattr(self, "_embed_cache", None)
+        return cached if cached is not None \
+            else self.embed_tokens.weight.to(COMPUTE_DTYPE)
+
+
+@contextmanager
+def decode_weight_cache(model, enabled=True):
+    """Context manager: temporarily dequantize every Fp8Linear weight and
+    the (tied) embedding table into ``COMPUTE_DTYPE`` copies, so the
+    caption prefill/decode phase does not re-cast the full tower on
+    every op (~250 casts per generated token, ~10 s for 128 tokens on a
+    4060 Ti). Costs one extra full fp32 copy of the tower (~6.5 GB), so
+    callers must pass ``enabled`` based on free VRAM (a Krea 2 backend
+    keeps its 12 GB transformer resident -- the cache must not be built
+    there). Nesting-safe use is not supported (one active cache per
+    tower)."""
+    cached = []
+    try:
+        if enabled:
+            for m in model.modules():
+                if isinstance(m, Fp8Linear):
+                    m._decode_cache = m.weight.to(COMPUTE_DTYPE)
+                    cached.append(m)
+            model._embed_cache = model.embed_tokens.weight.to(COMPUTE_DTYPE)
+        yield
+    finally:
+        if enabled:
+            for m in cached:
+                m._decode_cache = None
+            model._embed_cache = None
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
 
 
 def load_krea2_encoder(path, device, load_norm=False):
