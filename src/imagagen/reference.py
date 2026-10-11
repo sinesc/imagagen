@@ -48,7 +48,7 @@ from .encoders.qwen3vl_vision import (
 )
 
 #: greedy decoding cap (captions are short; the cap bounds the worst case)
-MAX_CAPTION_TOKENS = 128
+MAX_CAPTION_TOKENS = 1024
 
 #: the prompt sentence a caption is folded into
 _CAPTION_PREFIX = "Referencing an image: "
