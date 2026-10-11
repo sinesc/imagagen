@@ -122,10 +122,13 @@ from ..soft_inpaint import adaptive_change_alpha, latent_blend
 from . import (
     _PARAM_INIT_LOCK,
     DEFAULT_CFG,
+    PHASE_DENOISING,
+    PHASE_ENCODING,
     GenerateRequest,
     GenerateResult,
     ModelBackend,
     format_loras,
+    report_phase,
     shared_enc_cache,
 )
 
@@ -895,6 +898,7 @@ class SdxlBackend(ModelBackend):
             key = (request.prompt, request.negative_prompt or "")
             entry = self._enc_cache.get(key)
             if entry is None:
+                report_phase(progress, PHASE_ENCODING)
                 self._encode_pairs([(request.prompt, request.negative_prompt)])
                 entry = self._enc_cache[key]
             self._enc_cache.move_to_end(key)
@@ -1133,6 +1137,7 @@ class SdxlBackend(ModelBackend):
                 noise = noise * model_wrap.max_sigma
             # the seed is threaded into the sampler so SDE/ancestral samplers
             # derive their per-step noise deterministically from it
+            report_phase(progress, PHASE_DENOISING)
             sag_handles = (
                 install_sag_hooks(unet, sag_rec) if sag_rec is not None else []
             )

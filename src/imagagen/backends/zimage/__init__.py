@@ -57,10 +57,13 @@ from ...gguf_ops import QuantLinear, quant_linear_scope
 from ...soft_inpaint import adaptive_change_alpha, latent_blend
 from .. import (
     _PARAM_INIT_LOCK,
+    PHASE_DENOISING,
+    PHASE_ENCODING,
     GenerateRequest,
     GenerateResult,
     ModelBackend,
     format_loras,
+    report_phase,
     shared_enc_cache,
 )
 from .lora import ParamDelta, parse_zimage_lora
@@ -254,7 +257,7 @@ class ZImageBackend(ModelBackend):
         ).input_ids.to(device)
         return self.te(ids).to(torch.bfloat16)
 
-    def _get_context(self, prompt: str):
+    def _get_context(self, prompt: str, progress=None):
         """The encoded (1, L, 2560) bf16 context for ``prompt`` on the
         model's device.
 
@@ -264,6 +267,10 @@ class ZImageBackend(ModelBackend):
         prompt -- reuses the first encoding instead of running the ~4.4 GiB
         encoder again. A cache hit also skips the transformer swap that an
         uncached encode would trigger.
+
+        ``progress`` (when given) receives :data:`PHASE_ENCODING` on a cache
+        miss, i.e. whenever the encoder really runs (see
+        :meth:`ModelBackend.generate`).
         """
         cached = self._enc_cache.get(prompt)
         if cached is not None:
@@ -278,6 +285,7 @@ class ZImageBackend(ModelBackend):
                     and next(self.te.parameters()).device == self.device):
                 self._text_offload()
             return cached.to(self.device)
+        report_phase(progress, PHASE_ENCODING)
         self._encode_prompts([prompt])
         return self._enc_cache[prompt].to(self.device)
 
@@ -622,7 +630,7 @@ class ZImageBackend(ModelBackend):
 
         # --- text encode --- deterministic per prompt: identical prompts
         # reuse the cached encoding (no encoder run, no transformer swap)
-        context = self._get_context(request.prompt)
+        context = self._get_context(request.prompt, progress)
 
         # --- sigma schedule + noise ---
         sigmas = kdiff.get_sigmas_zimage(steps, device)
@@ -729,6 +737,7 @@ class ZImageBackend(ModelBackend):
         self._step = 0
         self._steps_total = max(1, len(sigma_sched) - 1)
 
+        report_phase(progress, PHASE_DENOISING)
         with torch.inference_mode():
             x = kdiff.sample_euler(model_fn, noise, sigma_sched, extra_args={})
             if init_latent is not None and mask_t is not None and soft is None:

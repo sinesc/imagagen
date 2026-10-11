@@ -2470,6 +2470,12 @@ function connectWS() {
         $("progress-fill").style.width = `${Math.round(msg.fraction * 100)}%`;
         $("progress-label").textContent = msg.message;
         break;
+      case "phase":
+        // "Encoding prompt" / "Inpainting @ 1024x1280": the label text only.
+        // A phase event carries no fraction, so the bar keeps its value
+        // (a batch's phases interleave with its steps).
+        $("progress-label").textContent = msg.message;
+        break;
       case "source_image":
         // canvas snapshot at submit time (inpaint, or generate on a
         // non-empty canvas), shown before any result arrives; the id lets
@@ -2500,7 +2506,9 @@ function connectWS() {
       case "done":
         finishedJobs.add(msg.job);
         setGenerating(false);
-        if (!statusIsError) setStatus("");
+        // the batch summary ("Completed 4 images in 32.4s") replaces the
+        // cleared status line; an error that ended the batch stays shown
+        if (!statusIsError) setStatus(msg.message || "");
         break;
       case "job_interrupted":
         finishedJobs.add(msg.job);

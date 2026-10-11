@@ -248,6 +248,55 @@ def test_progress_events_report_fraction():
     assert any(e["type"] == "done" for e in events)
 
 
+def test_phase_events_report_encoding_and_sampling():
+    # The backends' phase markers reach the UI as user-facing status text:
+    # "Encoding prompt" while the text encoder runs, then the mode verb with
+    # the size the model generates at. They carry no fraction (the bar keeps
+    # its value), so they are their own event type, not progress events.
+    backend = MockBackend()
+    events = []
+    q, _ = _queue(backend, events)
+    job = q.submit("m", GenerateRequest(prompt="x", width=64, height=48,
+                                        steps=2, seed=1), 1)
+    _wait_done(q, job.id)
+    phases = [e["message"] for e in events if e["type"] == "phase"]
+    assert phases == ["Encoding prompt", "Generating @ 64x48"]
+    assert all("fraction" not in e for e in events if e["type"] == "phase")
+
+
+def test_phase_event_verb_follows_the_job_mode():
+    # The verb is the UI's mode word: generate -> Generating,
+    # inpaint_masked -> Inpainting, inpaint_not_masked -> Outpainting.
+    base = np.full((8, 8, 3), 5, dtype=np.uint8)
+    mask = np.zeros((8, 8), dtype=np.uint8)
+    mask[3:5, 3:5] = 255
+    for mode, verb in (("inpaint_masked", "Inpainting"),
+                       ("inpaint_not_masked", "Outpainting")):
+        events = []
+        q, canvas = _queue(MockBackend(), events)
+        canvas.import_image(_png(base))
+        plan = InpaintPlan(mode, requested_size=(64, 32),
+                           bbox=(0, 0, 8, 8), work_image=base, work_mask=mask)
+        job = q.submit("m", GenerateRequest(prompt="x", width=64, height=32,
+                                            steps=1, seed=1), 1, plan=plan)
+        _wait_done(q, job.id)
+        sampling = [e["message"] for e in events if e["type"] == "phase"][-1]
+        assert sampling == f"{verb} @ 64x32", mode
+
+
+def test_done_event_reports_the_batch_summary():
+    backend = MockBackend()
+    events = []
+    q, _ = _queue(backend, events)
+    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8,
+                                        steps=1, seed=1), 2)
+    _wait_done(q, job.id)
+    done = next(e for e in events if e["type"] == "done")
+    import re
+
+    assert re.fullmatch(r"Completed 2 images in \d+\.\ds", done["message"])
+
+
 def test_result_pngs_have_parameters_chunk():
     backend = MockBackend()
     events = []

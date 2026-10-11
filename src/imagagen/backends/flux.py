@@ -62,10 +62,13 @@ from ..gguf_ops import (
 from ..soft_inpaint import adaptive_change_alpha, latent_blend
 from . import (
     _PARAM_INIT_LOCK,
+    PHASE_DENOISING,
+    PHASE_ENCODING,
     GenerateRequest,
     GenerateResult,
     ModelBackend,
     format_loras,
+    report_phase,
     shared_enc_cache,
 )
 
@@ -275,7 +278,8 @@ class FluxBackend(ModelBackend):
         context = self.t5(t5_ids).to(torch.bfloat16)
         return context, y
 
-    def _get_encoding(self, prompt: str, negative: str | None):
+    def _get_encoding(self, prompt: str, negative: str | None,
+                      progress=None):
         """(context, y) -- plus (context_neg, y_neg) when ``negative`` is
         not None -- on the model's device.
 
@@ -285,6 +289,10 @@ class FluxBackend(ModelBackend):
         any later repeat of the same prompt -- reuses the first result
         instead of running the ~4.6 GiB T5 encoder again. A cache hit also
         skips the transformer swap that an uncached encode would trigger.
+
+        ``progress`` (when given) receives :data:`PHASE_ENCODING` on a cache
+        miss, i.e. whenever the encoder really runs (see
+        :meth:`ModelBackend.generate`).
         """
         key = (prompt, negative)
         entry = self._enc_cache.get(key)
@@ -302,6 +310,7 @@ class FluxBackend(ModelBackend):
             if negative is not None:
                 return tensors[0], tensors[1], (tensors[2], tensors[3])
             return tensors[0], tensors[1], None
+        report_phase(progress, PHASE_ENCODING)
         self._encode_pairs([key])
         entry = self._enc_cache[key]
         tensors = [t.to(self.device) for t in entry]
@@ -664,7 +673,8 @@ class FluxBackend(ModelBackend):
         # encoded only when the unconditional pass runs (classic CFG with
         # cfg > 1).
         encoding = self._get_encoding(
-            request.prompt, request.negative_prompt if uncond else None)
+            request.prompt, request.negative_prompt if uncond else None,
+            progress=progress)
         context, y, neg = encoding
         if uncond:
             context_neg, y_neg = neg
@@ -799,6 +809,7 @@ class FluxBackend(ModelBackend):
         self._step = 0
         self._steps_total = max(1, len(sigma_sched) - 1)
 
+        report_phase(progress, PHASE_DENOISING)
         with torch.inference_mode():
             x = kdiff.sample_euler(model_fn, noise, sigma_sched, extra_args={})
             if init_latent is not None and mask_t is not None and soft is None:

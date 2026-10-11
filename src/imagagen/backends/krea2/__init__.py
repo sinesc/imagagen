@@ -85,10 +85,13 @@ from ...gguf_ops import QuantLinear, quant_dtype_scope
 from ...soft_inpaint import adaptive_change_alpha, latent_blend
 from .. import (
     _PARAM_INIT_LOCK,
+    PHASE_DENOISING,
+    PHASE_ENCODING,
     GenerateRequest,
     GenerateResult,
     ModelBackend,
     format_loras,
+    report_phase,
     shared_enc_cache,
 )
 from .lora import module_in_features, parse_krea2_lora
@@ -469,7 +472,7 @@ class Krea2Backend(ModelBackend):
         return taps.permute(0, 2, 1, 3).reshape(1, -1, 12 * 2560).to(
             torch.bfloat16)
 
-    def _get_context(self, prompt: str):
+    def _get_context(self, prompt: str, progress=None):
         """The encoded (1, seq, 12*2560) bf16 context for ``prompt`` on the
         model's device.
 
@@ -479,6 +482,10 @@ class Krea2Backend(ModelBackend):
         prompt -- reuses the first encoding instead of running the ~4.8 GiB
         encoder again. A cache hit also skips the transformer swap that an
         uncached encode would trigger.
+
+        ``progress`` (when given) receives :data:`PHASE_ENCODING` on a cache
+        miss, i.e. whenever the encoder really runs (see
+        :meth:`ModelBackend.generate`).
         """
         cached = self._enc_cache.get(prompt)
         if cached is not None:
@@ -492,6 +499,7 @@ class Krea2Backend(ModelBackend):
                     and next(self.te.parameters()).device == self.device):
                 self._text_offload()
             return cached.to(self.device)
+        report_phase(progress, PHASE_ENCODING)
         self._encode_prompts([prompt])
         return self._enc_cache[prompt].to(self.device)
 
@@ -954,10 +962,10 @@ class Krea2Backend(ModelBackend):
         # --- text encode --- deterministic per prompt: identical prompts
         # (negative too, on the classic path) reuse the cached encoding
         # (no encoder run, no transformer swap)
-        context = self._get_context(request.prompt)
+        context = self._get_context(request.prompt, progress)
         uncond_context = None
         if do_cfg:
-            uncond_context = self._get_context(request.negative_prompt)
+            uncond_context = self._get_context(request.negative_prompt, progress)
 
         # --- sigma schedule + noise ---
         seq_len = (h // 16) * (w // 16)  # image tokens (the mu variable)
@@ -1085,6 +1093,7 @@ class Krea2Backend(ModelBackend):
         # nearly fills the card: hand it every reserved byte before sampling
         torch.cuda.empty_cache()
 
+        report_phase(progress, PHASE_DENOISING)
         with torch.inference_mode():
             x = kdiff.sample_euler(model_fn, noise, sigma_sched, extra_args={})
             if init_latent is not None and mask_t is not None and soft is None:

@@ -4,6 +4,7 @@ Exercises the full Phase 1 flow: generate -> job -> WS events -> thumbnails
 -> canvas auto-set -> save, plus interrupt semantics.
 """
 
+import re
 import time
 
 import numpy as np
@@ -325,6 +326,32 @@ def test_interrupt_drops_partial(client, tmp_path):
         time.sleep(0.3)
         # no thumbnail should exist
         assert client.get(f"/api/thumb/{job_id}/0.png").status_code == 404
+
+
+def test_generate_reports_phase_and_completion_messages(client):
+    # The UI's status texts come from the queue: "Encoding prompt" while the
+    # text encoder runs, "<verb> @ WxH" while the transformer samples, and
+    # the batch summary on the done event.
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": "a turtle", "width": 64, "height": 80, "steps": 3,
+            "seed": 1, "batch_size": 1,
+        })
+        job_id = r.json()["job_id"]
+        phases, done = [], None
+        deadline = time.time() + 15
+        while done is None and time.time() < deadline:
+            msg = ws.receive_json(mode="text")
+            if msg.get("job") != job_id:
+                continue
+            if msg["type"] == "phase":
+                phases.append(msg["message"])
+            elif msg["type"] == "done":
+                done = msg["message"]
+        assert done is not None, "no done event within 15s"
+        assert phases[0] == "Encoding prompt"
+        assert "Generating @ 64x80" in phases
+        assert re.fullmatch(r"Completed 1 images in \d+\.\ds", done)
 
 
 def test_canvas_upload_replaces_current_image(client):

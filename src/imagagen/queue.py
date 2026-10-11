@@ -35,7 +35,13 @@ from pathlib import Path
 import numpy as np
 
 from . import wildcards
-from .backends import GenerateRequest, ModelBackend, format_loras
+from .backends import (
+    PHASE_DENOISING,
+    PHASE_ENCODING,
+    GenerateRequest,
+    ModelBackend,
+    format_loras,
+)
 from .generation import InpaintPlan
 
 log = logging.getLogger(__name__)
@@ -45,6 +51,23 @@ log = logging.getLogger(__name__)
 # so the progress bar tracks the whole batch instead of bouncing between
 # each GPU's individual step counter.
 _STEP_RE = re.compile(r"step (\d+)/(\d+)")
+
+# The generation-phase status texts the queue renders from the backends'
+# phase messages. "<verb> @ <width>x<height>" uses the mode word of the
+# job's plan and the request's W x H, i.e. the size the model generates at
+# (for a rotated generate / outpaint job that is the extended working-frame
+# size, not the final canvas size -- see InpaintPlan).
+_MODE_WORDS = {
+    "generate": "Generating",
+    "inpaint_masked": "Inpainting",
+    "inpaint_not_masked": "Outpainting",
+}
+
+
+def _mode_word(plan: InpaintPlan | None) -> str:
+    """The status verb for a job: "Generating" / "Inpainting" / "Outpainting"."""
+    return _MODE_WORDS.get(plan.mode if plan is not None else "generate",
+                           "Generating")
 
 
 @dataclass
@@ -460,6 +483,18 @@ class GenerationQueue:
         def progress(fraction: float, message: str) -> None:
             if job.interrupted:
                 return
+            if message in (PHASE_ENCODING, PHASE_DENOISING):
+                # A generation-phase marker, not step progress: it carries no
+                # fraction (the bar keeps its value), so it goes out as a
+                # "phase" event with the user-facing text -- "Encoding prompt"
+                # while the text encoder runs, "Inpainting @ 1024x1280" while
+                # the transformer samples.
+                text = ("Encoding prompt"
+                        if message == PHASE_ENCODING else
+                        f"{_mode_word(job.plan)} @ {req.width}x{req.height}")
+                self.emit({"type": "phase", "job": job.id,
+                           "index": task.index, "message": text})
+                return
             m = _STEP_RE.search(message)
             if m is None:
                 # unexpected message format: keep the per-task pass-through
@@ -605,6 +640,10 @@ class GenerationQueue:
         """
         gpu = self._gpus[0] if self._gpus else None
         try:
+            # the encode is the slow part of a wildcard batch (the encoder
+            # crosses the bus once for the whole batch here), so announce it
+            self.emit({"type": "phase", "job": job.id, "index": None,
+                       "message": "Encoding prompt"})
             self.registry.pre_encode(job.model_id, gpu,
                                      list(job.resolved.values()),
                                      reserve=len(job.resolved))
@@ -638,7 +677,9 @@ class GenerationQueue:
                     "%.1fs)",
                     job.id, len(job.results), job.batch_size, runtime,
                 )
-                self.emit({"type": "done", "job": job.id})
+                self.emit({"type": "done", "job": job.id,
+                           "message": f"Completed {len(job.results)} images "
+                                      f"in {runtime:.1f}s"})
 
     def _is_idle_locked(self) -> bool:
         """True when no task is pending/queued/running and no job is still

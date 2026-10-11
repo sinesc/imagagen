@@ -153,6 +153,25 @@ class GenerateResult:
 
 ProgressCallback = Callable[[float, str], None]  # fraction 0..1, message
 
+# Phase messages a backend reports through the progress callback to mark the
+# start of a generation stage. They are not step progress: the queue renders
+# them as user-facing status text ("Encoding prompt", "Inpainting @
+# 1024x1280") and they carry no fraction, so the fraction passed with them
+# is ignored (the bar keeps its current value).
+PHASE_ENCODING = "phase:encoding"
+PHASE_DENOISING = "phase:denoising"
+
+
+def report_phase(progress: ProgressCallback | None, phase: str) -> None:
+    """Report the start of a generation phase (no-op without a callback).
+
+    Backends call this right before the text encoder runs -- on a cache miss
+    only: a hit is instantaneous and would just flash the label -- and right
+    before the sampling loop.
+    """
+    if progress is not None:
+        progress(0.0, phase)
+
 
 def format_loras(loras: list[tuple[str, float]] | tuple[tuple[str, float], ...]) -> str:
     """`name (weight), ...` for log messages; `-` when empty."""
@@ -190,7 +209,16 @@ class ModelBackend(ABC):
     def generate(
         self, request: GenerateRequest, progress: ProgressCallback | None = None
     ) -> GenerateResult:
-        """Run a single generation. `progress` may be called at will."""
+        """Run a single generation. `progress` may be called at will.
+
+        Report the start of each stage with :func:`report_phase`:
+        :data:`PHASE_ENCODING` right before an actual text-encoder run (a
+        cache hit is instantaneous, so it is skipped there) and
+        :data:`PHASE_DENOISING` right before the sampling loop. The queue
+        turns them into the UI's status texts ("Encoding prompt",
+        "Inpainting @ 1024x1280"); per-step progress goes through the same
+        callback as `"step <done>/<total>"`.
+        """
 
     @abstractmethod
     def cancel(self) -> None:
@@ -245,6 +273,7 @@ class MockBackend(ModelBackend):
 
         seed = request.resolved_seed()
         self._cancelled = None
+        report_phase(progress, PHASE_ENCODING)
         # the "model default" sentinel (steps/cfg <= 0) resolves to the
         # built-in values, as the real backends do (the PNG metadata
         # records the effective values the backend used)
@@ -269,6 +298,7 @@ class MockBackend(ModelBackend):
                 mask = 0.0
             mask = mask[..., None] * request.denoise
             img = img * mask + request.init_image.astype(np.float32) * (1.0 - mask)
+        report_phase(progress, PHASE_DENOISING)
         for i in range(max(1, steps)):
             if self._cancelled is not None:
                 raise InterruptedError("generation cancelled")

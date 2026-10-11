@@ -30,13 +30,19 @@ def test_mock_encodes_size_and_seed():
 
 
 def test_mock_progress_called():
+    from imagagen.backends import PHASE_DENOISING, PHASE_ENCODING
+
     calls = []
     b = MockBackend()
     b.generate(
         GenerateRequest(prompt="x", width=8, height=8, steps=5, seed=0),
-        progress=lambda f, m: calls.append(f),
+        progress=lambda f, m: calls.append((f, m)),
     )
-    assert calls == [0.2, 0.4, 0.6, 0.8, 1.0]
+    assert [f for f, m in calls if not m.startswith("phase:")] == [
+        0.2, 0.4, 0.6, 0.8, 1.0]
+    # the generation phases are reported too (encoding, then sampling)
+    assert [m for f, m in calls if m.startswith("phase:")] == [
+        PHASE_ENCODING, PHASE_DENOISING]
 
 
 def test_mock_cancel_mid_flight_and_recovery():
