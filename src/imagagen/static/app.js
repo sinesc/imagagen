@@ -2471,10 +2471,11 @@ function connectWS() {
         $("progress-label").textContent = msg.message;
         break;
       case "phase":
-        // "Encoding prompt" / "Inpainting @ 1024x1280": the label text only.
-        // A phase event carries no fraction, so the bar keeps its value
-        // (a batch's phases interleave with its steps).
-        $("progress-label").textContent = msg.message;
+        // "Encoding prompt" / "Inpainting @ 1024x1280" goes to the STATUS
+        // line: the progress label belongs to the step counter. An error
+        // that surfaced mid-batch keeps the line (a later phase event from
+        // another task of the same batch must not hide it).
+        if (!statusIsError) setStatus(msg.message);
         break;
       case "source_image":
         // canvas snapshot at submit time (inpaint, or generate on a

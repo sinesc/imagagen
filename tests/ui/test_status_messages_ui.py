@@ -1,50 +1,64 @@
 """Browser tests for the generation status messages.
 
-The progress label shows "Encoding prompt" while the text encoder runs and
-"<Generating|Inpainting|Outpainting> @ <W>x<H>" while the transformer
-samples; the status line ends with the batch summary
-("Completed <n> images in <t>s").
+The status line reports the generation phases: "Encoding prompt" while the
+text encoder runs, "<Generating|Inpainting|Outpainting> @ <W>x<H>" while the
+transformer samples, and the batch summary ("Completed <n> images in <t>s")
+when the batch ends. The progress label stays reserved for the step counter.
 
-The mock backend generates in milliseconds, so the label text itself is
-unobservable: the tests record the WebSocket messages the client renders
-(a "phase" event carries the label text, "done" the summary).
+The mock backend generates in milliseconds, so the status line's text is
+unobservable: the tests hook setStatus (a global function of a classic
+script, so reassigning window.setStatus intercepts every call) and watch
+#progress-label with a MutationObserver.
 """
 import re
 
 from conftest import dot, mask_arr, wait_until
 from test_canvas_ui import _open, _show
 
+PHASES = ("Encoding prompt", "Generating @ 1024x1024", "Inpainting @ 1024x1024",
+          "Outpainting @ 1024x1024")
+
 
 def _record(page):
-    """Collect every phase / done message the server sends for this job."""
+    """Record every setStatus() call and every #progress-label text."""
     page.wait_for_function("ws && ws.readyState === 1")
     page.evaluate("""() => {
-        window.__msgs = [];
-        ws.addEventListener('message', (ev) => {
-            const m = JSON.parse(ev.data);
-            if (m.type === 'phase' || m.type === 'done') window.__msgs.push(m.message);
-        });
+        window.__status = [];
+        window.__label = [];
+        const origSet = setStatus;
+        setStatus = (text, isError) => { window.__status.push(text || ''); return origSet(text, isError); };
+        const label = document.getElementById('progress-label');
+        new MutationObserver(() => window.__label.push(label.textContent))
+            .observe(label, {childList: true, subtree: true, characterData: true,
+                             characterDataOldValue: true});
     }""")
 
 
 def _wait_summary(page):
     page.wait_for_function(
-        "window.__msgs.some(m => m && m.startsWith('Completed'))", timeout=20000)
-    return page.evaluate("window.__msgs")
+        "window.__status.some(t => t.startsWith('Completed'))", timeout=20000)
+    return page.evaluate("window.__status")
 
 
-def test_generate_phase_messages_and_summary(page, server):
+def test_generate_phases_and_summary_go_to_the_status_line(page, server):
     base, _ = server
     _open(page, base)
     _record(page)
     page.click("#btn-generate")
-    msgs = _wait_summary(page)
-    # encoding first, then sampling at the size the model generates at
-    assert msgs[0] == "Encoding prompt"
-    assert "Generating @ 1024x1024" in msgs
-    assert re.fullmatch(r"Completed 1 images in \d+\.\ds", msgs[-1])
-    # the summary is what the status line ends up showing
-    assert wait_until(lambda: page.text_content("#status-line") == msgs[-1])
+    status = _wait_summary(page)
+    # encoding first, then sampling at the size the model generates at,
+    # then the batch summary -- all of them on the status line
+    assert "Encoding prompt" in status
+    assert "Generating @ 1024x1024" in status
+    summary = [t for t in status if t.startswith("Completed")]
+    assert len(summary) == 1
+    assert re.fullmatch(r"Completed 1 images in \d+\.\ds", summary[0])
+    # the summary is what the line ends up showing
+    assert wait_until(lambda: page.text_content("#status-line") == summary[0])
+    # the progress label only ever carries the step counter
+    label = page.evaluate("window.__label")
+    assert any(t and t.startswith("step") for t in label), label
+    assert not any(t in PHASES for t in label), label
 
 
 def test_inpaint_and_outpaint_phase_verbs(page, server):
@@ -58,12 +72,14 @@ def test_inpaint_and_outpaint_phase_verbs(page, server):
     _record(page)
 
     page.click("#btn-generate")
-    msgs = _wait_summary(page)
-    assert "Inpainting @ 1024x1024" in msgs
-    assert "Outpainting @ 1024x1024" not in msgs
+    status = _wait_summary(page)
+    assert "Inpainting @ 1024x1024" in status
+    assert "Outpainting @ 1024x1024" not in status
+    assert not any(t in PHASES for t in page.evaluate("window.__label"))
 
-    page.evaluate("window.__msgs = []")
+    page.evaluate("window.__status = []; window.__label = []")
     page.select_option("#mode", "inpaint_not_masked")
     page.click("#btn-generate")
-    msgs = _wait_summary(page)
-    assert "Outpainting @ 1024x1024" in msgs
+    status = _wait_summary(page)
+    assert "Outpainting @ 1024x1024" in status
+    assert not any(t in PHASES for t in page.evaluate("window.__label"))
