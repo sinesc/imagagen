@@ -154,8 +154,10 @@ class _MockRegistry:
         self._backend.cancel()
 
     def caption(self, image, gpu: int | None = None) -> str:
-        # mock stand-in for ModelRegistry.caption (no VLM in mock mode)
-        return "mock"
+        # mock stand-in for ModelRegistry.caption (no VLM in mock mode);
+        # carries the section structure real captions have
+        from .backends import MOCK_REFERENCE_CAPTION
+        return MOCK_REFERENCE_CAPTION
 
 
 # ---------------- request bodies ----------------
@@ -206,6 +208,9 @@ class GenerateBody(BaseModel):
     # the thumbnail checked as "reference image" (canvas entity id): the
     # generation conditions on that image (see GenerateRequest.reference_image)
     reference_image_id: str | None = None
+    # which caption sections to fold into the prompt (None = all;
+    # [] = apply nothing; see GenerateRequest.reference_sections)
+    reference_sections: list[str] | None = None
     denoise: float = Field(1.0, ge=0.0, le=1.0)  # denoising strength, inpaint only
     # context padding around the masked area (canvas px per side);
     # "inpaint_masked" only, capped at the mask's largest extent
@@ -673,6 +678,7 @@ def create_app(
             prompt=prompt,
             negative_prompt=negative_prompt,
             reference_image=reference_image,
+            reference_sections=body.reference_sections,
             width=body.width,
             height=body.height,
             # rsteps/cfg are None only when the user used the -1 sentinel
@@ -829,6 +835,7 @@ def create_app(
         if state.reference_image_id is not None and not canvas.has_entity(
                 state.reference_image_id):
             state.reference_image_id = None
+            state.reference_sections = None
         # by_alias: the tool rows use their JSON names ("copy", not the
         # field's "copy_area", which must not shadow BaseModel.copy())
         return {"state": state.model_dump(by_alias=True)}

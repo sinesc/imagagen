@@ -50,7 +50,7 @@ import torch
 from .. import kdiff
 from ..encoders.clip import clip_pooled, load_clip_l
 from ..encoders.t5 import load_t5_encoder
-from ..reference import apply_reference, caption_reference
+from ..reference import apply_reference, caption_reference, selected_caption_titles
 from ..flux_lora import FluxLoraSpec, merge_module_deltas, parse_lora
 from ..flux_transformer import FluxTransformer2DModel
 from ..gguf_ops import (
@@ -692,7 +692,8 @@ class FluxBackend(ModelBackend):
             reference_caption = caption_reference(
                 request.reference_image, device, self.config,
                 park=_ref_park, restore=_ref_restore, progress=progress)
-            prompt = apply_reference(prompt, reference_caption)
+            prompt = apply_reference(prompt, reference_caption,
+                                     request.reference_sections)
         encoding = self._get_encoding(
             prompt, request.negative_prompt if uncond else None,
             progress=progress)
@@ -910,6 +911,9 @@ class FluxBackend(ModelBackend):
             image=arr, seed=request.seed,
             steps=steps,
             reference_caption=reference_caption,
+            reference_sections=selected_caption_titles(
+                reference_caption, request.reference_sections)
+            if reference_caption else None,
             # the effective CFG for the metadata: the embedded guidance in
             # distilled mode, the CFG value in classic mode
             cfg=guidance if distilled else cfg,

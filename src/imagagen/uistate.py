@@ -151,6 +151,9 @@ class UiState(BaseModel):
     # drops it on serve when the entity no longer exists (ids do not
     # survive a server restart).
     reference_image_id: str | None = None
+    # the caption sections enabled in the UI tag row (None = all;
+    # dropped together with reference_image_id when the entity is gone)
+    reference_sections: list[str] | None = None
     # sidebar (control panel) width in px, set by dragging its right border;
     # same clamped range as the UI's drag handler
     sidebar_width: int = Field(default=300, ge=280, le=800)

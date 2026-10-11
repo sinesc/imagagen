@@ -21,6 +21,8 @@ from imagagen.reference import (
     _cache_save,
     apply_reference,
     image_sha1,
+    parse_caption_sections,
+    selected_caption_titles,
 )
 
 TINY_CFG = dict(
@@ -108,3 +110,50 @@ def test_apply_reference():
     assert out == "a painting Referencing an image: a red fox in snow."
     # an empty caption leaves the prompt untouched
     assert apply_reference("a painting", "") == "a painting"
+
+
+MOCK_STRUCTURED_CAPTION = (
+    "This is a mock reference caption.\n\n"
+    "**Subject:**\nA mock subject paragraph.\n\n"
+    "In summary, a mock summary."
+)
+
+
+def test_parse_caption_sections_structure():
+    secs = parse_caption_sections(MOCK_STRUCTURED_CAPTION)
+    assert [t for t, _ in secs] == ["Overview", "Subject", "Summary"]
+    assert secs[1][1] == "A mock subject paragraph."
+    assert secs[2][1] == "In summary, a mock summary."
+
+
+def test_parse_caption_sections_edge_cases():
+    # no headings -> a single Overview section
+    assert parse_caption_sections("just text") == [("Overview", "just text")]
+    # inline heading body + multiple unlabeled trailing paragraphs
+    cap = "intro\n\n**A:** body one\n\nmore a\n\n**B:**\nb b\n\ntail one\n\ntail two"
+    secs = parse_caption_sections(cap)
+    assert [t for t, _ in secs] == ["Overview", "A", "B", "Summary"]
+    assert secs[1][1] == "body one\n\nmore a"
+    assert secs[3][1] == "tail one\n\ntail two"
+    # duplicate titles are deduped; empty sections dropped
+    secs = parse_caption_sections("**A:**\nx\n\n**A:**\n\n**A:**\nz")
+    assert secs == [("A", "x"), ("A (3)", "z")]
+
+
+def test_apply_reference_section_filter():
+    cap = MOCK_STRUCTURED_CAPTION
+    # None = all sections, in caption order
+    out = apply_reference("p", cap)
+    assert out == ("p Referencing an image: This is a mock reference "
+                   "caption.\n\nA mock subject paragraph.\n\n"
+                   "In summary, a mock summary.")
+    # subset: only the selected section text
+    out = apply_reference("p", cap, ["Subject"])
+    assert out == "p Referencing an image: A mock subject paragraph."
+    # empty selection leaves the prompt untouched
+    assert apply_reference("p", cap, []) == "p"
+    # selected_caption_titles mirrors the applied selection
+    assert selected_caption_titles(cap, None) == [
+        "Overview", "Subject", "Summary"]
+    assert selected_caption_titles(cap, ["Subject"]) == ["Subject"]
+    assert selected_caption_titles(cap, []) == []

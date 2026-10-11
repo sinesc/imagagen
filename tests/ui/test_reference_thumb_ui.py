@@ -112,6 +112,79 @@ def test_generate_payload_carries_the_reference_id(page, server):
     page.wait_for_function("!state.generating", timeout=15000)
 
 
+def test_section_tags_row(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _generate(page, base)
+
+    # no reference: the tag row is hidden
+    assert page.evaluate("document.getElementById('ref-sections')"
+                         ".classList.contains('hidden')")
+
+    page.click("#thumbs .thumb-ref >> nth=1")
+    # the mock caption carries Overview + Subject + Summary -> three tags,
+    # all active by default
+    assert wait_until(lambda: page.evaluate(
+        "Array.from(document.querySelectorAll('#ref-sections .ref-tag'))"
+        ".map(b => b.textContent).join(',')") == "Overview,Subject,Summary")
+    assert page.evaluate(
+        "Array.from(document.querySelectorAll('#ref-sections .ref-tag'))"
+        ".every(b => b.classList.contains('active'))")
+    assert not page.evaluate("document.getElementById('ref-sections')"
+                             ".classList.contains('hidden')")
+
+    # unchecking the reference hides the row again
+    page.click("#thumbs .thumb-ref >> nth=1")
+    assert wait_until(lambda: page.evaluate(
+        "document.getElementById('ref-sections')"
+        ".classList.contains('hidden')"))
+
+
+def test_section_toggle_payload_and_reload(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _generate(page, base)
+    ref_id = page.evaluate("state.thumbs[1].image_id")
+    page.click("#thumbs .thumb-ref >> nth=1")
+    assert wait_until(lambda: page.evaluate(
+        "document.querySelectorAll('#ref-sections .ref-tag').length") == 3)
+
+    # toggle Subject off -> only Overview + Summary remain selected
+    page.click("#ref-sections .ref-tag:nth-child(2)")
+    assert page.evaluate("state.referenceSections") == ["Overview",
+                                                        "Summary"]
+    assert not page.evaluate(
+        "document.querySelectorAll('#ref-sections .ref-tag')[1]"
+        ".classList.contains('active')")
+
+    # the generate payload carries the selection
+    with page.expect_request("**/api/generate") as req_info:
+        page.click("#btn-generate")
+    body = json.loads(req_info.value.post_data)
+    assert body["reference_image_id"] == ref_id
+    assert body["reference_sections"] == ["Overview", "Summary"]
+    page.wait_for_function("!state.generating", timeout=15000)
+
+    # persist, reload: the selection is restored (the preview refetch
+    # re-renders the row with Subject inactive)
+    page.evaluate("saveUiState()")
+    assert wait_until(lambda: page.evaluate(
+        "fetch('/api/ui-state').then(r=>r.json()).then("
+        "j=>JSON.stringify(j.state.reference_sections)"
+        "==='[\"Overview\",\"Summary\"]')"))
+    page.reload()
+    assert page.is_visible("#tool-brush")
+    assert page.evaluate("state.referenceSections") == ["Overview",
+                                                        "Summary"]
+    assert wait_until(lambda: page.evaluate(
+        "document.querySelectorAll('#ref-sections .ref-tag').length") == 3)
+    assert page.evaluate(
+        "Array.from(document.querySelectorAll('#ref-sections .ref-tag'))"
+        ".map(b => b.classList.contains('active'))") == [True, False, True]
+
+
 def test_reference_selection_survives_a_reload(page, server):
     base, _ = server
     _open(page, base)

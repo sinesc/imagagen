@@ -117,7 +117,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import kdiff
-from ..reference import apply_reference, caption_reference
+from ..reference import apply_reference, caption_reference, selected_caption_titles
 from ..sag import SagRecorder, compute_sag_mask, create_blur_map, install_sag_hooks
 from ..soft_inpaint import adaptive_change_alpha, latent_blend
 from . import (
@@ -894,7 +894,8 @@ class SdxlBackend(ModelBackend):
                 reference_caption = caption_reference(
                     request.reference_image, device, self.config,
                     progress=progress)
-                prompt = apply_reference(prompt, reference_caption)
+                prompt = apply_reference(prompt, reference_caption,
+                                         request.reference_sections)
             # text encoders live on self.text_encoder_device (GPU by
             # default, CPU when imagagen.ini says so); with the default
             # they are parked on CPU between generations to free ~1.4 GiB
@@ -1194,7 +1195,10 @@ class SdxlBackend(ModelBackend):
 
         return GenerateResult(
             image=arr, seed=request.seed, steps=steps, cfg=cfg,
-            reference_caption=reference_caption)
+            reference_caption=reference_caption,
+            reference_sections=selected_caption_titles(
+                reference_caption, request.reference_sections)
+            if reference_caption else None)
 
 
 def from_config(config) -> ModelBackend | None:

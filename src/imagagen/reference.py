@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 
 import numpy as np
@@ -52,6 +53,52 @@ MAX_CAPTION_TOKENS = 1024
 
 #: the prompt sentence a caption is folded into
 _CAPTION_PREFIX = "Referencing an image: "
+
+#: a ``**Title:**`` section heading (optional inline body text)
+_SECTION_HEADING = re.compile(r"^\*\*(.+?):\*\*\s*(.*)$", re.S)
+
+
+def parse_caption_sections(caption: str) -> list[tuple[str, str]]:
+    """``[(title, text)]`` in caption order. Captions are structured as
+    an unlabeled preamble, ``**Title:**`` sections and a trailing
+    "In summary, ..." paragraph: unlabeled paragraphs before the first
+    heading become section ``Overview``, unlabeled ones after the last
+    heading become ``Summary``; duplicate titles get `` (2)``-style
+    suffixes; empty sections are dropped. The UI mirrors this parser
+    (static/app.js parseCaptionSections) -- keep both in sync."""
+    paras = [p.strip() for p in caption.split("\n\n") if p.strip()]
+    sections: list[tuple[str | None, list[str]]] = []
+    for p in paras:
+        m = _SECTION_HEADING.match(p)
+        if m:
+            body = [m.group(2).strip()] if m.group(2).strip() else []
+            sections.append((m.group(1).strip(), body))
+        elif sections:
+            sections[-1][1].append(p)
+        else:
+            sections.append((None, [p]))
+    # trailing unlabeled paragraphs after the LAST heading are the
+    # summary: captions use one paragraph per section, so everything
+    # past the first paragraph of the last section is the trailing
+    # "In summary, ..." block
+    if sections and sections[-1][0] is not None \
+            and len(sections[-1][1]) > 1:
+        title, body = sections[-1]
+        sections[-1] = (title, body[:1])
+        sections.append((None, body[1:]))
+    out: list[tuple[str, str]] = []
+    seen: dict[str, int] = {}
+    for i, (title, body) in enumerate(sections):
+        if title is None:
+            title = "Overview" if i == 0 else "Summary"
+        n = seen.get(title, 0) + 1
+        seen[title] = n
+        if n > 1:
+            title = f"{title} ({n})"
+        text = "\n\n".join(body).strip()
+        if text:
+            out.append((title, text))
+    return out
 
 _LOCK = threading.RLock()
 _towers: _CaptionTowers | None = None
@@ -240,9 +287,26 @@ def caption_reference(
     return caption
 
 
-def apply_reference(prompt: str, caption: str) -> str:
+def apply_reference(prompt: str, caption: str,
+                    sections: list[str] | None = None) -> str:
     """Fold the caption into the positive prompt (the negative prompt is
-    untouched). Applied after styles/wildcards, right before encoding."""
+    untouched). Applied after styles/wildcards, right before encoding.
+    ``sections`` selects which caption sections to apply (None = all;
+    [] = none; see :func:`parse_caption_sections`)."""
     if not caption:
         return prompt
-    return f"{prompt} {_CAPTION_PREFIX}{caption}."
+    parsed = parse_caption_sections(caption)
+    text = "\n\n".join(x for t, x in parsed
+                       if sections is None or t in sections)
+    if not text:
+        return prompt
+    period = "" if text.endswith((".", "!", "?")) else "."
+    return f"{prompt} {_CAPTION_PREFIX}{text}{period}"
+
+
+def selected_caption_titles(caption: str,
+                            sections: list[str] | None) -> list[str]:
+    """The caption section titles that ``apply_reference`` folds in
+    (caption order), for the PNG metadata record."""
+    return [t for t, _ in parse_caption_sections(caption)
+            if sections is None or t in sections]

@@ -29,6 +29,9 @@ const state = {
   // into the prompt; the caption preview rides in the checkbox tooltip.
   referenceImageId: null,
   referenceCaption: null, // preview text for the checked reference (null = fetching/none)
+  // enabled caption sections for the checked reference (null = all;
+  // see renderRefSections for the tag row under the negative prompt)
+  referenceSections: null,
 };
 
 function setStatus(text, isError = false) {
@@ -813,6 +816,94 @@ function pinToggle(t, index) {
   });
 }
 
+// Mirror of imagagen.reference.parse_caption_sections (keep in sync):
+// blank-line paragraphs, "**Title:**" headings, unlabeled leading
+// paragraphs -> Overview, trailing ones -> Summary, deduped titles.
+function parseCaptionSections(caption) {
+  const paras = (caption || "").split(/\n\n+/)
+    .map((s) => s.trim()).filter(Boolean);
+  const raw = [];
+  for (const p of paras) {
+    const m = p.match(/^\*\*(.+?):\*\*\s*([\s\S]*)$/);
+    if (m) raw.push({ title: m[1].trim(), paras: m[2].trim() ? [m[2].trim()] : [] });
+    else if (raw.length) raw[raw.length - 1].paras.push(p);
+    else raw.push({ title: null, paras: [p] });
+  }
+  // trailing unlabeled paragraphs after the LAST heading are the
+  // summary (mirror of the Python parser: the last section keeps its
+  // first paragraph, the rest becomes Summary)
+  if (raw.length && raw[raw.length - 1].title !== null
+      && raw[raw.length - 1].paras.length > 1) {
+    const last = raw[raw.length - 1];
+    raw.push({ title: null, paras: last.paras.slice(1) });
+    last.paras = last.paras.slice(0, 1);
+  }
+  const out = [];
+  const seen = {};
+  raw.forEach((sec, i) => {
+    let title = sec.title ?? (i === 0 ? "Overview" : "Summary");
+    const n = (seen[title] || 0) + 1;
+    seen[title] = n;
+    if (n > 1) title = `${title} (${n})`;
+    const text = sec.paras.join("\n\n").trim();
+    if (text) out.push({ title, text });
+  });
+  return out;
+}
+
+// The caption-section tag row under the negative prompt: one toggle per
+// section of the checked reference's caption preview, all enabled by
+// default (state.referenceSections null = all). Hidden when no
+// reference is checked or the caption has <= 1 section.
+function renderRefSections() {
+  const root = $("ref-sections");
+  root.textContent = "";
+  const secs = state.referenceImageId && state.referenceCaption
+    ? parseCaptionSections(state.referenceCaption) : [];
+  if (secs.length <= 1) {
+    root.classList.add("hidden");
+    return;
+  }
+  root.classList.remove("hidden");
+  const enabled = (t) => !Array.isArray(state.referenceSections)
+    || state.referenceSections.includes(t);
+  for (const s of secs) {
+    root.appendChild(el("button", {
+      type: "button",
+      class: `ref-tag mini${enabled(s.title) ? " active" : ""}`,
+      title: `include the "${s.title}" caption section in the prompt`,
+      onclick: () => {
+        const titles = secs.map((x) => x.title);
+        const next = new Set(titles.filter(enabled));
+        if (next.has(s.title)) next.delete(s.title);
+        else next.add(s.title);
+        const all = titles.every((t) => next.has(t));
+        state.referenceSections = all ? null
+          : titles.filter((t) => next.has(t));
+        renderRefSections();
+      },
+    }, s.title));
+  }
+}
+
+// Fetch the caption preview for the checked reference (shared by the
+// checkbox handler and the ui-state restore path).
+async function fetchReferencePreview() {
+  const id = state.referenceImageId;
+  if (!id) return;
+  try {
+    const r = await api("/api/reference/caption", { image_id: id });
+    if (state.referenceImageId === id) {
+      state.referenceCaption = r.caption;
+      renderThumbs();
+      renderRefSections();
+    }
+  } catch (e) {
+    if (state.referenceImageId === id)
+      setStatus(`reference caption preview failed: ${e.message}`, true);
+  }
+}
+
 function renderThumbs() {
   const strip = $("thumbs");
   // an empty strip stays visible as a dropzone (see wireThumbsDrop), styled
@@ -863,11 +954,15 @@ function renderThumbs() {
         if (!ref.checked) {
           state.referenceImageId = null;
           state.referenceCaption = null;
+          state.referenceSections = null;
+          renderRefSections();
           renderThumbs();
           return;
         }
         state.referenceImageId = t.image_id;
         state.referenceCaption = null;
+        state.referenceSections = null; // new reference: all sections on
+        renderRefSections();
         if (!t.pinned) {
           // unpinned thumbnails are dropped at submit: a reference must
           // survive, so auto-pin it (same API as the pin checkbox)
@@ -883,17 +978,7 @@ function renderThumbs() {
         }
         renderThumbs();
         // caption preview: show what the generation will inject
-        try {
-          const r = await api("/api/reference/caption",
-                               { image_id: t.image_id });
-          if (state.referenceImageId === t.image_id) {
-            state.referenceCaption = r.caption;
-            renderThumbs();
-          }
-        } catch (e) {
-          if (state.referenceImageId === t.image_id)
-            setStatus(`reference caption preview failed: ${e.message}`, true);
-        }
+        await fetchReferencePreview();
       },
     });
     ref.checked = state.referenceImageId === t.image_id;
@@ -1014,6 +1099,8 @@ async function generate() {
     model_id: $("model").value || null,
     mode: $("mode").value,
     reference_image_id: state.referenceImageId || null,
+    reference_sections: Array.isArray(state.referenceSections)
+      ? state.referenceSections : null,
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
     oversample: parseFloat($("oversample").value) || 1,
@@ -2381,6 +2468,8 @@ function readUiState() {
     // the checked reference thumbnail (the server drops it when the
     // entity no longer exists)
     reference_image_id: state.referenceImageId || null,
+    reference_sections: Array.isArray(state.referenceSections)
+      ? state.referenceSections : null,
     // canvas tools: current tool + per-tool remembered settings
     tools: { current: Tools.current, ...Tools.state },
     // sidebar (control panel) width set by dragging its right border
@@ -2427,6 +2516,9 @@ function applyUiState(st) {
   // reference image: the checked thumbnail id (restoreQueueThumbs renders
   // the strip afterwards; renderThumbs re-checks the matching thumb)
   if (st.reference_image_id) state.referenceImageId = st.reference_image_id;
+  if (Array.isArray(st.reference_sections))
+    state.referenceSections = st.reference_sections;
+  if (state.referenceImageId) fetchReferencePreview(); // renders the tag row
   // soft inpainting and self attention guidance (enable flags + options)
   // are model configuration settings, not persisted in the ui-state
   // sidebar width set by dragging its right border

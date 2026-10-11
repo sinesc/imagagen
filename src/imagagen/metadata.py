@@ -97,6 +97,7 @@ def build_parameters(
     distilled: bool | None = None,
     turbo: bool | None = None,
     reference_caption: str | None = None,
+    reference_sections: list[str] | None = None,
 ) -> str:
     """Serialize the `parameters` text chunk as a JSON document.
 
@@ -187,6 +188,9 @@ def build_parameters(
     if reference_caption:
         # the caption the reference image contributed to the prompt
         doc["reference_caption"] = reference_caption
+    if reference_sections:
+        # the caption sections that were applied (the UI tag row)
+        doc["reference_sections"] = reference_sections
     if sag is not None:
         # written unconditionally, so a dropped image can restore the
         # checkbox in BOTH states

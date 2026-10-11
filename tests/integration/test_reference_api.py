@@ -16,7 +16,7 @@ from starlette.testclient import TestClient
 
 from imagagen import metadata
 from imagagen.app import create_app
-from imagagen.backends import MockBackend
+from imagagen.backends import MOCK_REFERENCE_CAPTION, MockBackend
 from imagagen.config import Config
 
 
@@ -60,7 +60,27 @@ def test_reference_round_trip(tmp_path):
         # the result PNG carries the echoed caption
         png = c.get(f"/api/thumb/{job_id}/0.png").content
         meta = metadata.read_metadata(png)
-        assert meta["reference_caption"] == "mock"
+        assert meta["reference_caption"] == MOCK_REFERENCE_CAPTION
+        # the mock caption is Overview + Subject + Summary; default = all
+        assert meta["reference_sections"] == ["Overview", "Subject",
+                                              "Summary"]
+
+
+def test_reference_sections_subset(tmp_path):
+    with _client(tmp_path) as c:
+        image_id = _upload(c)["image_id"]
+        r = c.post("/api/generate", json={
+            "prompt": "x", "width": 64, "height": 48, "steps": 1,
+            "seed": 5, "batch_size": 1, "reference_image_id": image_id,
+            "reference_sections": ["Subject"]})
+        job_id = r.json()["job_id"]
+        _wait_done(c, job_id)
+        png = c.get(f"/api/thumb/{job_id}/0.png").content
+        meta = metadata.read_metadata(png)
+        # the full caption is recorded; only the selected sections were
+        # applied (the mock echoes the applied titles on the result)
+        assert meta["reference_caption"] == MOCK_REFERENCE_CAPTION
+        assert meta["reference_sections"] == ["Subject"]
 
 
 def test_generate_without_reference_has_no_caption_line(tmp_path):
@@ -91,7 +111,7 @@ def test_caption_preview_endpoint(tmp_path):
         image_id = _upload(c)["image_id"]
         r = c.post("/api/reference/caption", json={"image_id": image_id})
         assert r.status_code == 200
-        assert r.json()["caption"] == "mock"
+        assert r.json()["caption"] == MOCK_REFERENCE_CAPTION
         r = c.post("/api/reference/caption", json={"image_id": "gone:1"})
         assert r.status_code == 400
 
@@ -116,3 +136,23 @@ def test_ui_state_drops_dangling_reference_image_id(tmp_path):
         assert r.status_code == 200
         state = c.get("/api/ui-state").json()["state"]
         assert state["reference_image_id"] is None
+
+
+def test_ui_state_persists_reference_sections(tmp_path):
+    with _client(tmp_path) as c:
+        image_id = _upload(c)["image_id"]
+        c.post("/api/ui-state", json={"prompt": "p",
+                                      "reference_image_id": image_id,
+                                      "reference_sections": ["Subject"]})
+        state = c.get("/api/ui-state").json()["state"]
+        assert state["reference_sections"] == ["Subject"]
+
+
+def test_ui_state_drops_reference_sections_with_the_entity(tmp_path):
+    with _client(tmp_path) as c:
+        c.post("/api/ui-state", json={"prompt": "p",
+                                      "reference_image_id": "gone:9",
+                                      "reference_sections": ["Subject"]})
+        state = c.get("/api/ui-state").json()["state"]
+        assert state["reference_image_id"] is None
+        assert state["reference_sections"] is None

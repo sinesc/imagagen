@@ -9,7 +9,8 @@ and the PNG metadata records the caption the backend applied.
 import numpy as np
 
 from imagagen import metadata
-from imagagen.backends import PHASE_REFERENCE, GenerateRequest, MockBackend
+from imagagen.backends import (GenerateRequest, MOCK_REFERENCE_CAPTION,
+                               MockBackend, PHASE_REFERENCE)
 
 from test_queue import _queue, _wait_done
 
@@ -64,7 +65,7 @@ def test_queue_passes_reference_image_to_the_backend():
     from io import BytesIO
 
     meta = metadata.read_metadata(png)
-    assert meta["reference_caption"] == "mock"
+    assert meta["reference_caption"] == MOCK_REFERENCE_CAPTION
 
 
 def test_mock_backend_echoes_reference_caption():
@@ -72,7 +73,7 @@ def test_mock_backend_echoes_reference_caption():
     ref = np.zeros((8, 8, 3), dtype=np.uint8)
     r = b.generate(GenerateRequest(prompt="x", width=8, height=8, steps=1,
                                    seed=1, reference_image=ref))
-    assert r.reference_caption == "mock"
+    assert r.reference_caption == MOCK_REFERENCE_CAPTION
     r = b.generate(GenerateRequest(prompt="x", width=8, height=8, steps=1,
                                    seed=1))
     assert r.reference_caption is None
@@ -83,7 +84,7 @@ def test_caption_only_returns_the_caption_without_an_image():
     ref = np.zeros((8, 8, 3), dtype=np.uint8)
     r = b.generate(GenerateRequest(prompt="x", width=8, height=8, seed=1,
                                    reference_image=ref, caption_only=True))
-    assert r.reference_caption == "mock"
+    assert r.reference_caption == MOCK_REFERENCE_CAPTION
     assert r.image.size == 0
 
 

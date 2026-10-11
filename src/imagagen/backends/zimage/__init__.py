@@ -54,7 +54,7 @@ from ... import kdiff
 from ...encoders.qwen3 import load_zit_encoder, zimage_prompt_template
 from ...flux_lora import FluxLoraSpec, merge_module_deltas
 from ...gguf_ops import QuantLinear, quant_linear_scope
-from ...reference import apply_reference, caption_reference
+from ...reference import apply_reference, caption_reference, selected_caption_titles
 from ...soft_inpaint import adaptive_change_alpha, latent_blend
 from .. import (
     _PARAM_INIT_LOCK,
@@ -650,7 +650,8 @@ class ZImageBackend(ModelBackend):
             reference_caption = caption_reference(
                 request.reference_image, device, self.config,
                 park=_ref_park, restore=_ref_restore, progress=progress)
-            prompt = apply_reference(prompt, reference_caption)
+            prompt = apply_reference(prompt, reference_caption,
+                                     request.reference_sections)
         context = self._get_context(prompt, progress)
 
         # --- sigma schedule + noise ---
@@ -811,6 +812,9 @@ class ZImageBackend(ModelBackend):
             image=arr, seed=request.seed,
             steps=steps,
             reference_caption=reference_caption,
+            reference_sections=selected_caption_titles(
+                reference_caption, request.reference_sections)
+            if reference_caption else None,
             # the single-pass model has no CFG: the effective value is 1.0
             cfg=DEFAULT_CFG)
 

@@ -82,7 +82,7 @@ from ...encoders.krea2 import (
 )
 from ...flux_lora import FluxLoraSpec, merge_module_deltas
 from ...gguf_ops import QuantLinear, quant_dtype_scope
-from ...reference import apply_reference, caption_reference
+from ...reference import apply_reference, caption_reference, selected_caption_titles
 from ...soft_inpaint import adaptive_change_alpha, latent_blend
 from .. import (
     _PARAM_INIT_LOCK,
@@ -1003,7 +1003,8 @@ class Krea2Backend(ModelBackend):
         reference_caption = None
         if request.reference_image is not None:
             reference_caption = self._reference_caption(request, progress)
-            prompt = apply_reference(prompt, reference_caption)
+            prompt = apply_reference(prompt, reference_caption,
+                                     request.reference_sections)
         context = self._get_context(prompt, progress)
         uncond_context = None
         if do_cfg:
@@ -1191,7 +1192,10 @@ class Krea2Backend(ModelBackend):
         return GenerateResult(
             image=arr, seed=request.seed,
             steps=steps, cfg=cfg, turbo=turbo,
-            reference_caption=reference_caption)
+            reference_caption=reference_caption,
+            reference_sections=selected_caption_titles(
+                reference_caption, request.reference_sections)
+            if reference_caption else None)
 
 
 def from_config(config) -> ModelBackend | None:

@@ -120,6 +120,10 @@ class GenerateRequest(BaseModel):
     # JSON callers leave it None. Backends condition on it (phase 1:
     # a VLM caption appended to the positive prompt).
     reference_image: np.ndarray | None = None  # HxWx3 uint8
+    # which caption sections to fold into the prompt (None = all;
+    # [] = apply nothing; see imagagen.reference.parse_caption_sections
+    # and the UI tag row under the negative prompt).
+    reference_sections: list[str] | None = None
     # preview-only flag (POST /api/reference/caption): the backend runs
     # ONLY the reference captioning and returns the caption in
     # GenerateResult.reference_caption (no image, no sampling). Never set
@@ -165,6 +169,9 @@ class GenerateResult:
     # caption_only preview path returns ONLY this (image is a zero-size
     # array).
     reference_caption: str | None = None
+    # The caption section titles actually applied (None = no reference
+    # was used). Recorded in the PNG metadata.
+    reference_sections: list[str] | None = None
 
 
 ProgressCallback = Callable[[float, str], None]  # fraction 0..1, message
@@ -178,6 +185,15 @@ PHASE_ENCODING = "phase:encoding"
 PHASE_DENOISING = "phase:denoising"
 #: the reference-image captioning runs (VLM describing the reference)
 PHASE_REFERENCE = "phase:reference"
+
+#: MockBackend's caption: carries the section structure real VLM
+#: captions have (unlabeled preamble, **Title:** block, trailing
+#: summary) so the UI section-tag row is exercised without a GPU.
+MOCK_REFERENCE_CAPTION = (
+    "This is a mock reference caption.\n\n"
+    "**Subject:**\nA mock subject paragraph.\n\n"
+    "In summary, a mock summary."
+)
 
 
 def report_phase(progress: ProgressCallback | None, phase: str) -> None:
@@ -292,8 +308,15 @@ class MockBackend(ModelBackend):
         seed = request.resolved_seed()
         self._cancelled = None
         # reference caption preview: echo the mock caption without any
-        # image work (mirrors the real backends' caption_only path)
-        caption = "mock" if request.reference_image is not None else None
+        # image work (mirrors the real backends' caption_only path).
+        # The mock caption carries the section structure real captions
+        # have (Overview + **Subject:** + Summary) so the UI tag row is
+        # exercised by the UI/integration tests.
+        caption = MOCK_REFERENCE_CAPTION if request.reference_image \
+            is not None else None
+        from ..reference import selected_caption_titles
+        applied = selected_caption_titles(caption, request.reference_sections) \
+            if caption is not None else None
         if request.caption_only:
             return GenerateResult(
                 image=np.zeros((0, 0, 3), dtype=np.uint8), seed=seed,
@@ -333,4 +356,5 @@ class MockBackend(ModelBackend):
                 progress((i + 1) / steps, f"step {i + 1}/{steps}")
         return GenerateResult(
             image=np.clip(img, 0, 255).astype(np.uint8), seed=seed,
-            steps=steps, cfg=cfg, reference_caption=caption)
+            steps=steps, cfg=cfg, reference_caption=caption,
+            reference_sections=applied)

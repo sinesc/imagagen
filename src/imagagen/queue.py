@@ -819,6 +819,7 @@ def _result_to_png(
         # the reference-image caption the backend applied (None = no
         # reference used)
         reference_caption=result.reference_caption,
+        reference_sections=result.reference_sections,
     )
     img, pnginfo = metadata.attach_metadata(Image.fromarray(image), params)
     buf = BytesIO()

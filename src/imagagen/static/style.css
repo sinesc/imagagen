@@ -328,6 +328,13 @@ button.mini.icon {
 }
 #prompt { height: 92px; }
 #negative { height: 30px; }
+/* caption-section toggle tags (reference image); active = folded into
+   the prompt, same accent as the toolbar's active tools */
+#ref-sections { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+#ref-sections .ref-tag.active {
+  background: #1a5fb4;
+  border-color: #1a5fb4;
+}
 /* PNG drag&drop target on the canvas: sets the image only (no metadata) */
 #canvas-holder.drop {
   outline: 2px dashed #7ab;
