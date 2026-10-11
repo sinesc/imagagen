@@ -331,6 +331,8 @@ button.mini.icon {
 /* caption-section toggle tags (reference image); active = folded into
    the prompt, same accent as the toolbar's active tools */
 #ref-sections { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+/* the ID rule above out-specifies a plain .hidden, so hide explicitly */
+#ref-sections.hidden { display: none; }
 #ref-sections .ref-tag.active {
   background: #1a5fb4;
   border-color: #1a5fb4;

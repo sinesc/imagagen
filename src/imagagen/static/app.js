@@ -802,6 +802,8 @@ function pinToggle(t, index) {
           if (state.referenceImageId === t.image_id) {
             state.referenceImageId = null;
             state.referenceCaption = null;
+            state.referenceSections = null;
+            renderRefSections(); // the tag row goes with the reference
           }
           if (state.currentThumb === index) state.currentThumb = -1;
           else if (state.currentThumb > index) state.currentThumb -= 1;

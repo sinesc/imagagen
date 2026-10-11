@@ -118,9 +118,9 @@ def test_section_tags_row(page, server):
     _show(page, base)
     _generate(page, base)
 
-    # no reference: the tag row is hidden
-    assert page.evaluate("document.getElementById('ref-sections')"
-                         ".classList.contains('hidden')")
+    # no reference: the tag row is hidden (and takes no layout space)
+    assert page.evaluate("getComputedStyle("
+                         "document.getElementById('ref-sections')).display") == "none"
 
     page.click("#thumbs .thumb-ref >> nth=1")
     # the mock caption carries Overview + Subject + Summary -> three tags,
@@ -137,8 +137,17 @@ def test_section_tags_row(page, server):
     # unchecking the reference hides the row again
     page.click("#thumbs .thumb-ref >> nth=1")
     assert wait_until(lambda: page.evaluate(
-        "document.getElementById('ref-sections')"
-        ".classList.contains('hidden')"))
+        "getComputedStyle(document.getElementById('ref-sections')).display") == "none")
+
+    # re-check, then remove the reference's thumbnail (unpinning drops
+    # the thumbnail): the row goes with it
+    page.click("#thumbs .thumb-ref >> nth=1")
+    assert wait_until(lambda: page.evaluate(
+        "getComputedStyle(document.getElementById('ref-sections')).display") != "none")
+    page.click("#thumbs .thumb-pin >> nth=1")
+    assert wait_until(lambda: page.evaluate("state.referenceImageId") is None)
+    assert wait_until(lambda: page.evaluate(
+        "getComputedStyle(document.getElementById('ref-sections')).display") == "none")
 
 
 def test_section_toggle_payload_and_reload(page, server):
