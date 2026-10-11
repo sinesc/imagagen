@@ -253,8 +253,8 @@ def _apply_rope_split_half(q, k, cos, sin, neg_sin):
 
     def rot(x):
         x1, x2 = x[..., :half], x[..., half:]
-        return torch.cat((x1 * cos[..., :half] + x2 * sin,
-                          x1 * neg_sin + x2 * cos[..., half:]), dim=-1)
+        return torch.cat((x1 * cos[..., :half] + x2 * neg_sin,
+                          x1 * sin + x2 * cos[..., half:]), dim=-1)
 
     return rot(q), rot(k)
 

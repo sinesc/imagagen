@@ -43,11 +43,11 @@ DEFAULT_IMAGES = [
 #: stream assembly, or the text tower) -- update deliberately.
 PINNED_CAPTION_SHA1 = {
     "dev/references/purple-flower.png":
-        "95885ce26eafe4831171374a024dd90d0f805902",
+        "55f603c90f219e46470d2f2d2ae72f06b206d55c",
     "dev/references/cute-kitten-dmd2.png":
-        "424ce1e56c7a66a7ba4794ec0ab1c3c0d049a208",
+        "686c73c49b4d0eedcb607f23c726a15581f6df87",
     "dev/references/lighthouse-keeper.png":
-        "f252b7ecf05f5e0b974b76c2340b8f96ae0336b1",
+        "ac4b64b44c450b54c058e13c02f8be59abb771b2",
 }
 
 
