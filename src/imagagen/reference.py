@@ -145,7 +145,11 @@ def _generate_caption(tower, tok, visual, image: np.ndarray,
     arr = torch.from_numpy(
         np.ascontiguousarray(image).astype(np.float32) / 255.0)[None]
     patches, grid = process_qwen2vl_images(arr.to(device))
-    merged, deepstack = visual.visual(patches.to(device), grid.to(device))
+    # the vision forward MUST run under no_grad/inference_mode: at ~5k
+    # patches the autograd graph across the 24 vision blocks costs ~10 GiB
+    # (measured) and OOMs a 16 GB card that is otherwise empty.
+    with torch.no_grad():
+        merged, deepstack = visual.visual(patches.to(device), grid.to(device))
     n_pad = merged.shape[0]
     stream, img_index = _build_stream(tok, n_pad)
     pos = qwen2vl_mrope_position_ids(
