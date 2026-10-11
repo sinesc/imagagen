@@ -114,6 +114,17 @@ class GenerateRequest(BaseModel):
     # inpainting
     init_image: np.ndarray | None = None  # HxWx3 uint8
     init_mask: np.ndarray | None = None  # HxW uint8, 0..255 (255 = inpaint here)
+    # reference image: an image that informs the generation (it is NOT the
+    # img2img base). Passed in-process exactly like init_image (the queue
+    # resolves the UI's reference_image_id through the canvas store);
+    # JSON callers leave it None. Backends condition on it (phase 1:
+    # a VLM caption appended to the positive prompt).
+    reference_image: np.ndarray | None = None  # HxWx3 uint8
+    # preview-only flag (POST /api/reference/caption): the backend runs
+    # ONLY the reference captioning and returns the caption in
+    # GenerateResult.reference_caption (no image, no sampling). Never set
+    # by a generation request.
+    caption_only: bool = False
     denoise: float = 0.75
     # soft inpainting (Forge builtin extension): per-step latent blend
     # replacing the hard content lock + difference-based pixel composite
@@ -149,6 +160,11 @@ class GenerateResult:
     # Krea 2 only: the effective raw/turbo checkpoint class (None = the
     # backend is not Krea 2).
     turbo: bool | None = None
+    # The reference-image caption the backend applied (None = no reference
+    # was used). Recorded in the PNG metadata ("Reference:" line); the
+    # caption_only preview path returns ONLY this (image is a zero-size
+    # array).
+    reference_caption: str | None = None
 
 
 ProgressCallback = Callable[[float, str], None]  # fraction 0..1, message
@@ -160,6 +176,8 @@ ProgressCallback = Callable[[float, str], None]  # fraction 0..1, message
 # is ignored (the bar keeps its current value).
 PHASE_ENCODING = "phase:encoding"
 PHASE_DENOISING = "phase:denoising"
+#: the reference-image captioning runs (VLM describing the reference)
+PHASE_REFERENCE = "phase:reference"
 
 
 def report_phase(progress: ProgressCallback | None, phase: str) -> None:
@@ -273,6 +291,13 @@ class MockBackend(ModelBackend):
 
         seed = request.resolved_seed()
         self._cancelled = None
+        # reference caption preview: echo the mock caption without any
+        # image work (mirrors the real backends' caption_only path)
+        caption = "mock" if request.reference_image is not None else None
+        if request.caption_only:
+            return GenerateResult(
+                image=np.zeros((0, 0, 3), dtype=np.uint8), seed=seed,
+                reference_caption=caption)
         report_phase(progress, PHASE_ENCODING)
         # the "model default" sentinel (steps/cfg <= 0) resolves to the
         # built-in values, as the real backends do (the PNG metadata
@@ -308,4 +333,4 @@ class MockBackend(ModelBackend):
                 progress((i + 1) / steps, f"step {i + 1}/{steps}")
         return GenerateResult(
             image=np.clip(img, 0, 255).astype(np.uint8), seed=seed,
-            steps=steps, cfg=cfg)
+            steps=steps, cfg=cfg, reference_caption=caption)

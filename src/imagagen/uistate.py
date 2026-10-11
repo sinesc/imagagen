@@ -145,6 +145,12 @@ class UiState(BaseModel):
     # selection (empty = "all classes except background")
     seg_model: str | None = None
     seg_classes: list[str] = Field(default_factory=list)
+    # the thumbnail checked as "reference image" (canvas entity id; the
+    # generation conditions on it). Not a generation parameter -- it is a
+    # UI selection, allowed by the ui-state exclusions rule. The server
+    # drops it on serve when the entity no longer exists (ids do not
+    # survive a server restart).
+    reference_image_id: str | None = None
     # sidebar (control panel) width in px, set by dragging its right border;
     # same clamped range as the UI's drag handler
     sidebar_width: int = Field(default=300, ge=280, le=800)

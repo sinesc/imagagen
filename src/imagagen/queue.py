@@ -38,6 +38,7 @@ from . import wildcards
 from .backends import (
     PHASE_DENOISING,
     PHASE_ENCODING,
+    PHASE_REFERENCE,
     GenerateRequest,
     ModelBackend,
     format_loras,
@@ -483,15 +484,19 @@ class GenerationQueue:
         def progress(fraction: float, message: str) -> None:
             if job.interrupted:
                 return
-            if message in (PHASE_ENCODING, PHASE_DENOISING):
+            if message in (PHASE_ENCODING, PHASE_DENOISING, PHASE_REFERENCE):
                 # A generation-phase marker, not step progress: it carries no
                 # fraction (the bar keeps its value), so it goes out as a
                 # "phase" event with the user-facing text -- "Encoding prompt"
                 # while the text encoder runs, "Inpainting @ 1024x1280" while
-                # the transformer samples.
-                text = ("Encoding prompt"
-                        if message == PHASE_ENCODING else
-                        f"{_mode_word(job.plan)} @ {req.width}x{req.height}")
+                # the transformer samples, "Describing reference image" while
+                # the VLM captions the reference image.
+                if message == PHASE_ENCODING:
+                    text = "Encoding prompt"
+                elif message == PHASE_REFERENCE:
+                    text = "Describing reference image"
+                else:
+                    text = f"{_mode_word(job.plan)} @ {req.width}x{req.height}"
                 self.emit({"type": "phase", "job": job.id,
                            "index": task.index, "message": text})
                 return
@@ -811,6 +816,9 @@ def _result_to_png(
         # backend
         turbo=((result.turbo if result.turbo is not None
                 else req.turbo) if backend.is_krea2 else None),
+        # the reference-image caption the backend applied (None = no
+        # reference used)
+        reference_caption=result.reference_caption,
     )
     img, pnginfo = metadata.attach_metadata(Image.fromarray(image), params)
     buf = BytesIO()

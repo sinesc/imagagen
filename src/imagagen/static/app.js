@@ -23,6 +23,12 @@ const state = {
   // enabled control keys. While set, the preset stays selected; a user edit of
   // any covered field clears it (clearActivePreset).
   activePreset: null,
+  // the thumbnail checked as "reference image" (canvas entity id; exactly
+  // one at a time — checking a new one clears the previous). The
+  // generation describes that image with the VLM and injects the caption
+  // into the prompt; the caption preview rides in the checkbox tooltip.
+  referenceImageId: null,
+  referenceCaption: null, // preview text for the checked reference (null = fetching/none)
 };
 
 function setStatus(text, isError = false) {
@@ -789,6 +795,11 @@ function pinToggle(t, index) {
             await api("/api/canvas/pin", { id: t.image_id, pin: false });
           t.pinned = false;
           state.thumbs = state.thumbs.filter((o) => o !== t);
+          // a removed thumbnail cannot stay the reference image
+          if (state.referenceImageId === t.image_id) {
+            state.referenceImageId = null;
+            state.referenceCaption = null;
+          }
           if (state.currentThumb === index) state.currentThumb = -1;
           else if (state.currentThumb > index) state.currentThumb -= 1;
         }
@@ -841,7 +852,57 @@ function renderThumbs() {
     // stable across it
     pin.onmouseenter = () => thumbPreviewShow(t.url);
     pin.onmouseleave = () => thumbPreviewHide();
-    item.append(image, pin);
+    // "reference image": describe this thumbnail into the prompt of the
+    // next generation. Single reference: checking one clears the others
+    // (the re-render below resets every sibling checkbox).
+    const ref = el("input", {
+      type: "checkbox",
+      class: "thumb-ref",
+      "aria-label": "Reference image",
+      onchange: async () => {
+        if (!ref.checked) {
+          state.referenceImageId = null;
+          state.referenceCaption = null;
+          renderThumbs();
+          return;
+        }
+        state.referenceImageId = t.image_id;
+        state.referenceCaption = null;
+        if (!t.pinned) {
+          // unpinned thumbnails are dropped at submit: a reference must
+          // survive, so auto-pin it (same API as the pin checkbox)
+          try {
+            await api("/api/canvas/pin", { id: t.image_id, pin: true });
+            t.pinned = true;
+          } catch (e) {
+            setStatus(e.message, true);
+            state.referenceImageId = null;
+            renderThumbs(); // re-sync both checkboxes with the server state
+            return;
+          }
+        }
+        renderThumbs();
+        // caption preview: show what the generation will inject
+        try {
+          const r = await api("/api/reference/caption",
+                               { image_id: t.image_id });
+          if (state.referenceImageId === t.image_id) {
+            state.referenceCaption = r.caption;
+            renderThumbs();
+          }
+        } catch (e) {
+          if (state.referenceImageId === t.image_id)
+            setStatus(`reference caption preview failed: ${e.message}`, true);
+        }
+      },
+    });
+    ref.checked = state.referenceImageId === t.image_id;
+    ref.title = ref.checked && state.referenceCaption
+      ? `Reference image — will inject: “${state.referenceCaption}”`
+      : "Reference image: describe this image into the prompt of the next generation";
+    ref.onmouseenter = () => thumbPreviewShow(t.url);
+    ref.onmouseleave = () => thumbPreviewHide();
+    item.append(image, pin, ref);
     strip.appendChild(item);
   });
 }
@@ -952,6 +1013,7 @@ async function generate() {
     disabled_styles: getAllStyles().filter((x) => !x[1]).map((x) => x[0]),
     model_id: $("model").value || null,
     mode: $("mode").value,
+    reference_image_id: state.referenceImageId || null,
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
     oversample: parseFloat($("oversample").value) || 1,
@@ -2316,6 +2378,9 @@ function readUiState() {
     // preset is not persisted either: the dropdown always starts at "—"
     seg_model: $("seg-model").value || null,
     seg_classes: state.segClasses,
+    // the checked reference thumbnail (the server drops it when the
+    // entity no longer exists)
+    reference_image_id: state.referenceImageId || null,
     // canvas tools: current tool + per-tool remembered settings
     tools: { current: Tools.current, ...Tools.state },
     // sidebar (control panel) width set by dragging its right border
@@ -2359,6 +2424,9 @@ function applyUiState(st) {
   // select is restored here (after loadSegModels populated the dropdown)
   if (Array.isArray(st.seg_classes)) state.segClasses = st.seg_classes;
   if (st.seg_model && $("seg-model").options.length) $("seg-model").value = st.seg_model;
+  // reference image: the checked thumbnail id (restoreQueueThumbs renders
+  // the strip afterwards; renderThumbs re-checks the matching thumb)
+  if (st.reference_image_id) state.referenceImageId = st.reference_image_id;
   // soft inpainting and self attention guidance (enable flags + options)
   // are model configuration settings, not persisted in the ui-state
   // sidebar width set by dragging its right border

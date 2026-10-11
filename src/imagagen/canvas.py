@@ -443,6 +443,11 @@ class Canvas:
             ent = self._images.get(id)
             return None if ent is None else ent.png
 
+    def has_entity(self, id: str) -> bool:
+        """Whether entity ``id`` is still known (not evicted)."""
+        with self._lock:
+            return id in self._images
+
     def entity_info(self, id: str) -> dict | None:
         """The PNG text chunks (metadata) of any known entity, as a copy,
         or None when it no longer exists."""

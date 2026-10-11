@@ -153,6 +153,10 @@ class _MockRegistry:
     def cancel(self, gpu: int | None = None) -> None:
         self._backend.cancel()
 
+    def caption(self, image, gpu: int | None = None) -> str:
+        # mock stand-in for ModelRegistry.caption (no VLM in mock mode)
+        return "mock"
+
 
 # ---------------- request bodies ----------------
 
@@ -199,6 +203,9 @@ class GenerateBody(BaseModel):
     disabled_styles: list[str] = Field(default_factory=list)
     model_id: str | None = None
     mode: str = "generate"  # "generate" | "inpaint_masked" | "inpaint_not_masked"
+    # the thumbnail checked as "reference image" (canvas entity id): the
+    # generation conditions on that image (see GenerateRequest.reference_image)
+    reference_image_id: str | None = None
     denoise: float = Field(1.0, ge=0.0, le=1.0)  # denoising strength, inpaint only
     # context padding around the masked area (canvas px per side);
     # "inpaint_masked" only, capped at the mask's largest extent
@@ -246,6 +253,10 @@ class CropBody(BaseModel):
     y: float
     width: float = Field(..., gt=0)
     height: float = Field(..., gt=0)
+
+
+class ReferenceCaptionBody(BaseModel):
+    image_id: str
 
 
 def create_app(
@@ -646,9 +657,22 @@ def create_app(
                     "negative_prompt": s.negative_prompt,
                     "enabled": False,
                 })
+        # the reference image rides on the request exactly like the
+        # img2img base image: resolved in-process from the canvas store
+        # (the same path as /api/canvas/image.png); JSON callers never
+        # carry pixel data
+        reference_image = None
+        if body.reference_image_id is not None:
+            if not canvas.has_entity(body.reference_image_id):
+                return JSONResponse(
+                    {"error": "reference image is no longer available"},
+                    status_code=400)
+            reference_image = _decode_png(canvas.entity_png(
+                body.reference_image_id))
         req = GenerateRequest(
             prompt=prompt,
             negative_prompt=negative_prompt,
+            reference_image=reference_image,
             width=body.width,
             height=body.height,
             # rsteps/cfg are None only when the user used the -1 sentinel
@@ -799,6 +823,12 @@ def create_app(
                 entries = []
             if entries and state.model not in {e.id for e in entries}:
                 state.model = entries[0].id
+        # the persisted reference thumbnail may no longer exist (its entity
+        # was evicted, or the server restarted): drop the dangling id so the
+        # UI never restores a checkbox pointing at a dead image
+        if state.reference_image_id is not None and not canvas.has_entity(
+                state.reference_image_id):
+            state.reference_image_id = None
         # by_alias: the tool rows use their JSON names ("copy", not the
         # field's "copy_area", which must not shadow BaseModel.copy())
         return {"state": state.model_dump(by_alias=True)}
@@ -1009,6 +1039,30 @@ def create_app(
         if data is None:
             return Response(status_code=404)
         return Response(content=data, media_type="image/png")
+
+    # --- reference image ---
+    @app.post("/api/reference/caption")
+    def reference_caption(body: ReferenceCaptionBody) -> dict:
+        """Describe a canvas image with the VLM (the text a checked
+        "reference image" thumbnail injects into the prompt).
+
+        Runs on the primary GPU's worker path (registry.caption holds the
+        per-GPU lock, so it never races a generation; a resident model is
+        parked first to free VRAM for the captioning towers). The UI
+        fetches this when a thumbnail is checked as reference and shows
+        the caption in the checkbox tooltip.
+        """
+        png = canvas.entity_png(body.image_id)
+        if png is None:
+            return JSONResponse(
+                {"error": "reference image is no longer available"},
+                status_code=400)
+        try:
+            caption = registry.caption(_decode_png(png))
+        except Exception as e:
+            log.exception("reference caption failed")
+            return JSONResponse({"error": str(e)}, status_code=500)
+        return {"caption": caption}
 
     # --- person mask generation (Phase 5) ---
     # Segmentation models are .tflite files in models/segmentation/; the

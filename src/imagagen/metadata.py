@@ -96,6 +96,7 @@ def build_parameters(
     sag: SelfAttentionGuidance | None = None,
     distilled: bool | None = None,
     turbo: bool | None = None,
+    reference_caption: str | None = None,
 ) -> str:
     """Serialize the `parameters` text chunk as a JSON document.
 
@@ -124,6 +125,10 @@ def build_parameters(
       written in BOTH states like the SAG flags.
     * ``turbo``: Krea 2 only (None = not a Krea 2 model, key omitted),
       written in BOTH states like ``distilled``.
+    * ``reference_caption``: the reference-image caption the backend
+      applied (key omitted when no reference was used). Importing records
+      it as a style-like note only: the reference IMAGE itself cannot
+      round-trip through the prompt text.
     """
     doc: dict[str, Any] = {
         "format": _FORMAT,
@@ -179,6 +184,9 @@ def build_parameters(
         # written unconditionally, so a dropped image records the mode in
         # BOTH states
         doc["Turbo"] = _bool_str(turbo)
+    if reference_caption:
+        # the caption the reference image contributed to the prompt
+        doc["reference_caption"] = reference_caption
     if sag is not None:
         # written unconditionally, so a dropped image can restore the
         # checkbox in BOTH states
