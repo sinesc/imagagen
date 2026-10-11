@@ -50,6 +50,7 @@ import torch
 from .. import kdiff
 from ..encoders.clip import clip_pooled, load_clip_l
 from ..encoders.t5 import load_t5_encoder
+from ..reference import apply_reference, caption_reference
 from ..flux_lora import FluxLoraSpec, merge_module_deltas, parse_lora
 from ..flux_transformer import FluxTransformer2DModel
 from ..gguf_ops import (
@@ -672,8 +673,28 @@ class FluxBackend(ModelBackend):
         # transformer swap -- see _get_encoding). The negative prompt is
         # encoded only when the unconditional pass runs (classic CFG with
         # cfg > 1).
+        # Reference image (phase 1): the VLM caption rides on the positive
+        # prompt BEFORE encoding (the encoding cache keys on the full
+        # text). The captioner towers (~5.3 GB) do not fit next to the
+        # resident Flux transformer: it is swapped to the CPU for the
+        # caption (the same encode-swap the text encoders trigger).
+        prompt = request.prompt
+        reference_caption = None
+        if request.reference_image is not None:
+            def _ref_park():
+                self.transformer.to("cpu")
+                torch.cuda.empty_cache()
+
+            def _ref_restore():
+                self.transformer.to(self.device)
+                torch.cuda.empty_cache()
+
+            reference_caption = caption_reference(
+                request.reference_image, device, self.config,
+                park=_ref_park, restore=_ref_restore, progress=progress)
+            prompt = apply_reference(prompt, reference_caption)
         encoding = self._get_encoding(
-            request.prompt, request.negative_prompt if uncond else None,
+            prompt, request.negative_prompt if uncond else None,
             progress=progress)
         context, y, neg = encoding
         if uncond:
@@ -888,6 +909,7 @@ class FluxBackend(ModelBackend):
         return GenerateResult(
             image=arr, seed=request.seed,
             steps=steps,
+            reference_caption=reference_caption,
             # the effective CFG for the metadata: the embedded guidance in
             # distilled mode, the CFG value in classic mode
             cfg=guidance if distilled else cfg,

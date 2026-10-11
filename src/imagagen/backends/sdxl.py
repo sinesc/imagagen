@@ -117,6 +117,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import kdiff
+from ..reference import apply_reference, caption_reference
 from ..sag import SagRecorder, compute_sag_mask, create_blur_map, install_sag_hooks
 from ..soft_inpaint import adaptive_change_alpha, latent_blend
 from . import (
@@ -882,6 +883,18 @@ class SdxlBackend(ModelBackend):
         self._apply_loras(request.loras)
 
         with torch.inference_mode():
+            # Reference image (phase 1): the VLM caption rides on the
+            # positive prompt BEFORE encoding (the encoding cache keys on
+            # the full text). The captioner towers (~5.3 GB) fit next to
+            # the SDXL pipeline + text encoders on a 16 GB card, so no
+            # transformer swap is needed here.
+            prompt = request.prompt
+            reference_caption = None
+            if request.reference_image is not None:
+                reference_caption = caption_reference(
+                    request.reference_image, device, self.config,
+                    progress=progress)
+                prompt = apply_reference(prompt, reference_caption)
             # text encoders live on self.text_encoder_device (GPU by
             # default, CPU when imagagen.ini says so); with the default
             # they are parked on CPU between generations to free ~1.4 GiB
@@ -895,11 +908,11 @@ class SdxlBackend(ModelBackend):
             # a batch of identical prompts -- or any later repeat of the same
             # prompt -- is encoded once, and a hit skips the encoder moves
             # entirely.
-            key = (request.prompt, request.negative_prompt or "")
+            key = (prompt, request.negative_prompt or "")
             entry = self._enc_cache.get(key)
             if entry is None:
                 report_phase(progress, PHASE_ENCODING)
-                self._encode_pairs([(request.prompt, request.negative_prompt)])
+                self._encode_pairs([(prompt, request.negative_prompt)])
                 entry = self._enc_cache[key]
             self._enc_cache.move_to_end(key)
             prompt_embeds, pooled, neg_embeds, neg_pooled = (
@@ -1180,7 +1193,8 @@ class SdxlBackend(ModelBackend):
             arr = np.clip(arr, 0, 255).astype(np.uint8)
 
         return GenerateResult(
-            image=arr, seed=request.seed, steps=steps, cfg=cfg)
+            image=arr, seed=request.seed, steps=steps, cfg=cfg,
+            reference_caption=reference_caption)
 
 
 def from_config(config) -> ModelBackend | None:

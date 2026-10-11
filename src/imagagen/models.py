@@ -481,7 +481,7 @@ class ModelRegistry:
         with state.lock:
             if state.backend is not None:
                 self._park_state_locked(state)
-            return caption_reference(image, f"cuda:{gpu}")
+            return caption_reference(image, f"cuda:{gpu}", self.config)
 
     def cancel(self, gpu: int | None = None) -> None:
         """Cancel in-flight generation on one GPU (or all loaded GPUs).

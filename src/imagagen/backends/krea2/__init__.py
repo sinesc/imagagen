@@ -82,6 +82,7 @@ from ...encoders.krea2 import (
 )
 from ...flux_lora import FluxLoraSpec, merge_module_deltas
 from ...gguf_ops import QuantLinear, quant_dtype_scope
+from ...reference import apply_reference, caption_reference
 from ...soft_inpaint import adaptive_change_alpha, latent_blend
 from .. import (
     _PARAM_INIT_LOCK,
@@ -431,8 +432,12 @@ class Krea2Backend(ModelBackend):
             # out while it runs (see _generate_impl). With
             # text_encoder_device=cpu it never leaves the CPU.
             self.te_device = "cpu" if config.text_encoder_device == "cpu" else device
+            # load_norm=True: the 12-tap conditioning does not use the
+            # final norm, but the reference-captioning path reuses this
+            # resident tower for greedy generation (tied-lm_head logits)
             self.te = load_krea2_encoder(
-                str(config.infra_dir / "qwen_3vl_4b.safetensors"), "cpu")
+                str(config.infra_dir / "qwen_3vl_4b.safetensors"), "cpu",
+                load_norm=True)
             self.te_tok = Qwen2Tokenizer.from_pretrained(
                 str(config.res_dir / "tokenizer_krea2"))
             # resident bytes of the encoder; the fit check below and the
@@ -607,6 +612,31 @@ class Krea2Backend(ModelBackend):
         with torch.inference_mode():
             lat = self.vae.encode(t.to(self.vae.dtype)).latent_dist.mode().float()
         return normalize_latent(self.vae, lat)
+
+    def _reference_caption(self, request: GenerateRequest, progress=None) -> str:
+        """The reference-image caption (sha1-cached; see imagagen.reference).
+
+        Runs on this backend's device under ``self._lock``. The resident
+        text tower is passed to the captioner, so no text-tower load
+        happens here; with the tower on the GPU the transformer stays
+        resident (the vision tower is ~0.45 GB), with the tower parked
+        the transformer is swapped out for the caption (encode-swap
+        pattern).
+        """
+        te_on_gpu = next(self.te.parameters()).device == self.device
+        if te_on_gpu:
+            return caption_reference(
+                request.reference_image, self.device, self.config,
+                text_tower=self.te, tokenizer=self.te_tok, progress=progress)
+        self.transformer.to("cpu")
+        torch.cuda.empty_cache()
+        try:
+            return caption_reference(
+                request.reference_image, self.device, self.config,
+                text_tower=self.te, tokenizer=self.te_tok, progress=progress)
+        finally:
+            self.transformer.to(self.device)
+            torch.cuda.empty_cache()
 
     def cancel(self) -> None:
         self._cancel = True
@@ -962,7 +992,19 @@ class Krea2Backend(ModelBackend):
         # --- text encode --- deterministic per prompt: identical prompts
         # (negative too, on the classic path) reuse the cached encoding
         # (no encoder run, no transformer swap)
-        context = self._get_context(request.prompt, progress)
+        # Reference image (phase 1): the VLM caption rides on the positive
+        # prompt BEFORE encoding (so the encoding cache keys on the full
+        # text). The Krea 2 path reuses the RESIDENT text tower +
+        # tokenizer; only the vision tower is loaded lazily (and stays
+        # GPU-resident). With the text tower parked on the CPU, the
+        # transformer is swapped out for the caption -- the same encode-
+        # swap the text encoder run below would trigger anyway.
+        prompt = request.prompt
+        reference_caption = None
+        if request.reference_image is not None:
+            reference_caption = self._reference_caption(request, progress)
+            prompt = apply_reference(prompt, reference_caption)
+        context = self._get_context(prompt, progress)
         uncond_context = None
         if do_cfg:
             uncond_context = self._get_context(request.negative_prompt, progress)
@@ -1148,7 +1190,8 @@ class Krea2Backend(ModelBackend):
         torch.cuda.empty_cache()
         return GenerateResult(
             image=arr, seed=request.seed,
-            steps=steps, cfg=cfg, turbo=turbo)
+            steps=steps, cfg=cfg, turbo=turbo,
+            reference_caption=reference_caption)
 
 
 def from_config(config) -> ModelBackend | None:

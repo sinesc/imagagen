@@ -43,6 +43,15 @@ KREA2_TAP_LAYERS = (2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35)
 #: "user", "\n"
 _IM_START, _USER, _NEWLINE = 151644, 872, 198
 
+#: Qwen3-VL interleaved MRoPE section (rope_dims in the reference's
+#: Qwen3VL_8BConfig; head_dim 128 = 24 + 20 + 20 doubled to 64 freqs)
+_MROPE_SECTION = (24, 20, 20)
+
+#: end-of-text (im_end) and im_start: the greedy caption stop tokens
+_END_OF_TEXT = 151645
+#: the image-pad token the vision features are scattered into
+IMAGE_PAD_ID = 151655
+
 
 class Fp8Linear(nn.Linear):
     """``nn.Linear`` with a plain ``F8_E4M3`` weight: the cast IS the
@@ -166,19 +175,40 @@ class Krea2Qwen3VLModel(nn.Module):
                 for _ in range(num_layers)
             ]
         )
+        # the final norm: unused by the 12-tap conditioning (raw layer
+        # outputs), loaded + used by the reference-captioning path
+        # (forward_caption / tied-lm_head logits)
+        self.norm = Qwen3RMSNorm(hidden_size)
 
-    def _rope(self, seq_len, device, dtype):
+    def _rope(self, seq_len, device, dtype, position_ids=None):
         inv_freq = 1.0 / (
             self.rope_theta
             ** (torch.arange(0, self.layers[0].self_attn.head_dim, 2,
                              device=device, dtype=torch.float32)
                 / self.layers[0].self_attn.head_dim)
         )
-        pos = torch.arange(seq_len, device=device, dtype=torch.float32)
-        freqs = torch.outer(pos, inv_freq)
-        # (1, s, 1, d) so it broadcasts over (b, s, heads, d)
-        cos = torch.cat([freqs.cos(), freqs.cos()], dim=-1)[None, :, None]
-        sin = torch.cat([freqs.sin(), freqs.sin()], dim=-1)[None, :, None]
+        if position_ids is None:
+            pos = torch.arange(seq_len, device=device, dtype=torch.float32)
+            freqs = torch.outer(pos, inv_freq)
+            # (1, s, 1, d) so it broadcasts over (b, s, heads, d)
+            cos = torch.cat([freqs.cos(), freqs.cos()], dim=-1)[None, :, None]
+            sin = torch.cat([freqs.sin(), freqs.sin()], dim=-1)[None, :, None]
+            return cos.to(dtype), sin.to(dtype)
+        # Qwen3-VL interleaved MRoPE: T-freqs by default, the H/W position
+        # rows replace every 3rd dim in their section (the reference's
+        # precompute_freqs_cis(interleaved_mrope=True) / HF's
+        # recomposition_frequencies). position_ids: (3, seq)
+        inv = inv_freq[None, None, :, None].expand(3, -1, -1, 1)
+        pos = position_ids[:, None, None, :].float()  # (3, 1, 1, s)
+        freqs = (inv @ pos).transpose(2, 3)  # (3, 1, s, head_dim/2)
+        f = freqs[0].clone()
+        for axis, offset in ((1, 1), (2, 2)):
+            length = _MROPE_SECTION[axis] * 3
+            idx = slice(offset, length, 3)
+            f[..., idx] = freqs[axis][..., idx]
+        emb = torch.cat((f, f), dim=-1)  # (1, s, head_dim)
+        cos = emb.cos().squeeze(0)[None, :, None]
+        sin = emb.sin().squeeze(0)[None, :, None]
         return cos.to(dtype), sin.to(dtype)
 
     def forward(self, input_ids):
@@ -192,14 +222,49 @@ class Krea2Qwen3VLModel(nn.Module):
                 taps.append(x)
         return torch.stack(taps, dim=1)  # (b, 12, s, hidden)
 
+    def forward_caption(self, input_ids, visual_embeds, deepstack_embeds,
+                        position_ids=None):
+        """One greedy-decoding step of the caption path: the image-pad
+        token positions carry the vision-tower features instead of their
+        word embedding, the DeepStack features are ADDED to those
+        positions after decoder layers 0/1/2 (the HF
+        ``_deepstack_process`` convention), and the logits come from the
+        final norm + the TIED lm_head (the 4B ties word embeddings --
+        ``logits = norm(h[-1]) @ embed_tokens.T``, the reference's
+        ``BaseQwen3.logits``).
 
-def load_krea2_encoder(path, device):
+        ``visual_embeds``: (n_pad, 2560) rows in stream order; the
+        DeepStack list has one (n_pad, 2560) entry per injection layer.
+        ``position_ids``: (3, seq) MRoPE ids (None = plain 1D positions).
+        Returns the (1, vocab) logits of the last position.
+        """
+        x = F.embedding(input_ids, self.embed_tokens.weight.to(COMPUTE_DTYPE))
+        vis_mask = input_ids == IMAGE_PAD_ID
+        x = x.clone()
+        x[vis_mask] = visual_embeds.to(x.dtype)
+        cos, sin = self._rope(x.shape[1], x.device, COMPUTE_DTYPE,
+                              position_ids)
+        for i, layer in enumerate(self.layers):
+            x = layer(x, cos, sin)
+            if i < len(deepstack_embeds):
+                ds = deepstack_embeds[i].to(x.dtype)
+                x = x.clone()
+                x[vis_mask] = x[vis_mask] + ds
+        x = self.norm(x)
+        h = x[:, -1].to(COMPUTE_DTYPE)
+        return h @ self.embed_tokens.weight.to(COMPUTE_DTYPE).T
+
+
+def load_krea2_encoder(path, device, load_norm=False):
     """Load ``qwen_3vl_4b.safetensors`` (plain fp8 projections, bf16
     embedding/norms) into a :class:`Krea2Qwen3VLModel` on ``device``.
 
-    The ``model.visual.*`` keys (the unused vision tower) and
-    ``model.norm.weight`` (the final norm -- the taps are raw layer
-    outputs, no final norm) are skipped.
+    The ``model.visual.*`` keys (the vision tower -- a separate module,
+    see :mod:`imagagen.encoders.qwen3vl_vision`) are always skipped.
+    ``model.norm.weight`` (the final norm) is skipped by default: the
+    12-tap conditioning uses raw layer outputs. ``load_norm=True``
+    loads it for the reference-captioning path (the tied-lm_head logits
+    run through it).
     """
     import safetensors.torch as st
 
@@ -209,9 +274,9 @@ def load_krea2_encoder(path, device):
     used = set()
     for key, t in file.items():
         if key.startswith("model.visual."):
-            continue  # the vision tower: unused for image conditioning
+            continue  # the vision tower: a separate module
         k = key[len("model."):] if key.startswith("model.") else key
-        if k == "norm.weight":
+        if k == "norm.weight" and not load_norm:
             continue  # final norm: unused (raw tap outputs, no final norm)
         if k not in params:
             raise ValueError(f"unexpected Krea 2 encoder key: {key!r}")

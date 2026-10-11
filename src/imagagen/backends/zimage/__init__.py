@@ -54,6 +54,7 @@ from ... import kdiff
 from ...encoders.qwen3 import load_zit_encoder, zimage_prompt_template
 from ...flux_lora import FluxLoraSpec, merge_module_deltas
 from ...gguf_ops import QuantLinear, quant_linear_scope
+from ...reference import apply_reference, caption_reference
 from ...soft_inpaint import adaptive_change_alpha, latent_blend
 from .. import (
     _PARAM_INIT_LOCK,
@@ -630,7 +631,27 @@ class ZImageBackend(ModelBackend):
 
         # --- text encode --- deterministic per prompt: identical prompts
         # reuse the cached encoding (no encoder run, no transformer swap)
-        context = self._get_context(request.prompt, progress)
+        # Reference image (phase 1): the VLM caption rides on the positive
+        # prompt BEFORE encoding (the encoding cache keys on the full
+        # text). The captioner towers do not fit next to the resident
+        # transformer: it is swapped to the CPU for the caption (the same
+        # encode-swap the text encoder triggers).
+        prompt = request.prompt
+        reference_caption = None
+        if request.reference_image is not None:
+            def _ref_park():
+                self.transformer.to("cpu")
+                torch.cuda.empty_cache()
+
+            def _ref_restore():
+                self.transformer.to(self.device)
+                torch.cuda.empty_cache()
+
+            reference_caption = caption_reference(
+                request.reference_image, device, self.config,
+                park=_ref_park, restore=_ref_restore, progress=progress)
+            prompt = apply_reference(prompt, reference_caption)
+        context = self._get_context(prompt, progress)
 
         # --- sigma schedule + noise ---
         sigmas = kdiff.get_sigmas_zimage(steps, device)
@@ -789,6 +810,7 @@ class ZImageBackend(ModelBackend):
         return GenerateResult(
             image=arr, seed=request.seed,
             steps=steps,
+            reference_caption=reference_caption,
             # the single-pass model has no CFG: the effective value is 1.0
             cfg=DEFAULT_CFG)
 
