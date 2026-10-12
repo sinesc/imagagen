@@ -126,6 +126,25 @@ def test_parse_caption_sections_structure():
     assert secs[2][1] == "In summary, a mock summary."
 
 
+def test_parse_caption_sections_plain_headings():
+    # the model sometimes omits the ** markers (macro-flower caption):
+    # bare "Title:" paragraphs must still parse into sections
+    cap = ("This is a macro photograph.\n\nSubject:\nThe flower itself.\n\n"
+           "Colors:\nWhite and yellow.\n\nIn summary, a nice photo.")
+    secs = parse_caption_sections(cap)
+    assert [t for t, _ in secs] == ["Overview", "Subject", "Colors",
+                                    "Summary"]
+    assert secs[1][1] == "The flower itself."
+    # ordinary sentences that merely contain a colon are NOT headings
+    cap = ("A portrait: of a woman\n\nThe central subject is calm.\n\n"
+           "In summary, this is a portrait: yes")
+    assert parse_caption_sections(cap) == [("Overview", cap)]
+    # inline plain heading ("Title: body" in one paragraph)
+    secs = parse_caption_sections("intro\n\nSubject: a fox")
+    assert [t for t, _ in secs] == ["Overview", "Subject"]
+    assert secs[1][1] == "a fox"
+
+
 def test_parse_caption_sections_edge_cases():
     # no headings -> a single Overview section
     assert parse_caption_sections("just text") == [("Overview", "just text")]

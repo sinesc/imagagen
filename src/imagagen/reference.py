@@ -54,8 +54,14 @@ MAX_CAPTION_TOKENS = 1024
 #: the prompt sentence a caption is folded into
 _CAPTION_PREFIX = "Referencing an image: "
 
-#: a ``**Title:**`` section heading (optional inline body text)
-_SECTION_HEADING = re.compile(r"^\*\*(.+?):\*\*\s*(.*)$", re.S)
+#: a section heading: ``**Title:**`` (optional inline body) or the
+#: plain-text variant the model sometimes emits (``Title:`` / ``Title:
+#: body``) -- title-case words, at most three, so ordinary sentences
+#: ("In summary, ...", "The central subject is ...") never match
+_SECTION_HEADING = re.compile(
+    r"^\*\*(.+?):\*\*\s*(.*)$"
+    r"|^(?!\*\*)([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,2}):\s*(.*)$",
+    re.S)
 
 
 def parse_caption_sections(caption: str) -> list[tuple[str, str]]:
@@ -71,8 +77,11 @@ def parse_caption_sections(caption: str) -> list[tuple[str, str]]:
     for p in paras:
         m = _SECTION_HEADING.match(p)
         if m:
-            body = [m.group(2).strip()] if m.group(2).strip() else []
-            sections.append((m.group(1).strip(), body))
+            bold = m.group(1) is not None
+            title = (m.group(1) if bold else m.group(3)).strip()
+            rest = (m.group(2) if bold else m.group(4)).strip()
+            body = [rest] if rest else []
+            sections.append((title, body))
         elif sections:
             sections[-1][1].append(p)
         else:

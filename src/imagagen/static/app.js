@@ -825,8 +825,12 @@ function parseCaptionSections(caption) {
   const paras = (caption || "").split(/\n\n+/)
     .map((s) => s.trim()).filter(Boolean);
   const raw = [];
+  const BOLD = /^\*\*(.+?):\*\*\s*([\s\S]*)$/;
+  // plain-text heading variant (mirror of the Python parser): title-case
+  // words (at most three) + colon, so ordinary sentences never match
+  const PLAIN = /^(?!\*\*)([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,2}):\s*([\s\S]*)$/;
   for (const p of paras) {
-    const m = p.match(/^\*\*(.+?):\*\*\s*([\s\S]*)$/);
+    const m = p.match(BOLD) || p.match(PLAIN);
     if (m) raw.push({ title: m[1].trim(), paras: m[2].trim() ? [m[2].trim()] : [] });
     else if (raw.length) raw[raw.length - 1].paras.push(p);
     else raw.push({ title: null, paras: [p] });
@@ -864,7 +868,7 @@ function renderRefSections() {
   const root = $("ref-sections");
   root.textContent = "";
   if (refDotsTimer) { clearInterval(refDotsTimer); refDotsTimer = null; }
-  if (state.referenceImageId && !state.referenceCaption) {
+  if (state.referenceImageId && state.referenceCaption === null) {
     const dots = el("span", {}, ".");
     root.appendChild(el("span", { class: "ref-processing" },
                         "Processing", dots));
@@ -876,20 +880,25 @@ function renderRefSections() {
   }
   const secs = state.referenceImageId && state.referenceCaption
     ? parseCaptionSections(state.referenceCaption) : [];
-  if (secs.length <= 1) {
+  // fallback: a caption the parser found no sections in gets a single
+  // "Reference" tag toggling the whole description (enabled = null =
+  // all sections; off = [] = apply nothing)
+  const tags = secs.length === 1
+    ? [{ title: "Reference", text: secs[0].text }] : secs;
+  if (tags.length <= 0) {
     root.classList.add("hidden");
     return;
   }
   root.classList.remove("hidden");
   const enabled = (t) => !Array.isArray(state.referenceSections)
     || state.referenceSections.includes(t);
-  for (const s of secs) {
+  for (const s of tags) {
     root.appendChild(el("button", {
       type: "button",
       class: `ref-tag mini${enabled(s.title) ? " active" : ""}`,
       title: `include the "${s.title}" caption section in the prompt`,
       onclick: () => {
-        const titles = secs.map((x) => x.title);
+        const titles = tags.map((x) => x.title);
         const next = new Set(titles.filter(enabled));
         if (next.has(s.title)) next.delete(s.title);
         else next.add(s.title);
