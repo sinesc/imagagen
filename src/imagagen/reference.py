@@ -33,8 +33,7 @@ import threading
 import numpy as np
 import torch
 
-from .backends import (PHASE_REFERENCE, PHASE_REFERENCE_DONE,
-                       PHASE_REFERENCE_LOADING, report_phase)
+from .backends import PHASE_REFERENCE, PHASE_REFERENCE_DONE, PHASE_REFERENCE_LOADING, report_phase
 from .encoders.caption_prompt import CAPTION_PARTS
 from .encoders.krea2 import (
     _END_OF_TEXT,
