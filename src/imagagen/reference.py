@@ -252,13 +252,14 @@ def caption_reference(
     cache = _cache_load(cache_path)
     if key in cache:
         return cache[key]
-    report_phase(progress, PHASE_REFERENCE)
     with _LOCK:
         if _towers is None:
-            # first caption of the process: the tower load takes ~20 s
+            # first caption of the process: the tower load takes ~20 s;
+            # report it BEFORE "describing" so the status line shows the
+            # load, then the captioning -- not describing-while-loading
             report_phase(progress, PHASE_REFERENCE_LOADING)
-            report_phase(progress, PHASE_REFERENCE)
         st = _get_towers(config)
+        report_phase(progress, PHASE_REFERENCE)
         if text_tower is not None:
             tower, tok = text_tower, tokenizer
             tower_was_cpu = next(tower.parameters()).device.type != "cuda"
