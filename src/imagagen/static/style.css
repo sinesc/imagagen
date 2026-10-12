@@ -333,6 +333,13 @@ button.mini.icon {
 #ref-sections { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 /* the ID rule above out-specifies a plain .hidden, so hide explicitly */
 #ref-sections.hidden { display: none; }
+/* animated placeholder while the reference caption preview is pending */
+#ref-sections .ref-processing {
+  color: #777;
+  align-self: center;
+  padding: 0 0.25rem;
+  font-size: 0.75rem;
+}
 #ref-sections .ref-tag.active {
   background: #1a5fb4;
   border-color: #1a5fb4;

@@ -856,10 +856,24 @@ function parseCaptionSections(caption) {
 // The caption-section tag row under the negative prompt: one toggle per
 // section of the checked reference's caption preview, all enabled by
 // default (state.referenceSections null = all). Hidden when no
-// reference is checked or the caption has <= 1 section.
+// reference is checked or the caption has <= 1 section. While the
+// preview is still pending, an animated "Processing..." placeholder
+// spins (the dots cycle every 500 ms).
+let refDotsTimer = null;
 function renderRefSections() {
   const root = $("ref-sections");
   root.textContent = "";
+  if (refDotsTimer) { clearInterval(refDotsTimer); refDotsTimer = null; }
+  if (state.referenceImageId && !state.referenceCaption) {
+    const dots = el("span", {}, ".");
+    root.appendChild(el("span", { class: "ref-processing" },
+                        "Processing", dots));
+    root.classList.remove("hidden");
+    refDotsTimer = setInterval(() => {
+      dots.textContent = ".".repeat(dots.textContent.length % 3 + 1);
+    }, 500);
+    return;
+  }
   const secs = state.referenceImageId && state.referenceCaption
     ? parseCaptionSections(state.referenceCaption) : [];
   if (secs.length <= 1) {
@@ -901,8 +915,13 @@ async function fetchReferencePreview() {
       renderRefSections();
     }
   } catch (e) {
-    if (state.referenceImageId === id)
+    if (state.referenceImageId === id) {
+      // empty (not null) marks the preview as finished-failed so the
+      // tag row stops spinning instead of showing the placeholder
+      state.referenceCaption = "";
+      renderRefSections();
       setStatus(`reference caption preview failed: ${e.message}`, true);
+    }
   }
 }
 

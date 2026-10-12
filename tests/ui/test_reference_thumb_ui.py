@@ -112,6 +112,43 @@ def test_generate_payload_carries_the_reference_id(page, server):
     page.wait_for_function("!state.generating", timeout=15000)
 
 
+def test_section_processing_spinner(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _generate(page, base)
+
+    # drive the placeholder directly (the mock preview resolves too fast
+    # to catch through the real check flow): a checked reference with no
+    # caption yet renders the animated placeholder
+    page.evaluate("state.referenceImageId = 'x:1';"
+                  "state.referenceCaption = null; renderRefSections();")
+    txt = page.evaluate("document.querySelector('#ref-sections .ref-processing')"
+                        ".textContent")
+    assert txt.startswith("Processing")
+    # the dots cycle "." -> ".." -> "..." every 500 ms
+    seen = set()
+    for _ in range(8):
+        seen.add(page.evaluate(
+            "document.querySelector('#ref-sections .ref-processing').textContent"))
+        page.wait_for_timeout(200)
+    assert seen == {"Processing.", "Processing..", "Processing..."}
+
+    # resolving the caption replaces the placeholder with the tags and
+    # stops the timer
+    page.evaluate("state.referenceCaption = 'intro\\n\\n**Subject:** b';"
+                  "renderRefSections();")
+    assert page.evaluate(
+        "document.querySelectorAll('#ref-sections .ref-tag').length") == 2
+    assert page.evaluate(
+        "document.querySelectorAll('#ref-sections .ref-processing').length") == 0
+
+    # clearing the reference hides the row
+    page.evaluate("state.referenceImageId = null; renderRefSections();")
+    assert page.evaluate("getComputedStyle("
+                         "document.getElementById('ref-sections')).display") == "none"
+
+
 def test_section_tags_row(page, server):
     base, _ = server
     _open(page, base)
