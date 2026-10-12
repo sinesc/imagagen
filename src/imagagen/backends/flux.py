@@ -718,11 +718,13 @@ class FluxBackend(ModelBackend):
 
         # --- img2img / inpainting (A1111/Forge convention, see sdxl_backend)
         # ---
-        # With an init image: start from the init latent instead of pure
-        # noise, truncate the sigma schedule at the denoising strength, and
-        # (with an init mask) lock the protected region (mask 0) to the init
-        # content at every step. init_mask marks the *inpaint* region, so
-        # protected = 1 - mask.
+        # With an init image: start from the init latent blended with noise
+        # at the full-schedule start sigma, and (with an init mask) lock the
+        # protected region (mask 0) to the init content at every step.
+        # init_mask marks the *inpaint* region, so protected = 1 - mask. The
+        # denoise value controls only the noise amplitude; the sigma
+        # schedule is never truncated, so every request runs the full
+        # configured step count.
         init_latent = None
         mask_t = None
         nmask = None  # (16, lh, lw): the inpaint region (1), for soft inpaint
@@ -732,12 +734,9 @@ class FluxBackend(ModelBackend):
         sigma_sched = sigmas
         if request.init_image is not None:
             init_latent = self._encode_init(request.init_image, device, (w, h))
-            # A1111: t_enc = int(min(strength, 0.999) * steps); the schedule
-            # starts at sigmas[steps - 1 - t_enc] (strength 1.0 -> full)
-            t_enc = int(min(request.denoise, 0.999) * steps)
-            sigma_sched = sigmas[steps - 1 - t_enc :]
-            # flow-matching state at the truncated start sigma: the valid
-            # state at noise level sigma is sigma*noise + (1-sigma)*latent
+            # flow-matching state at the start sigma (full schedule, no
+            # strength-based truncation): the valid state at noise level
+            # sigma is sigma*noise + (1-sigma)*latent
             # (Forge's PredictionFlux 'const' noise_scaling). The SDXL-style
             # `latent + sigma*noise` is NOT a valid flow state: the model
             # reads it as a properly noised init image amplified by

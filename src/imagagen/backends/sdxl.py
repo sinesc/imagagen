@@ -27,8 +27,9 @@ SDXL specifics (matching the k-diffusion / A1111 contract):
   wrap returns x0 = x - sigma * eps (the exact inverse of diffusers' Euler)
 - txt2img initial noise is randn * sigma_max (the solver state x is the
   noisy sample, not the unit-variance prior); img2img/inpaint instead start
-  from the init latent plus the noise at the truncated start sigma
-  (Forge's noise_scaling, max_denoise=False)
+  from the init latent plus the noise at the start sigma of the FULL
+  schedule (the denoise value scales only the noise amplitude, never the
+  step count; Forge's noise_scaling, max_denoise=False)
 - sampling runs in the VAE-scaled latent space; divide by
   vae.config.scaling_factor (0.13025 for SDXL) before decode
 - prompts are encoded Forge/A1111-style: split into 75-token windows (77
@@ -1094,12 +1095,14 @@ class SdxlBackend(ModelBackend):
             noise = torch.randn((1, 4, lh, lw), device=device, dtype=torch.float32,
                                 generator=gen)
 
-            # --- img2img / inpainting (A1111/Forge kdiff convention) ---
-            # With an init image: start from the init latent instead of pure
-            # noise, truncate the sigma schedule at the denoising strength,
-            # and (with an init mask) lock the protected region (mask 0) to
-            # the init content at every step. init_mask marks the *inpaint*
-            # region, so protected = 1 - mask.
+            # --- img2img / inpainting (Forge kdiff convention) ---
+            # With an init image: start from the init latent blended with
+            # noise at the FULL-schedule start sigma, and (with an init
+            # mask) lock the protected region (mask 0) to the init content
+            # at every step. init_mask marks the *inpaint* region, so
+            # protected = 1 - mask. The denoise value controls only the
+            # noise amplitude; the sigma schedule is never truncated, so
+            # every request runs the full configured step count.
             init_latent = None
             mask_t = None
             nmask4 = None  # (4, lh, lw): the inpaint region (1) as seen by
@@ -1110,19 +1113,11 @@ class SdxlBackend(ModelBackend):
             sigma_sched = sigmas
             if request.init_image is not None:
                 init_latent = self._encode_init(pipe, request.init_image, device)
-                # A1111: t_enc = int(min(strength, 0.999) * steps); the
-                # schedule starts at sigmas[steps - 1 - t_enc] (strength 1.0
-                # -> the full schedule)
-                t_enc = int(min(request.denoise, 0.999) * steps)
-                sigma_sched = sigmas[steps - 1 - t_enc :]
-                # Forge's noise_scaling at the truncated start sigma
-                # (max_denoise=False): init latent + fresh noise at that
-                # sigma level. The noise amplitude IS the denoise strength
-                # (denoise 0.55, 12 steps -> sigma0 0.88 -> the model sees
-                # ~0.75*init + ~0.66*noise in the region at step 1); the
-                # state must not be "almost clean init" there or the
-                # effective strength collapses to ~0 and the region comes
-                # out as a smoothed version of the init image
+                # Forge's noise_scaling (max_denoise=False) at the start
+                # sigma: init latent + fresh noise at that sigma level. The
+                # noise amplitude IS the denoise strength; the schedule is
+                # the full configured one (no strength-based truncation),
+                # so the step count always matches the UI setting.
                 noise = init_latent + noise * sigma_sched[0]
                 if request.init_mask is not None:
                     # (1,1,H,W) -> bilinear to the latent grid; this shape
@@ -1146,7 +1141,7 @@ class SdxlBackend(ModelBackend):
             # step and the pure-ODE samplers collapse to a flat image (regression
             # from 719d341, which dropped this scaling when adding img2img). The
             # img2img/inpaint path already produced a noise-scaled state (blended at
-            # the truncated start sigma), so it is left untouched.
+            # the start sigma), so it is left untouched.
             if request.init_image is None:
                 noise = noise * model_wrap.max_sigma
             # the seed is threaded into the sampler so SDE/ancestral samplers
