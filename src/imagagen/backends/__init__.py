@@ -185,6 +185,11 @@ PHASE_ENCODING = "phase:encoding"
 PHASE_DENOISING = "phase:denoising"
 #: the reference-image captioning runs (VLM describing the reference)
 PHASE_REFERENCE = "phase:reference"
+#: the captioner's towers are built for the first time (multi-second
+#: safetensors load; reported only then -- a warm captioner is silent)
+PHASE_REFERENCE_LOADING = "phase:reference_loading"
+#: the caption is complete (marks the end of the preview/caption span)
+PHASE_REFERENCE_DONE = "phase:reference_done"
 
 #: MockBackend's caption: carries the section structure real VLM
 #: captions have (unlabeled preamble, **Title:** block, trailing

@@ -33,7 +33,8 @@ import threading
 import numpy as np
 import torch
 
-from .backends import PHASE_REFERENCE, report_phase
+from .backends import (PHASE_REFERENCE, PHASE_REFERENCE_DONE,
+                       PHASE_REFERENCE_LOADING, report_phase)
 from .encoders.caption_prompt import CAPTION_PARTS
 from .encoders.krea2 import (
     _END_OF_TEXT,
@@ -254,6 +255,10 @@ def caption_reference(
         return cache[key]
     report_phase(progress, PHASE_REFERENCE)
     with _LOCK:
+        if _towers is None:
+            # first caption of the process: the tower load takes ~20 s
+            report_phase(progress, PHASE_REFERENCE_LOADING)
+            report_phase(progress, PHASE_REFERENCE)
         st = _get_towers(config)
         if text_tower is not None:
             tower, tok = text_tower, tokenizer
@@ -283,6 +288,7 @@ def caption_reference(
                 if restore is not None:
                     restore()
     cache[key] = caption
+    report_phase(progress, PHASE_REFERENCE_DONE)
     _cache_save(cache_path, cache)
     return caption
 

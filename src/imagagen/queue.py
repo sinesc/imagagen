@@ -39,6 +39,8 @@ from .backends import (
     PHASE_DENOISING,
     PHASE_ENCODING,
     PHASE_REFERENCE,
+    PHASE_REFERENCE_DONE,
+    PHASE_REFERENCE_LOADING,
     GenerateRequest,
     ModelBackend,
     format_loras,
@@ -484,7 +486,8 @@ class GenerationQueue:
         def progress(fraction: float, message: str) -> None:
             if job.interrupted:
                 return
-            if message in (PHASE_ENCODING, PHASE_DENOISING, PHASE_REFERENCE):
+            if message in (PHASE_ENCODING, PHASE_DENOISING, PHASE_REFERENCE,
+                           PHASE_REFERENCE_LOADING, PHASE_REFERENCE_DONE):
                 # A generation-phase marker, not step progress: it carries no
                 # fraction (the bar keeps its value), so it goes out as a
                 # "phase" event with the user-facing text -- "Encoding prompt"
@@ -495,6 +498,10 @@ class GenerationQueue:
                     text = "Encoding prompt"
                 elif message == PHASE_REFERENCE:
                     text = "Describing reference image"
+                elif message == PHASE_REFERENCE_LOADING:
+                    text = "Loading captioning model"
+                elif message == PHASE_REFERENCE_DONE:
+                    text = "Reference caption ready"
                 else:
                     text = f"{_mode_word(job.plan)} @ {req.width}x{req.height}"
                 self.emit({"type": "phase", "job": job.id,

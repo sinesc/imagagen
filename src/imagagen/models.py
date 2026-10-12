@@ -462,7 +462,7 @@ class ModelRegistry:
                 state, model_id, loras=getattr(request, "loras", None))
             return backend.generate(request, progress), backend
 
-    def caption(self, image, gpu: int | None = None) -> str:
+    def caption(self, image, gpu: int | None = None, progress=None) -> str:
         """Describe ``image`` (HxWx3 uint8) with the reference VLM.
 
         Runs under the per-GPU lock (never races a generation on that
@@ -470,6 +470,8 @@ class ModelRegistry:
         (~5.3 GB) fit on the card. The result is served by
         ``POST /api/reference/caption`` and shared with generation-time
         captioning through the sha1 cache (see imagagen.reference).
+        ``progress`` receives the captioning phase messages (tower
+        load / describing / done).
         """
         from .reference import caption_reference
 
@@ -481,7 +483,8 @@ class ModelRegistry:
         with state.lock:
             if state.backend is not None:
                 self._park_state_locked(state)
-            return caption_reference(image, f"cuda:{gpu}", self.config)
+            return caption_reference(image, f"cuda:{gpu}", self.config,
+                                     progress=progress)
 
     def cancel(self, gpu: int | None = None) -> None:
         """Cancel in-flight generation on one GPU (or all loaded GPUs).

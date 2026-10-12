@@ -18,7 +18,8 @@ from PIL import Image
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from . import metadata, wildcards
-from .backends import GenerateRequest, ModelBackend
+from .backends import (PHASE_REFERENCE, PHASE_REFERENCE_DONE,
+                       PHASE_REFERENCE_LOADING, GenerateRequest, ModelBackend)
 from .canvas import Canvas, _decode_mask, _decode_png
 from .config import Config, ensure_dirs, load_config
 from .generation import INPAINT_PADDING, GenerationError, with_inpaint
@@ -153,10 +154,14 @@ class _MockRegistry:
     def cancel(self, gpu: int | None = None) -> None:
         self._backend.cancel()
 
-    def caption(self, image, gpu: int | None = None) -> str:
+    def caption(self, image, gpu: int | None = None, progress=None) -> str:
         # mock stand-in for ModelRegistry.caption (no VLM in mock mode);
-        # carries the section structure real captions have
-        from .backends import MOCK_REFERENCE_CAPTION
+        # carries the section structure real captions have and reports
+        # the phase messages the real captioner emits
+        from .backends import MOCK_REFERENCE_CAPTION, report_phase
+        report_phase(progress, PHASE_REFERENCE_LOADING)
+        report_phase(progress, PHASE_REFERENCE)
+        report_phase(progress, PHASE_REFERENCE_DONE)
         return MOCK_REFERENCE_CAPTION
 
 
@@ -1065,7 +1070,16 @@ def create_app(
                 {"error": "reference image is no longer available"},
                 status_code=400)
         try:
-            caption = registry.caption(_decode_png(png))
+            def _preview_progress(_frac, message):
+                text = {
+                    PHASE_REFERENCE_LOADING: "Loading captioning model",
+                    PHASE_REFERENCE: "Describing reference image",
+                    PHASE_REFERENCE_DONE: "Reference caption ready",
+                }.get(message)
+                if text:
+                    hub.emit({"type": "phase", "message": text})
+            caption = registry.caption(_decode_png(png),
+                                       progress=_preview_progress)
         except Exception as e:
             log.exception("reference caption failed")
             return JSONResponse({"error": str(e)}, status_code=500)

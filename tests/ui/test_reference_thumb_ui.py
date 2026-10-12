@@ -118,6 +118,14 @@ def test_section_processing_spinner(page, server):
     _show(page, base)
     _generate(page, base)
 
+    # checking a reference streams the captioner's phase messages to the
+    # status line (the mock emits loading/describing/done back to back,
+    # so the last one is what remains on the line)
+    page.click("#thumbs .thumb-ref >> nth=1")
+    assert wait_until(lambda: page.evaluate(
+        "document.getElementById('status-line').textContent")
+        == "Reference caption ready")
+
     # drive the placeholder directly (the mock preview resolves too fast
     # to catch through the real check flow): a checked reference with no
     # caption yet renders the animated placeholder
