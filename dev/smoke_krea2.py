@@ -9,7 +9,7 @@ Covers the Tier-2 checklist for the new family:
    e - x0 (high cosine), not with -(e - x0) or with x0 itself.
 2. txt2img: same seed -> identical image, different seed -> different;
    HxWx3 uint8; progress reaches 1.0. The "model default" sentinels
-   (steps/cfg -1) resolve to the raw class built-ins (28 steps, cfg 5.5),
+   (steps/cfg -1) resolve to the raw class built-ins (12 steps, cfg 1.5),
    and the turbo request flag resolves to (8 steps, cfg 1.0, pinned mu).
 3. LoRA: weight 0 == baseline (bit-exact), high weight shifts the image,
    switching back to the baseline set leaves no residue.
@@ -127,10 +127,10 @@ assert c_v > 0.5, (
     f"x0 = x - sigma*out in model_fn is wrong")
 
 # ---------------------------------------------------------------- 2. ---
-print("\n[2] txt2img 512x512, model-default sentinels (raw: 28 steps, "
-      "cfg 5.5)", flush=True)
+print("\n[2] txt2img 512x512, model-default sentinels (raw: 12 steps, "
+      "cfg 1.5)", flush=True)
 img_a, r_a = gen(seed=42)
-assert r_a.steps == 28 and abs(r_a.cfg - 5.5) < 1e-6, \
+assert r_a.steps == 12 and abs(r_a.cfg - 1.5) < 1e-6, \
     f"raw defaults wrong: steps={r_a.steps} cfg={r_a.cfg}"
 assert r_a.turbo is False
 assert _last_progress[0] == 1.0, "progress must reach 1.0"
@@ -140,7 +140,7 @@ dt = time.time() - t0
 img_c, _ = gen(seed=43)
 assert diff(img_a, img_b) == 0.0, "same seed must be identical"
 assert diff(img_a, img_c) > 1.0, "different seed must differ"
-print(f"  ({dt / 28:.2f}s/step at the default 28 steps)", flush=True)
+print(f"  ({dt / 12:.2f}s/step at the default 12 steps)", flush=True)
 Image.fromarray(img_a).save("/tmp/krea2_smoke_t2i.png")
 
 # the turbo request class: 8 steps, cfg 1.0 (single pass, no negative)
@@ -201,7 +201,7 @@ assert protected < inpaint_side, "the protected side must change less"
 # ---------------------------------------------------------------- 6. ---
 print("\n[6] cancellation", flush=True)
 req = GenerateRequest(prompt=PROMPT_B, seed=80, width=512, height=512,
-                      steps=28, cfg=5.5)
+                      steps=12, cfg=1.5)
 import threading  # noqa: E402
 
 

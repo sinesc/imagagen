@@ -27,9 +27,10 @@ SDXL specifics (matching the k-diffusion / A1111 contract):
   wrap returns x0 = x - sigma * eps (the exact inverse of diffusers' Euler)
 - txt2img initial noise is randn * sigma_max (the solver state x is the
   noisy sample, not the unit-variance prior); img2img/inpaint instead start
-  from the init latent plus the noise at the start sigma of the FULL
-  schedule (the denoise value scales only the noise amplitude, never the
-  step count; Forge's noise_scaling, max_denoise=False)
+  from the init latent plus the noise at the img2img start sigma
+  (Forge's noise_scaling, max_denoise=False); the schedule is Forge's
+  img2img_fix_steps one, so the denoise value sets the start sigma (the
+  strength of the change) without changing the step count
 - sampling runs in the VAE-scaled latent space; divide by
   vae.config.scaling_factor (0.13025 for SDXL) before decode
 - prompts are encoded Forge/A1111-style: split into 75-token windows (77
@@ -1083,8 +1084,18 @@ class SdxlBackend(ModelBackend):
                 sigma_min = float(beta_sigmas[0])
                 sigma_max = float(beta_sigmas[-1])
             model_wrap = _ModelSamplingDiscrete(model_fn, sigma_min, sigma_max)
-            sigmas = sigmas_fn(
-                steps, model_wrap.min_sigma, model_wrap.max_sigma, device=device
+
+            def _make_sigmas(n: int) -> torch.Tensor:
+                return sigmas_fn(n, model_wrap.min_sigma, model_wrap.max_sigma,
+                                 device=device)
+
+            # img2img/inpaint run Forge's img2img_fix_steps schedule: the
+            # start sigma follows the denoise strength (strength of the
+            # change) while the step count stays exactly the configured one
+            sigmas = (
+                kdiff.fix_steps_sigmas(_make_sigmas, steps, request.denoise)
+                if request.init_image is not None
+                else _make_sigmas(steps)
             )
             # seeded initial noise: same seed -> same image (A1111-compatible).
             # fp32 unit prior: the solver state must not quantize (Forge's path
@@ -1097,12 +1108,14 @@ class SdxlBackend(ModelBackend):
 
             # --- img2img / inpainting (Forge kdiff convention) ---
             # With an init image: start from the init latent blended with
-            # noise at the FULL-schedule start sigma, and (with an init
-            # mask) lock the protected region (mask 0) to the init content
-            # at every step. init_mask marks the *inpaint* region, so
-            # protected = 1 - mask. The denoise value controls only the
-            # noise amplitude; the sigma schedule is never truncated, so
-            # every request runs the full configured step count.
+            # noise at the strength-appropriate start sigma, and (with an
+            # init mask) lock the protected region (mask 0) to the init
+            # content at every step. init_mask marks the *inpaint* region,
+            # so protected = 1 - mask. The denoise value sets the start
+            # sigma (strength of the change) and the schedule is built long
+            # enough to run the FULL configured step count at that strength
+            # (Forge's img2img_fix_steps), so low denoise on a low-step
+            # model no longer collapses to one or two steps.
             init_latent = None
             mask_t = None
             nmask4 = None  # (4, lh, lw): the inpaint region (1) as seen by
@@ -1115,9 +1128,12 @@ class SdxlBackend(ModelBackend):
                 init_latent = self._encode_init(pipe, request.init_image, device)
                 # Forge's noise_scaling (max_denoise=False) at the start
                 # sigma: init latent + fresh noise at that sigma level. The
-                # noise amplitude IS the denoise strength; the schedule is
-                # the full configured one (no strength-based truncation),
-                # so the step count always matches the UI setting.
+                # noise amplitude IS the denoise strength (via the strength
+                # start sigma of fix_steps_sigmas) and the step count is the
+                # full configured one, so the state must not be "almost
+                # clean init" at the start or the effective strength
+                # collapses to ~0 and the region comes out as a smoothed
+                # version of the init image
                 noise = init_latent + noise * sigma_sched[0]
                 if request.init_mask is not None:
                     # (1,1,H,W) -> bilinear to the latent grid; this shape

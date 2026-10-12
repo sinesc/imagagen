@@ -159,6 +159,15 @@ assert left < right, (f"protected side changed MORE than the inpaint side "
 #     sigma 0.74 of denoise 0.55/15 steps) and redraws it with a heavy tone
 #     shift and over-regeneration (pre-fix on this base: -18/255 brightness
 #     and 64% of full-strength diff at denoise 0.55)
+#
+#     Threshold note (img2img_fix_steps, 07bcdb2+): the schedule now starts
+#     at the SAME strength sigma as the old A1111 truncation but runs the
+#     FULL configured step count instead of denoise*steps. The finer
+#     integration from the same start sigma lands further along the same
+#     trajectory, so the 0.55 diff is now ~88% of the 0.75 diff (the old
+#     coarse 8-step run measured ~60%). The strength correlation itself is
+#     guarded by [3] (denoise 0.1 must stay far below [2]); this guard is
+#     about the tone/over-regeneration failure modes, hence the loose 0.95.
 print("\n[6a] tone preservation, denoise 0.55", flush=True)
 img6a = gen("a cat on a branch, forest", 45, 0.55)
 bri = img6a.astype(int).mean() - img0.astype(int).mean()
@@ -168,9 +177,9 @@ print(f"  brightness shift {bri:+.2f}/255, mean abs diff {d6a:.2f} "
 assert abs(bri) <= 10.0, (
     f"denoise 0.55 shifted the tone by {bri:+.1f}/255: the init state is "
     f"not the valid flow-matching state (sigma*noise + (1-sigma)*init)")
-assert d6a <= 0.75 * d2, (
+assert d6a <= 0.95 * d2, (
     f"denoise 0.55 regenerated {d6a / d2:.0%} of the denoise 0.75 diff: "
-    f"too strong for half the strength")
+    f"strength not correlated with denoise")
 
 # 6b. determinism: maskless img2img is seed-deterministic
 print("\n[6b] determinism: maskless img2img, same seed twice", flush=True)

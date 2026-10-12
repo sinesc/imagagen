@@ -710,7 +710,18 @@ class FluxBackend(ModelBackend):
             else DEFAULT_STEPS
         )
         steps = max(1, steps)
-        sigmas = kdiff.get_sigmas_flux(steps, image_seq_len, device, **_FLOW_SHIFT)
+
+        def _make_sigmas(n: int) -> torch.Tensor:
+            return kdiff.get_sigmas_flux(n, image_seq_len, device, **_FLOW_SHIFT)
+
+        # img2img/inpaint run Forge's img2img_fix_steps schedule: the start
+        # sigma follows the denoise strength (strength of the change) while
+        # the step count stays exactly the configured one
+        sigmas = (
+            kdiff.fix_steps_sigmas(_make_sigmas, steps, request.denoise)
+            if request.init_image is not None
+            else _make_sigmas(steps)
+        )
         gen = torch.Generator(device=device).manual_seed(request.resolved_seed())
         noise = torch.randn(
             (1, 16, lh, lw), device=device, dtype=torch.float32, generator=gen
@@ -719,12 +730,14 @@ class FluxBackend(ModelBackend):
         # --- img2img / inpainting (A1111/Forge convention, see sdxl_backend)
         # ---
         # With an init image: start from the init latent blended with noise
-        # at the full-schedule start sigma, and (with an init mask) lock the
-        # protected region (mask 0) to the init content at every step.
-        # init_mask marks the *inpaint* region, so protected = 1 - mask. The
-        # denoise value controls only the noise amplitude; the sigma
-        # schedule is never truncated, so every request runs the full
-        # configured step count.
+        # at the strength-appropriate start sigma, and (with an init mask)
+        # lock the protected region (mask 0) to the init content at every
+        # step. init_mask marks the *inpaint* region, so protected = 1 -
+        # mask. The denoise value sets the start sigma (strength of the
+        # change) and the schedule is built long enough to run the FULL
+        # configured step count at that strength (Forge's
+        # img2img_fix_steps), so low denoise on a low-step model no longer
+        # collapses to one or two steps.
         init_latent = None
         mask_t = None
         nmask = None  # (16, lh, lw): the inpaint region (1), for soft inpaint
@@ -734,10 +747,9 @@ class FluxBackend(ModelBackend):
         sigma_sched = sigmas
         if request.init_image is not None:
             init_latent = self._encode_init(request.init_image, device, (w, h))
-            # flow-matching state at the start sigma (full schedule, no
-            # strength-based truncation): the valid state at noise level
-            # sigma is sigma*noise + (1-sigma)*latent
-            # (Forge's PredictionFlux 'const' noise_scaling). The SDXL-style
+            # flow-matching state at the strength start sigma (the valid
+            # state at noise level sigma is sigma*noise + (1-sigma)*latent;
+            # Forge's PredictionFlux 'const' noise_scaling). The SDXL-style
             # `latent + sigma*noise` is NOT a valid flow state: the model
             # reads it as a properly noised init image amplified by
             # 1/(1-sigma) (~5x at sigma 0.8) and denoises it into a bright,

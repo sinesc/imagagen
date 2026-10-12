@@ -33,6 +33,40 @@ def append_zero(x: torch.Tensor) -> torch.Tensor:
     return torch.cat([x, x.new_zeros([1])])
 
 
+#: Upper bound on the internal (discarded) high-noise head of the extended
+#: img2img schedule (see fix_steps_sigmas); guards against a pathological
+#: schedule length for a denoise value close to zero.
+_FIX_STEPS_MAX_SCHEDULE = 10_000
+
+
+def fix_steps_sigmas(make_sigmas, steps: int, denoise: float) -> torch.Tensor:
+    """Forge's img2img_fix_steps sigma schedule (img2img / inpainting).
+
+    A1111's default img2img truncates the schedule at the denoise strength,
+    so a low strength runs FEWER steps than configured. That is harmful for
+    the low step counts of the distilled models (a 4-step turbo model at
+    denoise 0.4 runs 1 step: black splotches, no detail).
+
+    Forge's fix keeps the strength AND the step count: build a longer
+    schedule of ``int(steps / denoise)`` steps, then drop its discarded
+    high-noise head. The start sigma is the strength-appropriate one (the
+    same noise level A1111's truncation starts at, so the change strength
+    still correlates with denoise) and exactly ``steps`` steps run.
+
+    ``make_sigmas(n)`` must return ``n + 1`` descending sigmas with a
+    terminal 0 (all get_sigmas_* in this module do).
+    """
+    d = min(max(float(denoise), 0.0), 0.999)
+    if d <= 0.0:
+        # No denoising requested: start at the lowest noise level of the
+        # longest schedule (the state is the init latent plus negligible
+        # noise), still running the configured step count.
+        full = _FIX_STEPS_MAX_SCHEDULE
+    else:
+        full = min(max(steps, int(steps / d)), _FIX_STEPS_MAX_SCHEDULE)
+    return make_sigmas(full)[max(full - steps, 0):]
+
+
 def get_sigmas_karras(n: int, sigma_min: float, sigma_max: float, rho: float = 7.0,
                       device: str = "cpu") -> torch.Tensor:
     """Noise schedule of Karras et al. (2022)."""
