@@ -551,3 +551,64 @@ def test_preset_groups_in_dropdown_and_dialog(page, server):
         ["item", "Outpaint A"],
         ["item", "Outpaint B"],
     ])
+
+
+# ---------------- PNG import restores the configuration ----------------
+
+
+def _seed_import_setup(root):
+    """Two configurations for the mock model (bare + DMD2@0.7) and the LoRA
+    files the import references (dummy contents: only listed, never loaded)."""
+    loras = root / "loras" / "sdxl"
+    loras.mkdir(parents=True, exist_ok=True)
+    for n in ("DMD2fp32XL1.0", "Extra"):
+        (loras / f"{n}.safetensors").write_bytes(b"")
+
+
+def _create_config(base, name, loras):
+    r = httpx.post(base + "/api/model-configs", timeout=10, json={
+        "name": name, "model": "mock/mock.safetensors",
+        "t2i": {"loras": loras}, "i2i": {"loras": loras}})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+def test_png_import_selects_the_matching_configuration(page, server):
+    """applyPngMeta selects meta.config_id (the server resolves it: exact
+    configuration name for imagagen PNGs, best checkpoint+LoRA match for
+    A1111/Forge PNGs) and drops the configuration's own LoRAs from the UI
+    list (they ride on the configuration, so applying them again would load
+    them twice)."""
+    base, root = server
+    _seed_import_setup(root)
+    # "A Mock (plain)" sorts first, so it is the initial selection
+    _create_config(base, "A Mock (plain)", [])
+    dmd = _create_config(base, "Mock (DMD)",
+                         [{"name": "DMD2fp32XL1.0", "weight": 0.7}])
+    _open(page, base)
+    assert page.evaluate("document.getElementById('model').value") == "a-mock-plain"
+    page.evaluate(
+        """async () => {
+            await applyPngMeta({
+              model: "mock.safetensors", config_id: "mock-dmd",
+              prompt: "a cat", loras: ["DMD2fp32XL1.0@0.7", "Extra@1"],
+            }, 64, 64);
+        }"""
+    )
+    assert page.evaluate("document.getElementById('model').value") == dmd
+    # the config's DMD2@0.7 is dropped (the configuration provides it),
+    # the extra UI LoRA stays
+    wait_until(lambda: page.eval_on_selector_all(
+        "#loras .lora-row", "els => els.map(e => e.querySelector('.lora-name').value)"
+    ) == ["Extra"])
+
+
+def test_png_import_without_config_id_keeps_the_model(page, server):
+    """No config_id (metadata without a model, server match failed): the
+    current configuration stays selected."""
+    base, root = server
+    _seed_import_setup(root)
+    plain = _create_config(base, "Mock (plain)", [])
+    _open(page, base)
+    page.evaluate("async () => { await applyPngMeta({prompt: 'a cat'}, 64, 64); }")
+    assert page.evaluate("document.getElementById('model').value") == plain

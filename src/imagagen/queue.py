@@ -102,6 +102,9 @@ class Job:
     # LoRAs the UI showed toggled off: not applied to the request, recorded
     # in the image metadata so an import restores them in the disabled state
     meta_disabled_loras: list[tuple[str, float]] | None = None
+    # NAME of the model configuration the job runs on: recorded in the image
+    # metadata so importing the PNG re-selects that configuration
+    meta_config_name: str | None = None
     # Wildcard-resolved (prompt, negative) per task index: the per-seed
     # picks are made at submit time (submit) so the batch's prompts can be
     # pre-encoded in ONE text-encoder session before any task runs. None =
@@ -223,6 +226,7 @@ class GenerationQueue:
         meta_negative: str | None = None,
         meta_styles: list[dict] | None = None,
         meta_disabled_loras: list[tuple[str, float]] | None = None,
+        meta_config_name: str | None = None,
     ) -> Job:
         import random
 
@@ -262,7 +266,8 @@ class GenerationQueue:
                   batch_size=batch_size, base_seed=base_seed, plan=plan,
                   meta_prompt=meta_prompt, meta_negative=meta_negative,
                   meta_styles=meta_styles,
-                  meta_disabled_loras=meta_disabled_loras, resolved=resolved)
+                  meta_disabled_loras=meta_disabled_loras,
+                  meta_config_name=meta_config_name, resolved=resolved)
         job.source_image_id = self.canvas.current_id()
         job.source_seed = self._source_seed(job.source_image_id)
         if job.source_image_id is not None:
@@ -805,6 +810,9 @@ def _result_to_png(
         rotation=p.rotation or None if p is not None else None,
         model_name=backend.name,
         model_hash=backend.model_hash,
+        # the configuration NAME (job.model_id is the checkpoint id): an
+        # import re-selects the configuration, not just the checkpoint
+        model_config=(job.meta_config_name if job is not None else None),
         loras=req.loras if backend.supports_loras else [],
         # recorded even though they were not applied to req.loras
         disabled_loras=(job.meta_disabled_loras if job is not None

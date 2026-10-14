@@ -35,6 +35,10 @@ _VERSION = "v0.2.0"
 # everything up to the last colon; the weight is the (signed) number after it.
 _LORA_RE = re.compile(r"<lora:(.+?):(-?\d+(?:\.\d+)?)>")
 
+# a metadata LoRA entry (the ``Lora:`` / ``Disabled LoRAs:`` / JSON ``loras``
+# shape): ``name@weight``
+_LORA_ENTRY_RE = re.compile(r"^(.*)@(-?\d+(?:\.\d+)?)$")
+
 # one entry of a Forge "Lora hashes" value: `name: <12-char hex>`
 _LORA_HASH_ENTRY_RE = re.compile(r"^(.*?):\s*([0-9a-fA-F]{12})$")
 
@@ -59,6 +63,16 @@ def _split_lora_hash_entries(text: str) -> list[tuple[str, str]]:
         if sep and re.fullmatch(r"[0-9a-fA-F]{12}", h):
             entries.append((name, h.lower()))
     return entries
+
+
+def parse_lora_entries(items) -> list[tuple[str, float]]:
+    """Parse metadata LoRA entries (``name@weight`` strings) into
+    ``(name, weight)`` pairs; a bare name without weight defaults to 1."""
+    out: list[tuple[str, float]] = []
+    for s in items or []:
+        m = _LORA_ENTRY_RE.match(str(s))
+        out.append((m.group(1), float(m.group(2))) if m else (str(s), 1.0))
+    return out
 
 
 def extract_prompt_loras(prompt: str) -> tuple[list[tuple[str, float]], str]:
@@ -87,6 +101,7 @@ def build_parameters(
     height: int,
     model_name: str,
     model_hash: str,
+    model_config: str | None = None,
     denoise: float | None = None,
     rotation: int | None = None,
     loras: list[tuple[str, float]] | None = None,
@@ -110,6 +125,11 @@ def build_parameters(
       multi-line negative prompt at all).
     * ``loras`` / ``disabled_loras``: ``name@weight`` strings, like the
       legacy ``Lora:`` / ``Disabled LoRAs:`` entries.
+    * ``model_config``: the NAME of the model configuration the image was
+      generated with (imagagen-only: foreign images have none). Importing
+      selects that configuration again (falling back to best-match scoring
+      over the model + LoRAs when it is missing or its configuration was
+      deleted).
     * ``styles``: entries with "name", "prompt", "negative_prompt" and
       "enabled" -- the raw (unapplied) prompt is recorded, not the
       style-applied one, so re-import re-applies the styles exactly like a
@@ -146,6 +166,10 @@ def build_parameters(
         "model": model_name,
         "model_hash": model_hash,
     }
+    if model_config:
+        # the configuration name (not just the checkpoint): importing the
+        # image re-selects the exact configuration it was generated with
+        doc["model_config"] = model_config
     if denoise is not None:
         # A1111/Forge's inpaint strength: importing restores the slider
         doc["denoise"] = denoise

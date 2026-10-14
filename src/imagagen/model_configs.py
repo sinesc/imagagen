@@ -51,6 +51,7 @@ File layout (one JSON per configuration, filename = sanitized name):
 from __future__ import annotations
 
 import json
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -308,6 +309,81 @@ class ConfigStore:
 
 
 # ---------------------------------------------------------------- resolve --
+
+
+def _lora_keys(section: ModeConfig) -> set[tuple[str, float]]:
+    """A section's LoRAs as comparable (name, rounded weight) keys."""
+    return {(ref.name, round(ref.weight, 3)) for ref in section.loras}
+
+
+def _model_key(name: str) -> str:
+    """Normalize a checkpoint name for cross-format comparison.
+
+    imagagen writes the model id (a path under models/<family>/, no
+    extension); A1111/Forge write the checkpoint basename (extension
+    stripped, some versions append " [hash]"). Compare on the lowercased
+    basename without extension so all three shapes line up.
+    """
+    n = re.sub(r"\s*\[[0-9a-fA-F]{4,}]\s*$", "", name.strip())
+    n = n.rsplit("/", 1)[-1]
+    for suf in (".safetensors", ".ckpt", ".gguf"):
+        if n.lower().endswith(suf):
+            n = n[: -len(suf)]
+    return n.strip().lower()
+
+
+def match_entry(
+    entries: list[ConfigEntry],
+    model: str | None = None,
+    loras: list[tuple[str, float]] | None = None,
+    config_name: str | None = None,
+) -> ConfigEntry | None:
+    """The configuration an imported image was generated with.
+
+    ``config_name`` (the PNG's ``model_config`` key, imagagen images only)
+    is an exact hit and wins outright; a name whose configuration was
+    deleted falls through to scoring.
+
+    Scoring (A1111/Forge images, which record no configuration): the
+    candidates are the configurations of the image's checkpoint (compared
+    via :func:`_model_key`), ranked by how well their LoRA list matches the
+    image's LoRAs -- an exact set match (same names AND weights) beats a
+    partial one, so "checkpoint + DMD2@0.7" is picked over a configuration
+    that only matches the checkpoint. Ties prefer file configurations over
+    the in-memory default (a user configuration carries the user's own
+    defaults for that checkpoint).
+
+    Returns None when no configuration covers the checkpoint.
+    """
+    if config_name:
+        want = config_name.strip().lower()
+        for e in entries:
+            if e.name.strip().lower() == want:
+                return e
+        want_id = entry_id(config_name)
+        for e in entries:
+            if e.id == want_id:
+                return e
+    if not model:
+        return None
+    key = _model_key(model)
+    want = {(n, round(w, 3)) for n, w in (loras or [])}
+    best: ConfigEntry | None = None
+    best_key: tuple | None = None
+    for e in entries:
+        if _model_key(e.model_id) != key:
+            continue
+        have = _lora_keys(e.t2i) | _lora_keys(e.i2i)
+        rank = (
+            int(have == want),       # exact LoRA set match wins
+            len(want & have),        # then: most image LoRAs covered
+            -len(have - want),       # then: fewest extra config LoRAs
+            -len(want - have),       # then: fewest uncovered image LoRAs
+            int(not e.is_default),   # then: file config over the default
+        )
+        if best_key is None or rank > best_key:
+            best, best_key = e, rank
+    return best
 
 
 def mode_section(entry: ConfigEntry, mode: str) -> ModeConfig:

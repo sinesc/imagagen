@@ -16,6 +16,7 @@ from imagagen.model_configs import (
     ModeConfig,
     ModelConfig,
     entry_id,
+    match_entry,
     resolve_settings,
 )
 
@@ -327,3 +328,94 @@ def test_resolve_mode_selects_section():
 
 def test_entry_id_sanitizes():
     assert entry_id("My SDXL Model + DMD2 Lora") == "my-sdxl-model-dmd2-lora"
+
+
+# ---------------- import matching (PNG metadata -> configuration) ----------
+
+
+def _import_store(tmp_path):
+    """epicrealismXL11.0 with a bare-checkpoint config and a +DMD2@0.7 one,
+    plus an unconfigured model (in-memory default entry)."""
+    s = ConfigStore(Config(root=tmp_path), lambda: [
+        {"id": "sdxl/epicrealismXL11.0", "name": "epicrealismXL11.0"},
+        {"id": "sdxl/other", "name": "other"},
+    ])
+    s.save(ModelConfig(name="epicrealismXL11.0 (plain)", model="sdxl/epicrealismXL11.0"))
+    s.save(ModelConfig(
+        name="epicrealismXL11.0 (DMD)", model="sdxl/epicrealismXL11.0",
+        t2i=ModeConfig(loras=[LoraRef(name="DMD2fp32XL1.0", weight=0.7)]),
+        i2i=ModeConfig(loras=[LoraRef(name="DMD2fp32XL1.0", weight=0.7)])))
+    return s
+
+
+def test_match_prefers_the_lora_matching_configuration(tmp_path):
+    """A Forge image made with the checkpoint + DMD2@0.7 picks the config
+    that provides that LoRA, not the bare-checkpoint config."""
+    e = _import_store(tmp_path)
+    m = match_entry(e.entries(), model="epicrealismXL11.0",
+                    loras=[("DMD2fp32XL1.0", 0.7)])
+    assert m is not None and m.name == "epicrealismXL11.0 (DMD)"
+
+
+def test_match_without_loras_picks_the_bare_configuration(tmp_path):
+    m = match_entry(_import_store(tmp_path).entries(), model="epicrealismXL11.0",
+                    loras=[])
+    assert m is not None and m.name == "epicrealismXL11.0 (plain)"
+
+
+def test_match_weight_mismatch_falls_back_to_the_bare_configuration(tmp_path):
+    # the image used 0.8, the config carries 0.7: the LoRA must stay a UI
+    # selection, so the bare-checkpoint config is the better match
+    m = match_entry(_import_store(tmp_path).entries(), model="epicrealismXL11.0",
+                    loras=[("DMD2fp32XL1.0", 0.8)])
+    assert m is not None and m.name == "epicrealismXL11.0 (plain)"
+
+
+def test_match_partial_lora_overlap(tmp_path):
+    # image: DMD2@0.7 + an extra UI LoRA -> the DMD config still covers the
+    # most LoRAs, so it wins over the bare one
+    m = match_entry(_import_store(tmp_path).entries(), model="epicrealismXL11.0",
+                    loras=[("DMD2fp32XL1.0", 0.7), ("extra", 1.0)])
+    assert m is not None and m.name == "epicrealismXL11.0 (DMD)"
+
+
+def test_match_config_name_wins_and_survives_scoring(tmp_path):
+    # imagagen PNGs record the configuration name: it is selected verbatim,
+    # even when the LoRA list would score the bare config higher
+    m = match_entry(_import_store(tmp_path).entries(), model="epicrealismXL11.0",
+                    loras=[("DMD2fp32XL1.0", 0.8)],
+                    config_name="epicrealismXL11.0 (DMD)")
+    assert m is not None and m.name == "epicrealismXL11.0 (DMD)"
+
+
+def test_match_deleted_config_name_falls_back_to_scoring(tmp_path):
+    s = _import_store(tmp_path)
+    s.delete(entry_id("epicrealismXL11.0 (DMD)"))
+    m = match_entry(s.entries(), model="epicrealismXL11.0",
+                    loras=[("DMD2fp32XL1.0", 0.7)],
+                    config_name="epicrealismXL11.0 (DMD)")
+    assert m is not None and m.name == "epicrealismXL11.0 (plain)"
+
+
+def test_match_normalizes_foreign_model_names(tmp_path):
+    """A1111/Forge write the checkpoint basename (extension stripped, some
+    versions append " [hash]"); imagagen writes the model id (a path)."""
+    entries = _import_store(tmp_path).entries()
+    for name in ("epicrealismXL11.0", "epicrealismXL11.0.safetensors",
+                 "epicrealismXL11.0 [c8f1a2b3]", "sdxl/epicrealismXL11.0",
+                 "Epicrealismxl11.0"):
+        m = match_entry(entries, model=name, loras=[("DMD2fp32XL1.0", 0.7)])
+        assert m is not None and m.name == "epicrealismXL11.0 (DMD)", name
+
+
+def test_match_unknown_model_returns_none(tmp_path):
+    assert match_entry(_import_store(tmp_path).entries(), model="nope",
+                       loras=[]) is None
+    assert match_entry(_import_store(tmp_path).entries(), model=None) is None
+
+
+def test_match_prefers_file_config_over_default_on_a_tie(tmp_path):
+    # only the in-memory default covers the model -> it is the match
+    s = ConfigStore(Config(root=tmp_path), lambda: MOCKS)
+    m = match_entry(s.entries(), model="A", loras=[])
+    assert m is not None and m.id == "sdxl/a.safetensors" and m.is_default

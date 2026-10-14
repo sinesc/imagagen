@@ -1992,15 +1992,22 @@ async function applyPngMeta(meta, width, height) {
     const sel = $(id);
     if (meta[id] && [...sel.options].some((o) => o.value === meta[id])) sel.value = meta[id];
   }
-  // The configuration the import ends up selecting: the image's model if
-  // a configuration matches it, else the currently selected one. That
-  // configuration's LoRAs were baked into the image at generation time
-  // (always prepended to the UI selection), so they are dropped from the
-  // metadata list before the remaining LoRAs are applied -- otherwise
-  // they would load twice (once via the config, once via the UI).
-  const matchedEntry = meta.model
-    ? state.entries.find((e) => e.name === meta.model || e.id === meta.model) || null
-    : null;
+  // The configuration the import ends up selecting: the server resolves it
+  // into meta.config_id (imagagen PNGs record the configuration NAME; for
+  // A1111/Forge PNGs it scores the configurations of the image's checkpoint
+  // by LoRA match, so "checkpoint + DMD2@0.7" wins over a bare-checkpoint
+  // one). Without a config_id (no model in the metadata, server-side match
+  // failed), fall back to a plain model name/id match, else keep the current
+  // configuration. That configuration's LoRAs were baked into the image at
+  // generation time (always prepended to the UI selection), so they are
+  // dropped from the metadata list before the remaining LoRAs are applied --
+  // otherwise they would load twice (once via the config, once via the UI).
+  const matchedEntry = meta.config_id
+    ? state.entries.find((e) => e.id === meta.config_id) || null
+    : meta.model
+      ? state.entries.find((e) => e.name === meta.model || e.id === meta.model) ||
+        null
+      : null;
   const targetEntry = matchedEntry || currentEntry();
   if (meta.loras?.length || meta.disabled_loras?.length) {
     let loras = parseMetaLoras(meta.loras || []);
@@ -2050,6 +2057,12 @@ async function applyPngMeta(meta, width, height) {
   if (matchedEntry) {
     $("model").value = matchedEntry.id;
     selectModel(matchedEntry.id);
+    // same follow-up work as the model dropdown's onchange: the sampler
+    // lists, family-specific controls and the LoRA list all follow the
+    // model's family (an import can land on another family's model)
+    refreshSamplers();
+    applyFamilyControls();
+    refreshLoras();
   }
   scheduleSaveUiState();
 }

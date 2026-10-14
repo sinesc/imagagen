@@ -31,6 +31,7 @@ from .model_configs import (
     ConfigStore,
     ModelConfig,
     ModelConfigUpsert,
+    match_entry,
     mode_section,
     resolve_settings,
 )
@@ -746,7 +747,10 @@ def create_app(
                            meta_negative=body.negative_prompt,
                            meta_styles=meta_styles,
                            # recorded in the metadata but NOT applied
-                           meta_disabled_loras=body.disabled_loras)
+                           meta_disabled_loras=body.disabled_loras,
+                           # the configuration NAME rides to the PNG metadata
+                           # so an import re-selects it
+                           meta_config_name=entry.name)
         return {
             "job_id": job.id,
             "server_id": app.state.server_id,
@@ -992,6 +996,25 @@ def create_app(
                 meta["styles"] = [s.to_dict() for s in found]
                 if "negative_prompt" in meta:
                     meta["negative_prompt"] = negative
+        if meta is not None:
+            # The model configuration the image was generated with, resolved
+            # to a selectable configuration id (the UI selects meta.config_id).
+            # imagagen PNGs name it outright (model_config); A1111/Forge PNGs
+            # are scored over checkpoint + LoRAs, so the configuration that
+            # also provides the image's LoRAs wins over a bare-checkpoint one.
+            cfg_name = meta.get("model_config")
+            try:
+                entries = app.state.config_store.entries()
+            except ConfigError:
+                entries = []  # a broken config file must not break the import
+            hit = match_entry(
+                entries,
+                model=meta.get("model"),
+                loras=metadata.parse_lora_entries(meta.get("loras")),
+                config_name=cfg_name if isinstance(cfg_name, str) else None,
+            )
+            if hit is not None:
+                meta["config_id"] = hit.id
         return {"meta": meta, "width": width, "height": height}
 
     @app.post("/api/canvas/thumb")

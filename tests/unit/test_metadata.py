@@ -298,3 +298,27 @@ def test_disabled_loras_absent_by_default():
         height=64, model_name="m", model_hash="h", loras=[("Foo", 0.8)],
     )
     assert "disabled_loras" not in metadata.parse_parameters(params)
+
+
+def test_model_config_roundtrip():
+    """The generating configuration's NAME rides in the PNG so an import can
+    re-select it; absent (foreign images) = key omitted."""
+    params = metadata.build_parameters(
+        prompt="p", negative_prompt="", steps=10, sampler="Euler a",
+        scheduler="Karras", cfg=7.0, seed=1, width=64, height=64,
+        model_name="m", model_hash="h", model_config="My A + DMD2 Lora",
+    )
+    assert metadata.parse_parameters(params)["model_config"] == "My A + DMD2 Lora"
+    params = metadata.build_parameters(
+        prompt="p", negative_prompt="", steps=10, sampler="Euler a",
+        scheduler="Karras", cfg=7.0, seed=1, width=64, height=64,
+        model_name="m", model_hash="h",
+    )
+    assert "model_config" not in metadata.parse_parameters(params)
+
+
+def test_parse_lora_entries():
+    assert metadata.parse_lora_entries(["dmd2@0.7", "a/b@1", "bare"]) == [
+        ("dmd2", 0.7), ("a/b", 1.0), ("bare", 1.0)]
+    assert metadata.parse_lora_entries([]) == []
+    assert metadata.parse_lora_entries(None) == []
