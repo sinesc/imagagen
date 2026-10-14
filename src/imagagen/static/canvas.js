@@ -730,7 +730,6 @@ function drawCursor(ctx) {
   const tool = Tools.current;
   if (tool === "crop" || tool === "copy") return; // these show a rectangle
   if (tool === "paste") return drawPasteGhost(ctx);
-  if (tool === "brush" && ctrlDown) return; // colour-picker: no brush preview
   const p = [(view.cursor[0] - view.ox) / view.scale,
              (view.cursor[1] - view.oy) / view.scale];
   if (selStrokeTool(tool)) {
@@ -751,8 +750,9 @@ function drawCursor(ctx) {
 // shift held: with a floating selection active the draw tool erases (see
 // drawStrokePreview); with the mask tool it is the mask eraser
 let shiftDown = false;
-// ctrl held: with the draw tool this is colour-picker mode (the brush preview
-// is hidden and a click picks the canvas colour at the cursor)
+// ctrl held: with the draw tool this is colour-picker mode (a click picks the
+// canvas colour at the cursor; the brush preview stays visible so size changes
+// via ctrl+wheel remain visible)
 let ctrlDown = false;
 document.addEventListener("keydown", (e) => {
   if (e.key === "Shift" && !shiftDown) { shiftDown = true; viewRedraw(); }
