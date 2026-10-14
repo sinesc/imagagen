@@ -6,7 +6,7 @@ tool), the tool / mask / zoom hotkeys, and the save (Ctrl+S) / generate
 (Ctrl+G) hotkeys. Uses the mock-backend server in a temp root.
 """
 
-from conftest import dot, set_canvas, set_input, wait_until
+from conftest import dot, screen_pos, set_canvas, set_input, wait_until
 
 
 def _open(page, base):
@@ -130,3 +130,86 @@ def test_hotkey_buttons_show_their_character_underlined(page, server):
         assert btn.evaluate("e => e.querySelector('u').textContent").isalpha()
         # labels are capitalised ("Draw", "Fit", ...)
         assert btn.evaluate("e => e.textContent").lower() == text
+
+
+def test_escape_clears_field_focus(page, server):
+    # ESC on a main-form field clears the focus, so the canvas hotkeys are
+    # live again without clicking the canvas. A combobox swallows the FIRST
+    # ESC (it only closes its open list), dialog fields keep the dialog's own
+    # ESC behaviour, and an ESC that only cleared a focus does not also
+    # discard a floating selection
+    base, _root = server
+    _open(page, base)
+    set_canvas(base)
+    page.evaluate("viewRefresh()")
+    page.wait_for_function("document.getElementById('canvas').hidden === false")
+
+    focused = "document.activeElement.id || document.activeElement.tagName"
+    live = "document.getElementById('canvas').classList.contains('hotkeys')"
+
+    def hotkeys_live():
+        return page.wait_for_function(live, timeout=5000)
+
+    def hotkeys_off():
+        # the border class is applied with a 100 ms debounce (see the
+        # focusin/focusout handlers), so wait for it instead of asserting
+        return page.wait_for_function(f"!({live})", timeout=5000)
+
+    # prompt textarea: ESC blurs it -> hotkeys live, immediately usable
+    page.click("#prompt")
+    page.keyboard.type("a cat")
+    assert page.evaluate(focused) == "prompt"
+    hotkeys_off()
+    page.keyboard.press("Escape")
+    hotkeys_live()
+    assert page.evaluate(focused) == "BODY"
+    assert page.locator("#prompt").input_value() == "a cat"  # text kept
+    page.keyboard.press("m")
+    assert page.evaluate("Tools.current") == "mask"
+
+    # number field and native select behave the same
+    page.click("#seed")
+    page.keyboard.press("Escape")
+    hotkeys_live()
+    page.locator("#mode").focus()
+    page.keyboard.press("Escape")
+    hotkeys_live()
+
+    # combobox: first ESC closes the list and KEEPS the focus, second blurs
+    page.click("#model .combo-input")
+    page.wait_for_function("document.querySelector('#model .combo-list.open')")
+    page.keyboard.press("Escape")
+    page.wait_for_function("!document.querySelector('#model .combo-list.open')")
+    assert page.evaluate(focused) == "INPUT"
+    page.keyboard.press("Escape")
+    hotkeys_live()
+
+    # a floating selection survives the focus-clearing ESC: it takes a
+    # second, focus-free ESC to discard it
+    page.keyboard.press("c")
+    page.mouse.move(*screen_pos(page, 10, 10))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 50, 50), steps=5)
+    page.mouse.up()
+    assert wait_until(lambda: page.evaluate("view.clip") is not None)
+    page.keyboard.press("v")
+    page.mouse.click(*screen_pos(page, 100, 100))
+    assert page.evaluate("view.sel") is not None
+    page.click("#prompt")
+    page.keyboard.press("Escape")
+    hotkeys_live()
+    assert page.evaluate("view.sel") is not None
+    page.keyboard.press("Escape")
+    assert wait_until(lambda: page.evaluate("view.sel") is None)
+
+    # dialog field: ESC keeps clearing the filter (stopPropagation) and the
+    # dialog stays open with its focus
+    page.click("#preset-manage")
+    page.wait_for_function("!document.getElementById('dialog').hidden")
+    page.keyboard.type("zz")
+    page.keyboard.press("Escape")
+    assert page.evaluate("document.querySelector('#dialog-filter input').value") == ""
+    assert page.evaluate("document.getElementById('dialog').hidden") is False
+    assert page.evaluate(
+        "!!document.querySelector('#dialog-filter input:focus')")
+    page.evaluate("closeDialog()")

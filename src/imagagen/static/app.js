@@ -2789,17 +2789,43 @@ document.addEventListener("keydown", (e) => {
   });
 });
 
+// ---------------- ESC clears the field focus ----------------
+// The canvas hotkeys are live only while no form field has focus (the
+// handlers below check activeElement), so ESC on a main-form field (prompt,
+// seed, combobox, slider, ...) clears that focus and the canvas is live
+// again without having to click it. Runs in the CAPTURE phase, i.e. before
+// the field's own keydown handlers: a combobox whose list is OPEN swallows
+// the FIRST ESC (it only closes the list), the next one blurs. Fields inside
+// a dialog are left to the dialog's own ESC handling (ESC closes it).
+// escBlurFlag marks the event whose focus the blur cleared, so the hotkey
+// handlers below -- which after the blur see "not typing" -- do not also
+// abort an in-flight crop rectangle or discard the floating selection.
+let escBlurFlag = false;
+document.addEventListener("keydown", (e) => {
+  escBlurFlag = false;
+  if (e.key !== "Escape") return;
+  const el = document.activeElement;
+  if (!el || !/INPUT|TEXTAREA|SELECT/.test(el.tagName)) return;
+  if (el.closest("#dialog")) return;
+  const box = el.closest(".combobox");
+  if (box && box.querySelector(".combo-list.open")) return;
+  el.blur();
+  escBlurFlag = true;
+}, true);
+
 // D / S / O / M / P / C / V switch tools (draw, smudge, clone, mask, crop,
 // copy, paste), N / K / R act on the mask, F fits the image, CTRL+S saves,
 // CTRL+G generates, CTRL+Z / CTRL+Y undo / redo, CTRL+C / CTRL+V arm the
 // copy / paste tools, ENTER applies a floating selection and ESC aborts an
 // in-flight rectangle or discards the selection (all when not typing in a
-// field);
+// field; ESC on a focused field only clears that focus -- see the ESC handler
+// above);
 // SHIFT (clone tool, a source set) makes the source follow the cursor
 // until it is released
 document.addEventListener("keydown", (e) => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
   if (typing) return;
+  if (e.key === "Escape" && escBlurFlag) return; // ESC only cleared a focus
   if (e.ctrlKey && (e.key === "z" || e.key === "Z")) {
     e.preventDefault();
     $("btn-undo").onclick();
