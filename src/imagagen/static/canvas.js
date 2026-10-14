@@ -79,7 +79,7 @@ function viewResize() {
 // sized for the old box is silently rescaled to fit the new one -- the
 // whole render (image, brush outline, strokes) drifts from the mouse by a
 // factor of distance-from-top-left. Keep the backing store in step.
-// (document.getElementById: canvas.js is parsed before app.js defines $)
+// (document.getElementById: canvas.js is parsed before ui-elements.js defines $)
 new ResizeObserver(viewResize).observe(document.getElementById("canvas-holder"));
 
 function viewFit() {
