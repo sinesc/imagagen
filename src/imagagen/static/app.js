@@ -776,7 +776,10 @@ function thumbPreviewHide() {
 }
 
 // the pin checkbox of a thumbnail: checked thumbnails (and, server-side,
-// their canvas entities) survive new generations until unchecked
+// their canvas entities) survive new generations until unchecked.
+// Unchecking drops the thumbnail (the next generation drops unpinned
+// entries anyway) — EXCEPT for the thumbnail of the image currently on the
+// canvas, which stays visible and restorable
 function pinToggle(t, index) {
   return el("input", {
     type: "checkbox",
@@ -797,16 +800,23 @@ function pinToggle(t, index) {
           if (!stillShown)
             await api("/api/canvas/pin", { id: t.image_id, pin: false });
           t.pinned = false;
-          state.thumbs = state.thumbs.filter((o) => o !== t);
-          // a removed thumbnail cannot stay the reference image
+          // an unpinned thumbnail cannot stay the reference image: a
+          // reference has to survive until submit time
           if (state.referenceImageId === t.image_id) {
             state.referenceImageId = null;
             state.referenceCaption = null;
             state.referenceSections = null;
             renderRefSections(); // the tag row goes with the reference
           }
-          if (state.currentThumb === index) state.currentThumb = -1;
-          else if (state.currentThumb > index) state.currentThumb -= 1;
+          if (index !== state.currentThumb) {
+            // A thumbnail that is NOT the displayed image is dropped: unpin
+            // means "do not keep this image". The thumbnail of the image ON
+            // the canvas (the source of the last generation, a crop, an
+            // upload) stays — unpinning it only stops it from surviving the
+            // NEXT generation, which drops every unpinned entry (generate()).
+            state.thumbs = state.thumbs.filter((o) => o !== t);
+            if (state.currentThumb > index) state.currentThumb -= 1;
+          }
         }
       } catch (e) {
         setStatus(e.message, true);

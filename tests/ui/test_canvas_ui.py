@@ -1486,6 +1486,47 @@ def test_drop_png_on_empty_canvas_creates_thumbnail(page, server):
     assert wait_until(lambda: canvas_px(base, 1, 1) == BG)
 
 
+def test_unpin_keeps_the_thumbnail_of_the_displayed_image(page, server):
+    """Unpinning the thumbnail of the image that is ON the canvas (the source
+    of the last generation) must NOT remove it: unpinning only stops the
+    thumbnail from surviving the NEXT generation (generate() drops every
+    unpinned entry). A thumbnail that is not the displayed image is still
+    dropped by unpinning."""
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    page.click("#btn-generate")
+    page.wait_for_function("state.thumbs.length >= 2")
+    page.wait_for_function("!state.generating", timeout=15000)
+    assert page.evaluate("state.thumbs[0].source === true")
+    assert wait_until(lambda: page.evaluate("state.currentThumb") == 0)
+
+    # pin the source, then unpin it again
+    page.click("#thumbs .thumb-pin >> nth=0")
+    assert page.locator("#thumbs .thumb-pin >> nth=0").is_checked()
+    page.click("#thumbs .thumb-pin >> nth=0")
+    assert wait_until(lambda: page.evaluate(
+        "state.thumbs.length === 2 && state.thumbs[0].pinned === false"))
+    # the source thumbnail survived and still restores the canvas image
+    assert (page.locator("#thumbs img").nth(0).get_attribute("title") or "") \
+        .startswith("source image")
+    assert not page.locator("#thumbs .thumb-pin >> nth=0").is_checked()
+    assert canvas_px(base, 1, 1) == BG
+    page.locator("#thumbs img").nth(1).click()  # the result onto the canvas
+    assert wait_until(lambda: canvas_px(base, 1, 1) != BG)
+    page.locator("#thumbs img").nth(0).click()
+    assert wait_until(lambda: canvas_px(base, 1, 1) == BG)
+
+    # unpinning a thumbnail that is NOT the displayed image still drops it
+    page.click("#thumbs .thumb-pin >> nth=1")  # pin the result
+    assert page.locator("#thumbs .thumb-pin >> nth=1").is_checked()
+    page.locator("#thumbs img").nth(0).click()  # source back on the canvas
+    assert wait_until(lambda: page.evaluate("state.currentThumb") == 0)
+    page.click("#thumbs .thumb-pin >> nth=1")  # unpin the result
+    assert wait_until(lambda: page.evaluate("state.thumbs.length") == 1)
+    assert page.evaluate("state.thumbs[0].source === true")
+
+
 def test_second_drop_replaces_the_upload_thumbnail(page, server):
     """The canvas only ever holds ONE upload entity: dropping a second PNG
     replaces the canvas content and RE-POINTS the existing upload thumbnail
