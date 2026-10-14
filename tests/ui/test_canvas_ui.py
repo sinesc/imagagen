@@ -1486,12 +1486,11 @@ def test_drop_png_on_empty_canvas_creates_thumbnail(page, server):
     assert wait_until(lambda: canvas_px(base, 1, 1) == BG)
 
 
-def test_unpin_keeps_the_thumbnail_of_the_displayed_image(page, server):
-    """Unpinning the thumbnail of the image that is ON the canvas (the source
-    of the last generation) must NOT remove it: unpinning only stops the
-    thumbnail from surviving the NEXT generation (generate() drops every
-    unpinned entry). A thumbnail that is not the displayed image is still
-    dropped by unpinning."""
+def test_unpin_defers_the_removal_to_the_next_generation(page, server):
+    """Unpinning NEVER removes a thumbnail: pin + unpin of the source (the
+    image on the canvas) and of a result thumbnail both keep them visible and
+    restorable. The START of the next generation is what removes them -- only
+    pinned entries survive it."""
     base, _ = server
     _open(page, base)
     _show(page, base)
@@ -1501,7 +1500,7 @@ def test_unpin_keeps_the_thumbnail_of_the_displayed_image(page, server):
     assert page.evaluate("state.thumbs[0].source === true")
     assert wait_until(lambda: page.evaluate("state.currentThumb") == 0)
 
-    # pin the source, then unpin it again
+    # pin the source, then unpin it again: the thumbnail stays
     page.click("#thumbs .thumb-pin >> nth=0")
     assert page.locator("#thumbs .thumb-pin >> nth=0").is_checked()
     page.click("#thumbs .thumb-pin >> nth=0")
@@ -1517,14 +1516,23 @@ def test_unpin_keeps_the_thumbnail_of_the_displayed_image(page, server):
     page.locator("#thumbs img").nth(0).click()
     assert wait_until(lambda: canvas_px(base, 1, 1) == BG)
 
-    # unpinning a thumbnail that is NOT the displayed image still drops it
+    # same for a thumbnail that is NOT the displayed image
     page.click("#thumbs .thumb-pin >> nth=1")  # pin the result
     assert page.locator("#thumbs .thumb-pin >> nth=1").is_checked()
-    page.locator("#thumbs img").nth(0).click()  # source back on the canvas
-    assert wait_until(lambda: page.evaluate("state.currentThumb") == 0)
-    page.click("#thumbs .thumb-pin >> nth=1")  # unpin the result
-    assert wait_until(lambda: page.evaluate("state.thumbs.length") == 1)
-    assert page.evaluate("state.thumbs[0].source === true")
+    page.click("#thumbs .thumb-pin >> nth=1")  # unpin it again
+    assert wait_until(lambda: page.evaluate(
+        "state.thumbs.length === 2 && state.thumbs[1].pinned === false"))
+
+    # the generation is what removes them: the pinned result survives, the
+    # unpinned source thumbnail is dropped and the new entries arrive
+    kept = page.evaluate("state.thumbs[1].image_id")
+    page.click("#thumbs .thumb-pin >> nth=1")  # keep the result pinned
+    page.click("#btn-generate")
+    page.wait_for_function("state.thumbs.length >= 3")
+    page.wait_for_function("!state.generating", timeout=15000)
+    assert page.evaluate(
+        "state.thumbs.filter(t => t.pinned).map(t => t.image_id)") == [kept]
+    assert page.evaluate("state.thumbs.some(t => t.source && !t.pinned)")
 
 
 def test_second_drop_replaces_the_upload_thumbnail(page, server):

@@ -218,8 +218,9 @@ def test_section_tags_row(page, server):
     assert wait_until(lambda: page.evaluate(
         "getComputedStyle(document.getElementById('ref-sections')).display") == "none")
 
-    # re-check, then remove the reference's thumbnail (unpinning drops
-    # the thumbnail): the row goes with it
+    # re-check, then unpin the reference's thumbnail: the reference (and its
+    # tag row) goes with the pin -- an unpinned thumbnail cannot survive to
+    # submit time, so it cannot be described into the next prompt
     page.click("#thumbs .thumb-ref >> nth=1")
     assert wait_until(lambda: page.evaluate(
         "getComputedStyle(document.getElementById('ref-sections')).display") != "none")

@@ -777,10 +777,10 @@ function thumbPreviewHide() {
 
 // the pin checkbox of a thumbnail: checked thumbnails (and, server-side,
 // their canvas entities) survive new generations until unchecked.
-// Unchecking drops the thumbnail (the next generation drops unpinned
-// entries anyway) — EXCEPT for the thumbnail of the image currently on the
-// canvas, which stays visible and restorable
-function pinToggle(t, index) {
+// Unchecking NEVER removes the thumbnail — unpinned entries are dropped at
+// the START of the next generation (generate()), which is also when the
+// server evicts their entities
+function pinToggle(t) {
   return el("input", {
     type: "checkbox",
     class: "thumb-pin",
@@ -800,22 +800,13 @@ function pinToggle(t, index) {
           if (!stillShown)
             await api("/api/canvas/pin", { id: t.image_id, pin: false });
           t.pinned = false;
-          // an unpinned thumbnail cannot stay the reference image: a
-          // reference has to survive until submit time
+          // A reference has to survive until submit time, so an unpinned
+          // thumbnail cannot stay the reference image
           if (state.referenceImageId === t.image_id) {
             state.referenceImageId = null;
             state.referenceCaption = null;
             state.referenceSections = null;
             renderRefSections(); // the tag row goes with the reference
-          }
-          if (index !== state.currentThumb) {
-            // A thumbnail that is NOT the displayed image is dropped: unpin
-            // means "do not keep this image". The thumbnail of the image ON
-            // the canvas (the source of the last generation, a crop, an
-            // upload) stays — unpinning it only stops it from surviving the
-            // NEXT generation, which drops every unpinned entry (generate()).
-            state.thumbs = state.thumbs.filter((o) => o !== t);
-            if (state.currentThumb > index) state.currentThumb -= 1;
           }
         }
       } catch (e) {
@@ -977,7 +968,7 @@ function renderThumbs() {
       renderThumbs();
       viewRefresh();
     };
-    const pin = pinToggle(t, i);
+    const pin = pinToggle(t);
     pin.checked = !!t.pinned;
     // the checkbox overlaps the image's corner: keep the hover preview
     // stable across it
@@ -1145,10 +1136,12 @@ async function generate() {
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
     oversample: parseFloat($("oversample").value) || 1,
   };
-  // pinned thumbnails are retained across the generation (their images
-  // stay pinned server-side): their jobs get dropped, so source snapshots
-  // switch to the entity's PNG (result thumbnails keep their URLs — the
-  // server falls back to the pinned entity for dropped jobs)
+  // THIS is where thumbnails are removed: unpinning alone never deletes
+  // one, the generation drops every unpinned entry now (the server evicts
+  // their entities at the same moment). Pinned thumbnails are retained (the
+  // images stay pinned server-side): their jobs get dropped, so source
+  // snapshots switch to the entity's PNG (result thumbnails keep their URLs
+  // — the server falls back to the pinned entity for dropped jobs)
   state.thumbs = state.thumbs.filter((t) => {
     if (!t.pinned) return false;
     if (t.source && t.image_id)
