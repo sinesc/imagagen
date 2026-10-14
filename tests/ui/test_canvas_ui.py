@@ -197,6 +197,28 @@ def test_mask_tool_shift_erase_and_morph(page, server):
     assert wait_until(lambda: bool((mask_arr(base) == 0).all()))
 
 
+def _outline_lift(page) -> int:
+    """Grey lift above the BG red on the backing store at the top edge of the
+    mask outline box (0 = no outline drawn there)."""
+    return page.evaluate(
+        """() => {
+            const b = maskOutlineBox();
+            if (!b) return 0;
+            const c = document.getElementById('canvas');
+            const x = Math.round((view.ox + (b.x + b.w / 2) * view.scale) * view.dpr);
+            const y = Math.round((view.oy + b.y * view.scale) * view.dpr);
+            const d = c.getContext('2d').getImageData(
+                Math.max(0, x - 3), Math.max(0, y - 3), 7, 7).data;
+            let best = 0;
+            for (let i = 0; i < d.length; i += 4) {
+                const grey = Math.abs(d[i] - d[i + 1]) < 20
+                    && Math.abs(d[i + 1] - d[i + 2]) < 20;
+                if (grey) best = Math.max(best, d[i] - 20); // BG red = 20
+            }
+            return best;
+        }""")
+
+
 def test_mask_bbox_outline(page, server):
     # a faint grey outline traces the current mask's bounding box grown by
     # the "Mask pad" context ring (capped at the mask's extent, like the
@@ -236,22 +258,7 @@ def test_mask_bbox_outline(page, server):
     # the outline is actually drawn: a grey line on the backing store at
     # the box's top edge (measured as lift of the red channel above the
     # BG red, so it holds for any subpixel coverage of the 1-screen-px line)
-    lift = page.evaluate(
-        """() => {
-            const b = maskOutlineBox();
-            const c = document.getElementById('canvas');
-            const x = Math.round((view.ox + (b.x + b.w / 2) * view.scale) * view.dpr);
-            const y = Math.round((view.oy + b.y * view.scale) * view.dpr);
-            const d = c.getContext('2d').getImageData(
-                Math.max(0, x - 3), Math.max(0, y - 3), 7, 7).data;
-            let best = 0;
-            for (let i = 0; i < d.length; i += 4) {
-                const grey = Math.abs(d[i] - d[i + 1]) < 20
-                    && Math.abs(d[i + 1] - d[i + 2]) < 20;
-                if (grey) best = Math.max(best, d[i] - 20); // BG red = 20
-            }
-            return best;
-        }""")
+    lift = _outline_lift(page)
     assert lift > 10, f"no faint grey line at the box top edge: lift={lift}"
 
     # the "Mask pad" field rescales the ring (redraws at once)
@@ -262,6 +269,57 @@ def test_mask_bbox_outline(page, server):
     # clearing the mask removes the outline again
     page.click("#mask-clear")
     assert wait_until(lambda: page.evaluate("maskOutlineBox()") is None)
+
+
+def test_mask_overlay_only_in_mask_mode(page, server):
+    # the grey mask overlay is only drawn while the MASK tool is active (and
+    # never in "generate" mode); the mask bounding-box outline stays visible
+    # in every tool and mode, and hiding is visual only: view.maskValues and
+    # the server mask are untouched
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150, BG = (20,30,40)
+
+    page.select_option("#mode", "inpaint_masked")  # mask tool needs inpaint
+    page.keyboard.press("m")
+    dot(page, 100, 75)  # 30 px disc, dead centre
+    m = None
+    def masked():
+        nonlocal m
+        m = mask_arr(base)
+        return m is not None and m[75, 100] == 255
+    assert wait_until(masked)
+
+    def overlay_shown():
+        # grey 128 at 0.9 alpha over BG -> ~(117,118,119) at the mask centre
+        r, g, b = _screen_px(page, 100, 75)
+        return abs(r - 117) < 12 and abs(g - 118) < 12 and abs(b - 119) < 12
+
+    def overlay_hidden():
+        return _screen_px(page, 100, 75) == list(BG)
+
+    assert wait_until(overlay_shown), \
+        f"mask overlay missing in mask mode: {_screen_px(page, 100, 75)}"
+
+    # draw mode: overlay gone, bbox outline still drawn, mask data intact
+    page.keyboard.press("d")
+    assert wait_until(overlay_hidden), \
+        f"overlay not hidden outside mask mode: {_screen_px(page, 100, 75)}"
+    assert page.evaluate("maskOutlineBox()") is not None
+    lift = _outline_lift(page)
+    assert lift > 10, f"bbox outline vanished: lift={lift}"
+    assert mask_arr(base)[75, 100] == 255
+
+    # back to mask mode: the overlay reappears
+    page.keyboard.press("m")
+    assert wait_until(overlay_shown), \
+        f"overlay did not return: {_screen_px(page, 100, 75)}"
+
+    # "generate" mode keeps the overlay hidden even in mask mode, bbox shown
+    page.select_option("#mode", "generate")
+    assert wait_until(overlay_hidden), \
+        f"overlay visible in generate mode: {_screen_px(page, 100, 75)}"
+    assert page.evaluate("maskOutlineBox()") is not None
 
 
 def test_mask_preview_matches_commit(page, server):

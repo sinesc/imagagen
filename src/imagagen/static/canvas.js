@@ -125,15 +125,17 @@ function viewRedraw() {
   // mask -- so skip it while such a stroke is active
   const s0 = view.stroke;
   const maskLayered = !!s0 && (s0.tool === "mask" || s0.tool === "smudge");
-  // "Generate" mode never uses the mask, so hide it visually (overlay and
-  // outline only -- view.maskValues is untouched and the mask reappears
-  // when switching back to an inpaint mode; an in-flight mask stroke is
-  // still previewed so drawing stays visible)
-  const maskShown = $("mode").value !== "generate";
+  // The mask overlay is only shown in mask mode (the mask tool) and never in
+  // "Generate" mode: hiding it is purely visual -- view.maskValues is
+  // untouched, so the mask reappears when switching back to the mask tool in
+  // an inpaint mode; an in-flight mask stroke is still previewed so drawing
+  // stays visible. The mask bounding-box outline is NOT hidden: the mask
+  // extent (and its padded inpaint box) stays legible in every tool/mode.
+  const maskShown = maskVisible();
   if (view.mask && !maskLayered && maskShown)
     ctx.drawImage(view.mask, 0, 0, view.w, view.h);
   if (view.stroke && !view.stroke.sel) drawStrokePreview(ctx, view.stroke);
-  if (maskShown) drawMaskOutline(ctx);
+  drawMaskOutline(ctx);
   if (view.crop) drawCropOverlay(ctx);
   if (view.sel) drawSelectionOverlay(ctx);
   drawCursor(ctx);
@@ -1052,6 +1054,14 @@ function smudgeAccumulate(s, st, pts, raw, r) {
   }
 }
 
+// the mask overlay is only drawn in mask mode (the mask tool) and never in
+// "Generate" mode: purely visual -- view.maskValues is untouched, so the
+// mask reappears when switching back to the mask tool in an inpaint mode.
+// The mask bounding-box outline is NOT gated on this (see drawMaskOutline).
+function maskVisible() {
+  return Tools.current === "mask" && $("mode").value !== "generate";
+}
+
 function drawStrokePreview(ctx, s) {
   const st = Tools.get();
   const pts = stampPositions(s.points, Math.max(1, s.size / 12));
@@ -1067,11 +1077,13 @@ function drawStrokePreview(ctx, s) {
     // from scratch) -- see smudgeAccumulate
     smudgeAccumulate(s, st, pts, raw, r);
     // blit the working image; the mask overlay goes on top of it so the
-    // stack matches the base rendering (image, then mask). A stroke on a
+    // stack matches the base rendering (image, then mask) -- i.e. only in
+    // mask mode, where the committed overlay is drawn at all. A stroke on a
     // floating selection has no mask layer (the mask belongs to the canvas)
     ctx.globalAlpha = 1;
     ctx.drawImage(s.work.canvas, 0, 0);
-    if (view.mask && !s.sel) ctx.drawImage(view.mask, 0, 0, view.w, view.h);
+    if (view.mask && !s.sel && maskVisible())
+      ctx.drawImage(view.mask, 0, 0, view.w, view.h);
     return;
   }
   if (s.tool === "clone") {
