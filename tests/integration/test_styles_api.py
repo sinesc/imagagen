@@ -220,6 +220,43 @@ def test_generate_multiline_prompt_roundtrip(client):
     assert out["steps"] == 2
 
 
+def test_generate_wildcard_with_styles_keeps_styles_out_of_metadata(client, tmp_path):
+    """Regression: a wildcard prompt used to store the FULLY resolved text
+    in the PNG, which is the style-applied one -- importing it put the
+    expanded prompt in the prompt box while the styles were selected on
+    top of it (so generating again applied the styles twice). The metadata
+    must store the RAW prompt with ONLY the wildcard picks applied."""
+    _seed_csv(client)
+    (tmp_path / "user" / "wildcards").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "user" / "wildcards" / "mood.txt").write_text(
+        "sunny\nstormy\n", encoding="utf-8")
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": "a __mood__ frog",
+            "negative_prompt": "ugly",
+            "width": 64, "height": 64, "steps": 2, "seed": 7,
+            "styles": ["Cinematic", "Negs"],
+        })
+        assert r.status_code == 200
+        _wait_thumb(client, ws)
+    # the backend saw the style-applied AND wildcard-resolved prompt
+    prompt, negative = client.backend.requests[-1]
+    assert prompt in ("cinematic film still a sunny frog . moody",
+                      "cinematic film still a stormy frog . moody")
+    assert negative == "ugly, digital art, cartoon"
+    png_bytes = client.get("/api/thumb/1/0.png").content
+    doc = json.loads(Image.open(io.BytesIO(png_bytes)).info["parameters"])
+    # the stored prompt: wildcard resolved, style text NOT applied
+    assert doc["prompt"] in ("a sunny frog", "a stormy frog")
+    assert doc["negative_prompt"] == "ugly"
+    assert doc["styles"][0]["name"] == "Cinematic"
+    # importing restores raw-style prompt + style list, so re-generating
+    # with the same seed reproduces the same picks and applies each style once
+    out = client.post("/api/png-meta", content=png_bytes).json()["meta"]
+    assert out["prompt"] == doc["prompt"]
+    assert out["styles"][0]["name"] == "Cinematic"
+
+
 def test_generate_skips_deleted_style(client):
     _seed_csv(client)
     client.post("/api/styles/delete", json={"name": "Cinematic"})

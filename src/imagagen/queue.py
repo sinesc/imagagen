@@ -110,6 +110,13 @@ class Job:
     # pre-encoded in ONE text-encoder session before any task runs. None =
     # no wildcard processing (tasks use the request's text as-is).
     resolved: dict[int, tuple[str, str]] | None = None
+    # Wildcard-resolved (prompt, negative) per task index FOR THE METADATA:
+    # the same resolution applied to the RAW prompt, i.e. without the styles
+    # and LoRA activation texts baked in (those travel as their own metadata
+    # entries). None = no wildcard processing. Re-importing the PNG and
+    # generating with the same seed re-resolves the style-applied prompt to
+    # the very same picks, so this is both the raw text and reproducible.
+    meta_resolved: dict[int, tuple[str, str]] | None = None
     # Tasks of this job may not be dispatched until its prompts are fully
     # pre-encoded (wildcard jobs); set immediately for all other jobs.
     pre_encoded: threading.Event = field(default_factory=threading.Event)
@@ -262,12 +269,34 @@ class GenerationQueue:
                 # whole job up front instead of settling the tasks one by
                 # one.
                 resolve_error = e
+        # Metadata copy of the resolution: the RAW prompt (styles and LoRA
+        # activation texts NOT applied) resolved with the same per-task seeds.
+        # Metadata is cosmetic, so a failure here just keeps the raw text.
+        meta_resolved: dict[int, tuple[str, str]] | None = None
+        meta_neg_src = meta_negative if meta_negative is not None else request.negative_prompt
+        if resolved is not None and meta_prompt is not None and (
+            wildcards.has_wildcards(meta_prompt)
+            or wildcards.has_wildcards(meta_neg_src)
+        ):
+            try:
+                meta_resolved = {
+                    i: (
+                        wildcards.resolve(
+                            meta_prompt, self._wildcards_dir, base_seed + i),
+                        wildcards.resolve(
+                            meta_neg_src, self._wildcards_dir, base_seed + i),
+                    )
+                    for i in range(batch_size)
+                }
+            except wildcards.WildcardError:
+                meta_resolved = None
         job = Job(id=self._next_job_id, model_id=model_id, request=request,
                   batch_size=batch_size, base_seed=base_seed, plan=plan,
                   meta_prompt=meta_prompt, meta_negative=meta_negative,
                   meta_styles=meta_styles,
                   meta_disabled_loras=meta_disabled_loras,
-                  meta_config_name=meta_config_name, resolved=resolved)
+                  meta_config_name=meta_config_name, resolved=resolved,
+                  meta_resolved=meta_resolved)
         job.source_image_id = self.canvas.current_id()
         job.source_seed = self._source_seed(job.source_image_id)
         if job.source_image_id is not None:
@@ -477,16 +506,20 @@ class GenerationQueue:
         # (Job.resolved) -- identical to per-task resolution (a fresh RNG
         # seeded with the task's seed), just made up front so the batch can
         # be pre-encoded in one text-encoder session (see submit /
-        # _pre_encode_job). The resolved text is what the model sees AND
-        # what the image metadata stores (the raw prompt can't be re-rolled
-        # to reproduce the pick).
+        # _pre_encode_job). The model sees the style-applied resolved text;
+        # the metadata stores the RAW prompt with the same wildcard picks
+        # (Job.meta_resolved), so styles/LoRA activations stay un-baked and
+        # the PNG round-trips as "same prompt + same style list".
         meta_prompt = job.meta_prompt
         meta_negative = job.meta_negative
         if job.resolved is not None:
             prompt, negative = job.resolved[task.index]
             req = req.model_copy(update={"prompt": prompt,
                                          "negative_prompt": negative})
-            meta_prompt, meta_negative = prompt, negative
+        if job.meta_resolved is not None:
+            meta_prompt = job.meta_resolved[task.index][0]
+            if job.meta_negative is not None:
+                meta_negative = job.meta_resolved[task.index][1]
 
         def progress(fraction: float, message: str) -> None:
             if job.interrupted:
@@ -783,8 +816,8 @@ def _result_to_png(
     # PNG restores the generation settings. rotation rides along so an import
     # regenerates the same extended generation. The prompt/negative prompt
     # default to the user's raw ones (styles are recorded separately, not
-    # pre-applied); the per-task overrides carry the fully wildcard-resolved
-    # text instead.
+    # pre-applied); wildcard jobs pass the per-task RAW prompt with only the
+    # wildcard picks applied (see _run_task / Job.meta_resolved).
     if meta_prompt is None:
         meta_prompt = job.meta_prompt if (job and job.meta_prompt is not None) else req.prompt
     if meta_negative is None:

@@ -347,7 +347,8 @@ def test_finished_jobs_dropped_on_next_submit():
 
 def test_wildcards_resolved_per_seed_and_stored_in_metadata(tmp_path):
     # with a wildcards_dir, each task's prompt is resolved with its own seed;
-    # the resolved text (not the raw prompt) is what lands in the PNG metadata
+    # the resolved text (wildcards picked, no styles here) is what lands in
+    # the PNG metadata
     (tmp_path / "mood.txt").write_text("sunny\nstormy\n", encoding="utf-8")
     backend = MockBackend()
     events = []
@@ -363,7 +364,7 @@ def test_wildcards_resolved_per_seed_and_stored_in_metadata(tmp_path):
         meta = metadata.read_metadata(job.results[i])
         assert meta["prompt"].startswith("a ") and meta["prompt"].endswith(" day")
         assert meta["prompt"].split()[1] in {"sunny", "stormy"}
-        assert "__mood__" not in meta["prompt"]  # fully resolved, not raw
+        assert "__mood__" not in meta["prompt"]  # resolved, not raw
         prompts.append(meta["prompt"])
     # the two tasks used different seeds -> they may (and across many runs do)
     # resolve to different lines; at minimum both are valid resolutions

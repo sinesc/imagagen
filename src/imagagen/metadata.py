@@ -133,7 +133,9 @@ def build_parameters(
     * ``styles``: entries with "name", "prompt", "negative_prompt" and
       "enabled" -- the raw (unapplied) prompt is recorded, not the
       style-applied one, so re-import re-applies the styles exactly like a
-      new generation would.
+      new generation would. Wildcards in that raw prompt ARE resolved (the
+      per-seed picks cannot be stored any other way), so a wildcard image's
+      ``prompt`` shows the picked lines while the styles stay un-applied.
     * ``soft_inpainting`` / ``sag``: the enabled flag plus the option values
       under the legacy meta keys (``Soft inpainting enabled`` & co.,
       ``sag_enabled`` & co.). The enabled flags are written unconditionally

@@ -627,7 +627,9 @@ def create_app(
         # likewise recorded by name/weight, not their expanded texts.
         # comments (a # and everything after it on a line) are ignored
         # during processing; meta_prompt/meta_negative below keep the raw
-        # text so they remain in the stored metadata
+        # text so they remain in the stored metadata (the queue resolves
+        # the wildcards in THAT text for the PNG, never the style/LoRA
+        # expansions -- see Job.meta_resolved)
         prompt, negative_prompt = apply_styles(
             strip_prompt_comments(body.prompt),
             strip_prompt_comments(body.negative_prompt),

@@ -306,7 +306,7 @@ def test_generate_wildcard_resolved_in_metadata(client, tmp_path):
         _wait_for(client, ws, "done")
         for i in range(2):
             m = metadata.read_metadata(client.get(f"/api/thumb/{job_id}/{i}.png").content)
-            # the metadata stores the fully resolved prompt, not the raw one
+            # the metadata stores the raw prompt with the wildcards resolved
             assert "__mood__" not in m["prompt"]
             assert m["prompt"] in ("a sunny day", "a stormy day")
 
