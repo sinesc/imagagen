@@ -143,6 +143,9 @@ function viewRedraw() {
   syncSelActions(); // the apply / discard pair follows the selection
   syncCanvasCursor(); // hovering a handle changes the cursor
   $("zoom-label").textContent = `${Math.round(view.scale * 100)}%`;
+  // the thumbnail hover preview mirrors this view (match-the-canvas layout),
+  // so a zoom/pan change re-applies its placement (app.js; no-op when hidden)
+  if (window.thumbPreviewLayout) window.thumbPreviewLayout();
 }
 
 // decoded mask PNG (greyscale, luminance = value) -> value canvas

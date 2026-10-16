@@ -450,16 +450,60 @@ async function restoreThumb(t) {
   await api("/api/canvas/select", { id: t.image_id });
 }
 
-// hover preview: the thumbnail's full image, zoom-to-fit, laid over the
-// canvas box. A purely visual overlay -- it never touches the view
-// (zoom/pan), the mask, or the undo stacks. The container is positioned
-// by JS onto the <canvas> element's on-screen rect so it fits it exactly.
+// hover preview: the thumbnail's full image laid over the canvas box. A
+// purely visual overlay -- it never touches the view (zoom/pan), the mask,
+// or the undo stacks. The container is positioned by JS onto the <canvas>
+// element's on-screen rect so it fits it exactly (same border/background),
+// and it lays the image out in one of two ways:
+//  - scale-to-fit: the whole image scaled into the box with the SAME padding
+//    the zoom-to-fit button gives the canvas image (viewFit's 0.98 factor),
+//    centred, never cropped. Used while SHIFT is held, and whenever the
+//    thumbnail's dimensions differ from the image on the canvas.
+//  - match-the-canvas: when the thumbnail has the SAME dimensions as the
+//    canvas image and SHIFT is NOT held, the image is placed at the canvas
+//    view's exact zoom and pan (the box crops it), so hovering compares the
+//    two images in the identical viewport -- same area, same zoom.
 let thumbPreviewHideTimer = null;
+let thumbPreviewUrl = null; // url currently shown (guards the async probe)
+let thumbPreviewSize = null; // [w,h] intrinsic size of that image, null = unknown
+
+// (re-)apply the layout of the visible preview; also called from viewRedraw
+// (zoom/pan changes) and on SHIFT key changes, so it tracks the canvas view
+function thumbPreviewLayout() {
+  const pv = $("thumb-preview");
+  if (pv.hidden) return;
+  const img = $("thumb-preview-img");
+  const match =
+    !shiftDown &&
+    !!thumbPreviewSize &&
+    thumbPreviewSize[0] === view.w &&
+    thumbPreviewSize[1] === view.h;
+  if (match) {
+    // the exact canvas viewport: same zoom, same pan, cropped by the box
+    img.classList.add("match");
+    img.style.left = `${view.ox}px`;
+    img.style.top = `${view.oy}px`;
+    img.style.width = `${view.w * view.scale}px`;
+    img.style.height = `${view.h * view.scale}px`;
+    img.style.imageRendering = view.scale >= 4 ? "pixelated" : "auto";
+  } else {
+    img.classList.remove("match");
+    img.style.left = img.style.top = img.style.width = img.style.height = "";
+    img.style.imageRendering = "";
+  }
+}
+
 function thumbPreviewShow(url) {
   if (!view.has) return; // no canvas to overlay on
   clearTimeout(thumbPreviewHideTimer);
   const pv = $("thumb-preview");
-  $("thumb-preview-img").src = url;
+  const img = $("thumb-preview-img");
+  img.src = url;
+  thumbPreviewUrl = url;
+  // the layout depends on the image's intrinsic size (usually cached: the
+  // strip thumbnail is the same URL), probe it when it is not
+  thumbPreviewSize =
+    img.complete && img.naturalWidth ? [img.naturalWidth, img.naturalHeight] : null;
   const holder = $("canvas-holder").getBoundingClientRect();
   const c = cv().getBoundingClientRect();
   pv.style.left = `${c.left - holder.left}px`;
@@ -467,6 +511,16 @@ function thumbPreviewShow(url) {
   pv.style.width = `${c.width}px`;
   pv.style.height = `${c.height}px`;
   pv.hidden = false;
+  thumbPreviewLayout();
+  if (!thumbPreviewSize) {
+    const probe = new Image();
+    probe.onload = () => {
+      if (thumbPreviewUrl !== url) return; // preview moved on to another thumb
+      thumbPreviewSize = [probe.naturalWidth, probe.naturalHeight];
+      thumbPreviewLayout();
+    };
+    probe.src = url;
+  }
   void pv.offsetWidth; // flush styles so the fade-in runs from opacity 0
   pv.classList.add("on");
 }
@@ -477,6 +531,13 @@ function thumbPreviewHide() {
   // let the 0.25s fade-out finish, then drop the element
   thumbPreviewHideTimer = setTimeout(() => (pv.hidden = true), 250);
 }
+
+// SHIFT held/unheld switches the preview between match-the-canvas and
+// scale-to-fit live, while the mouse stays on the thumbnail
+for (const ev of ["keydown", "keyup"])
+  document.addEventListener(ev, (e) => {
+    if (e.key === "Shift") thumbPreviewLayout();
+  });
 
 // the pin checkbox of a thumbnail: checked thumbnails (and, server-side,
 // their canvas entities) survive new generations until unchecked.

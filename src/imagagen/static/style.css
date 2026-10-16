@@ -501,17 +501,18 @@ button.danger:hover { background: #a33; }
   overflow: hidden;
   position: relative; /* anchors the thumbnail hover preview */
 }
-/* thumbnail hover preview: the thumbnail's full image, zoom-to-fit,
-   laid over the canvas box while hovering a strip thumbnail. Positioned by JS
-   onto the <canvas> element's on-screen rect (background/border match it),
-   so it looks like the canvas itself -- without touching the view, mask or
-   any state. Purely visual: pointer-events off, faded in/out in 0.25s. */
+/* thumbnail hover preview: the thumbnail's full image laid over the canvas
+   box while hovering a strip thumbnail. Positioned by JS onto the <canvas>
+   element's on-screen rect (background/border match it), so it looks like the
+   canvas itself -- without touching the view, mask or any state. Purely
+   visual: pointer-events off, faded in/out in 0.25s. Two layouts (app.js
+   thumbPreviewLayout): scale-to-fit with the zoom-to-fit button's padding,
+   or -- same dimensions as the canvas image and no SHIFT -- the image placed
+   at the canvas view's exact zoom/pan, cropped by this box. */
 #thumb-preview {
   position: absolute;
   pointer-events: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  overflow: hidden; /* crops the match-the-canvas layout to the canvas box */
   background: #1a1a1a; /* same as the canvas */
   border: 1px solid #333; /* same as the canvas */
   opacity: 0;
@@ -521,13 +522,20 @@ button.danger:hover { background: #a33; }
 #thumb-preview.on { opacity: 1; }
 #thumb-preview.hotkeys { border-color: #777; } /* hotkeys live: match canvas */
 #thumb-preview img {
-  /* zoom-to-fit: scaled (up or down) to touch the canvas rect's edges,
-     aspect preserved, never cropped */
-  width: 100%;
-  height: 100%;
+  /* scale-to-fit: scaled (up or down) into the box with the SAME padding the
+     zoom-to-fit button leaves around the canvas image (viewFit scales to
+     0.98 of the box -> a 1% inset), aspect preserved, never cropped */
+  position: absolute;
+  inset: 1%;
+  width: 98%;
+  height: 98%;
   object-fit: contain;
   user-select: none;
 }
+/* match-the-canvas: JS sets left/top/width/height inline to the canvas
+   view's pan and zoom (1% insets and the contain box no longer apply), so
+   the preview shows exactly the area the canvas shows */
+#thumb-preview img.match { object-fit: fill; }
 #canvas {
   max-width: 100%;
   max-height: 100%;
