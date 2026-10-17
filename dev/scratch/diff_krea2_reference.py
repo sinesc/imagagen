@@ -2,7 +2,6 @@
 krea-2/mmdit.py, CPU bf16) on the dequantized weights of my checkpoint, and
 compare its output to my Krea2Transformer's (GPU bf16) output on the same
 inputs. A structural bug in my port shows up here."""
-import os
 import sys
 
 import torch
@@ -42,8 +41,8 @@ def _cpu_attention(q, k, v, mask=None, scale=0.08838834764831845, gqa=False):
                             torch.full((), -1e9, dtype=q.dtype))
     x = torch.nn.functional.scaled_dot_product_attention(
         q, k, v, attn_mask=amask, scale=scale)
-    b, h, l, d = x.shape
-    return x.transpose(1, 2).reshape(b, l, h * d)
+    b, h, seq, d = x.shape
+    return x.transpose(1, 2).reshape(b, seq, h * d)
 
 
 _mmdit.attention = _cpu_attention
@@ -134,5 +133,6 @@ print(f"mine : mean={out_mine.float().mean().item():.5f} std={out_mine.float().s
 print(f"diff : max={d.max().item():.5f} mean={d.mean().item():.5f} "
       f"rel={d.mean().item() / out_ref.float().std().item():.4f}")
 import torch.nn.functional as Fn
+
 print("cos:", Fn.cosine_similarity(
     out_ref.flatten()[None], out_mine.flatten()[None], dim=1).item())

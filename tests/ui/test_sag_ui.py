@@ -7,9 +7,9 @@ the saved configuration.
 
 import io
 
+from conftest import wait_until
 from PIL import Image
 
-from conftest import wait_until
 from imagagen import metadata as md
 from imagagen.sag import SelfAttentionGuidance
 
@@ -70,9 +70,11 @@ def test_config_dialog_sag_checkbox_and_options_gear(page, server):
     for i, d in enumerate(["0.5", "2", "1"]):
         assert sliders.nth(i).input_value() == d
     # edit a slider and save: the config dialog reopens...
-    page.evaluate("(() => { const i = document.querySelectorAll('#dialog-body input[type=range]')[0]; "
-                  "i.value = '1.25'; "
-                  "i.dispatchEvent(new Event('input', { bubbles: true })); })()")
+    page.evaluate(
+        "(() => { const i = document.querySelectorAll('#dialog-body input[type=range]')[0]; "
+        "i.value = '1.25'; "
+        "i.dispatchEvent(new Event('input', { bubbles: true })); })()"
+    )
     page.click("#dialog-ok")
     # ...still in the model configuration dialog (not the main UI), with
     # the other fields' state intact

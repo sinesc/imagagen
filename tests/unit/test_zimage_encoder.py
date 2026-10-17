@@ -88,7 +88,7 @@ class TestQwen3CausalityAndLayer:
             other[0, -1] = 9
             with torch.no_grad():
                 changed = self._layers(model, other)
-        for i, (a, b) in enumerate(zip(base, changed)):
+        for i, (a, b) in enumerate(zip(base, changed, strict=True)):
             assert torch.equal(a[:, :-1], b[:, :-1]), f"layer {i} is not causal"
         assert not torch.equal(base[-1][:, -1], changed[-1][:, -1])
 

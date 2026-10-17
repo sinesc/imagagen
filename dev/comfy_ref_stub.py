@@ -90,7 +90,9 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
     if not repeat_only:
         half = dim // 2
         freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=timesteps.device) / half
+            -math.log(max_period)
+            * torch.arange(start=0, end=half, dtype=torch.float32, device=timesteps.device)
+            / half
         )
         args = timesteps[:, None].float() * freqs[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
@@ -114,15 +116,21 @@ class TimestepEmbedder(nn.Module):
         if output_size is None:
             output_size = hidden_size
         self.mlp = nn.Sequential(
-            operations.Linear(frequency_embedding_size, hidden_size, bias=True, dtype=dtype, device=device),
+            operations.Linear(
+                frequency_embedding_size, hidden_size, bias=True, dtype=dtype, device=device
+            ),
             nn.SiLU(),
-            operations.Linear(hidden_size, output_size, bias=True, dtype=dtype, device=device),
+            operations.Linear(
+                hidden_size, output_size, bias=True, dtype=dtype, device=device
+            ),
         )
         self.frequency_embedding_size = frequency_embedding_size
         self.max_period = max_period
 
     def forward(self, t, dtype, **kwargs):
-        t_freq = timestep_embedding(t, self.frequency_embedding_size, max_period=self.max_period).to(dtype)
+        t_freq = timestep_embedding(
+            t, self.frequency_embedding_size, max_period=self.max_period
+        ).to(dtype)
         t_emb = self.mlp(t_freq)
         return t_emb
 
@@ -157,7 +165,9 @@ def repeat_to_batch_size(tensor, batch_size, dim=0):
     if tensor.shape[dim] > batch_size:
         return tensor.narrow(dim, 0, batch_size)
     elif tensor.shape[dim] < batch_size:
-        return tensor.repeat(dim * [1] + [math.ceil(batch_size / tensor.shape[dim])] + [1] * (len(tensor.shape) - 1 - dim)).narrow(dim, 0, batch_size)
+        reps = dim * [1] + [math.ceil(batch_size / tensor.shape[dim])] \
+            + [1] * (len(tensor.shape) - 1 - dim)
+        return tensor.repeat(reps).narrow(dim, 0, batch_size)
     return tensor
 
 
@@ -211,10 +221,10 @@ def install():
     ops = mod("comfy.ops")
     ops.RMSNorm = nn.RMSNorm
     mod("comfy.quant_ops")
-    diffusionmodules = mod("comfy.ldm.modules.diffusionmodules")
+    mod("comfy.ldm.modules.diffusionmodules")
     mod("comfy.ldm.modules.diffusionmodules.mmdit").TimestepEmbedder = TimestepEmbedder
     mod("comfy.ldm.modules.attention").optimized_attention_masked = optimized_attention_masked
-    flux = mod("comfy.ldm.flux")
+    mod("comfy.ldm.flux")
     layers = mod("comfy.ldm.flux.layers")
     layers.EmbedND = EmbedND
     mathm = mod("comfy.ldm.flux.math")
@@ -225,7 +235,7 @@ def install():
     pe.get_all_wrappers = get_all_wrappers
     utils = mod("comfy.utils")
     utils.repeat_to_batch_size = repeat_to_batch_size
-    chroma = mod("comfy.ldm.chroma_radiance")
+    mod("comfy.ldm.chroma_radiance")
     clayers = mod("comfy.ldm.chroma_radiance.layers")
     class _NerfEmbedder(nn.Module):  # unused by the latent-space NextDiT
         pass

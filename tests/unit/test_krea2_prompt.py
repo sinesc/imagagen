@@ -12,9 +12,9 @@ arithmetic on its tokenization is checked.
 from pathlib import Path
 
 import pytest
+from transformers import Qwen2Tokenizer
 
 from imagagen.encoders.krea2 import krea2_prompt_template, template_prefix_cut
-from transformers import Qwen2Tokenizer
 
 ROOT = Path(__file__).resolve().parents[2]
 TOKENIZER_DIR = ROOT / "res" / "tokenizer_krea2"

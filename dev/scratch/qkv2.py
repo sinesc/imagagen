@@ -1,5 +1,7 @@
+import collections
+import re
+
 from safetensors import safe_open
-import collections, re
 
 with safe_open("infra/qwen_3vl_4b.safetensors", framework="pt") as f:
     ks = list(f.keys())

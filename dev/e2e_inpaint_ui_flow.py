@@ -7,7 +7,6 @@
    until the user selects a result)
 5. assert the masked region changed, the unmasked region was preserved
 """
-import hashlib
 import io
 import subprocess
 import sys

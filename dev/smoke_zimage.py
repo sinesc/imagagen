@@ -118,6 +118,7 @@ Image.fromarray(img_a).save("/tmp/zimage_smoke_t2i.png")
 # ---------------------------------------------------------------- 3. ---
 print("\n[3] LoRA: weight 0 == baseline, high weight shifts", flush=True)
 from imagagen.models import list_loras  # noqa: E402
+
 zloras = [n for n in list_loras(cfg, family="zimage")]
 assert zloras, "no zimage LoRAs discovered"
 lora_name = zloras[0]
@@ -167,6 +168,8 @@ assert protected < inpaint_side, "the protected side must change less"
 print("\n[6] cancellation", flush=True)
 req = GenerateRequest(prompt=PROMPT_B, seed=80, width=512, height=512)
 import threading  # noqa: E402
+
+
 def run():
     try:
         backend.generate(req)

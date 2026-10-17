@@ -227,7 +227,7 @@ class TestParseKrea2Lora:
         with pytest.raises(ValueError, match="unknown Krea 2 LoRA key"):
             parse_krea2_lora(p)
 
-    def test_missing_pair_raises(self, tmp_path):
+    def test_unknown_module_raises(self, tmp_path):
         from safetensors.torch import save_file
 
         p = tmp_path / "bad.safetensors"

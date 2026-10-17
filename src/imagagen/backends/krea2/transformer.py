@@ -467,10 +467,10 @@ class Attention(nn.Module):
         self.wo = linear_cls(dim, dim, bias)
 
     def forward(self, x, freqs=None):
-        b, l, _ = x.shape
-        q = self.wq(x).view(b, l, self.heads, self.headdim).transpose(1, 2)
-        k = self.wk(x).view(b, l, self.kvheads, self.headdim).transpose(1, 2)
-        v = self.wv(x).view(b, l, self.kvheads, self.headdim).transpose(1, 2)
+        b, seq, _ = x.shape
+        q = self.wq(x).view(b, seq, self.heads, self.headdim).transpose(1, 2)
+        k = self.wk(x).view(b, seq, self.kvheads, self.headdim).transpose(1, 2)
+        v = self.wv(x).view(b, seq, self.kvheads, self.headdim).transpose(1, 2)
         gate = self.gate(x)
         q, k = self.qknorm(q, k)
         if freqs is not None:
@@ -481,7 +481,7 @@ class Attention(nn.Module):
             k = k.repeat_interleave(rep, dim=1)
             v = v.repeat_interleave(rep, dim=1)
         out = F.scaled_dot_product_attention(q, k, v)
-        out = out.transpose(1, 2).reshape(b, l, self.heads * self.headdim)
+        out = out.transpose(1, 2).reshape(b, seq, self.heads * self.headdim)
         return self.wo(out * F.sigmoid(gate))
 
 
@@ -570,14 +570,14 @@ class TextFusionTransformer(nn.Module):
 
     def forward(self, x):
         # x: (b, seq, n_taps, d)
-        b, l, n, d = x.shape
-        x = x.reshape(b * l, n, d)
+        b, seq, n, d = x.shape
+        x = x.reshape(b * seq, n, d)
         for block in self.layerwise_blocks:
             x = block(x)
         # (b*l, n, d) -> (b, l, d, n): the projector collapses the taps
         # (the reference rearranges "(b l) n d -> b l d n" -- a PERMUTE, not
         # a raw reshape)
-        x = self.projector(x.reshape(b, l, n, d).permute(0, 1, 3, 2))
+        x = self.projector(x.reshape(b, seq, n, d).permute(0, 1, 3, 2))
         x = x.squeeze(-1)
         for block in self.refiner_blocks:
             x = block(x)

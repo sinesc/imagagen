@@ -8,7 +8,6 @@ case (one entry per module after the backend's merge), and the
 empty/cleared case (zero overhead == base forward).
 """
 
-import pytest
 import torch
 import torch.nn.functional as F
 

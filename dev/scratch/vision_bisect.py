@@ -5,17 +5,18 @@ transformers Qwen3VL vision model on the SAME image (fp8 checkpoint
 dequantized to bf16). Match => bug is in the text/caption path;
 mismatch => bug is in our vision port."""
 import sys
+
 sys.path.insert(0, "src")
-import torch
 import numpy as np
+import torch
 from PIL import Image
 
 dev = "cuda:1"
 img = np.asarray(Image.open("dev/references/purple-flower.png").convert("RGB"))
 arr = torch.from_numpy(img.astype(np.float32) / 255.0)[None]
 
-from imagagen.encoders.qwen3vl_vision import (
-    process_qwen2vl_images, load_vision_tower)
+from imagagen.encoders.qwen3vl_vision import load_vision_tower, process_qwen2vl_images
+
 patches, grid = process_qwen2vl_images(arr)
 
 # ---- ours (fp8 native, fp32 compute) ----

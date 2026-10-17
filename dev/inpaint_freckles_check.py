@@ -13,10 +13,10 @@ noised inpaint region smooths them away (low variance, "plastic" face).
 usage: inpaint_freckles_check.py [output.png]
 """
 import sys
-from numpy.lib.stride_tricks import sliding_window_view
 from pathlib import Path
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent

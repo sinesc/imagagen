@@ -8,7 +8,7 @@ and preset select/application. Uses the mock-backend server in a temp root.
 import time
 
 import httpx
-from conftest import combo_items, combo_open, combo_pick, combo_seq, wait_until
+from conftest import combo_items, combo_pick, combo_seq, wait_until
 
 
 def _open(page, base, extra="state.entries.length >= 1"):
@@ -388,7 +388,9 @@ def test_preset_clone_prefills_new_preset(page, server):
     assert srow.locator(".preset-cb").is_checked()
     assert srow.locator(".preset-val").input_value() == "Euler a"
     # unchecked/unset fields stay at their defaults
-    assert not box.locator(".preset-row", has_text="height").first.locator(".preset-cb").is_checked()
+    assert not box.locator(
+        ".preset-row", has_text="height"
+    ).first.locator(".preset-cb").is_checked()
 
     # editing the clone's width leaves the source alone
     wrow.locator(".preset-val").fill("832")
@@ -473,7 +475,7 @@ def test_preset_dialog_has_no_soft_inpaint_row(page, server):
     wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
 
 
-def test_preset_multiword_name_select(page, server):  
+def test_preset_multiword_name_select(page, server):
     # regression: preset names containing spaces 404'd on select because the
     # store looked up by sanitized file id while the UI holds display names
     base, _ = server

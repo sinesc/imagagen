@@ -214,7 +214,9 @@ def test_generate_multiline_prompt_roundtrip(client):
     assert doc["seed"] == 7
     assert (doc["width"], doc["height"]) == (64, 64)
     # import restores the newlines verbatim (no ", "-joining)
-    out = client.post("/api/png-meta", content=client.get("/api/thumb/1/0.png").content).json()["meta"]
+    out = client.post(
+        "/api/png-meta", content=client.get("/api/thumb/1/0.png").content
+    ).json()["meta"]
     assert out["prompt"] == raw
     assert out["negative_prompt"] == raw_negative
     assert out["steps"] == 2
@@ -356,6 +358,7 @@ def test_png_meta_resolves_lora_names_to_subfolders(client):
     (the Forge hash covers the display-name case, where the token's name
     differs from the file's basename)."""
     import hashlib
+
     from imagagen import metadata
 
     (client.root / "loras" / "sdxl" / "sub").mkdir(parents=True)

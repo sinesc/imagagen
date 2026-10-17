@@ -9,7 +9,6 @@ old configuration files that predate the key.
 import json
 
 import httpx
-
 from conftest import wait_until
 
 

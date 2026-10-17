@@ -8,7 +8,12 @@ The template contains the chat special tokens (im_start / im_end / user /
 assistant markers); do not echo it in logs or chat output.
 """
 
-KREA2_PROMPT_TEMPLATE = '<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n'
+KREA2_PROMPT_TEMPLATE = (
+    '<|im_start|>system\nDescribe the image by detailing the colo'
+    'r, shape, size, texture, quantity, text, spatial relationshi'
+    'ps of the objects and background:<|im_end|>\n<|im_start|>use'
+    'r\n{}<|im_end|>\n<|im_start|>assistant\n'
+)
 
 
 def krea2_prompt_template() -> str:

@@ -288,7 +288,8 @@ def test_reference_selection_survives_a_reload(page, server):
     page.evaluate("saveUiState()")  # fire-and-forget: poll the server
     assert wait_until(lambda: page.evaluate(
         "fetch('/api/ui-state').then(r=>r.json()).then("
-        "j=>j.state.reference_image_id === '%s')" % ref_id))
+        f"j=>j.state.reference_image_id === '{ref_id}')"
+    ))
 
     page.reload()
     assert page.is_visible("#tool-brush")
@@ -296,6 +297,6 @@ def test_reference_selection_survives_a_reload(page, server):
     assert page.evaluate("state.referenceImageId") == ref_id
     # the matching restored thumbnail shows the box checked
     assert page.evaluate(
-        "Array.from(document.querySelectorAll('#thumbs .thumb-ref'))"
-        ".some((c, i) => c.checked && state.thumbs[i].image_id === '%s')"
-        % ref_id)
+        f"Array.from(document.querySelectorAll('#thumbs .thumb-ref'))"
+        f".some((c, i) => c.checked && state.thumbs[i].image_id === '{ref_id}')"
+    )

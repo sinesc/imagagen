@@ -50,7 +50,6 @@ import torch
 from .. import kdiff
 from ..encoders.clip import clip_pooled, load_clip_l
 from ..encoders.t5 import load_t5_encoder
-from ..reference import apply_reference, caption_reference, selected_caption_titles
 from ..flux_lora import FluxLoraSpec, merge_module_deltas, parse_lora
 from ..flux_transformer import FluxTransformer2DModel
 from ..gguf_ops import (
@@ -60,6 +59,7 @@ from ..gguf_ops import (
     quant_linear_scope,
     sniff_flux_checkpoint,
 )
+from ..reference import apply_reference, caption_reference, selected_caption_titles
 from ..soft_inpaint import adaptive_change_alpha, latent_blend
 from . import (
     _PARAM_INIT_LOCK,
@@ -243,7 +243,8 @@ class FluxBackend(ModelBackend):
                 sum(p.numel() * p.element_size() for p in self.clip.parameters())
                 + sum(p.numel() * p.element_size() for p in self.t5.parameters())
             )
-            if self.te_device != "cpu" and self._encoder_bytes + (1 << 30) <= torch.cuda.mem_get_info(device)[0]:
+            free = torch.cuda.mem_get_info(device)[0]
+            if self.te_device != "cpu" and self._encoder_bytes + (1 << 30) <= free:
                 # fits next to the transformer: co-resident, no swaps
                 self._text_to(self.te_device)
 

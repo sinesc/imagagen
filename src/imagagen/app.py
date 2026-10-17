@@ -18,14 +18,17 @@ from PIL import Image
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from . import metadata, wildcards
-from .backends import (PHASE_REFERENCE, PHASE_REFERENCE_DONE,
-                       PHASE_REFERENCE_LOADING, GenerateRequest, ModelBackend)
+from .backends import (
+    PHASE_REFERENCE,
+    PHASE_REFERENCE_DONE,
+    PHASE_REFERENCE_LOADING,
+    GenerateRequest,
+    ModelBackend,
+)
 from .canvas import Canvas, _decode_mask, _decode_png
 from .config import Config, ensure_dirs, load_config
 from .generation import INPAINT_PADDING, GenerationError, with_inpaint
-from .lora_settings import (
-    LoraSettings, all_settings, apply_lora_texts, save_settings
-)
+from .lora_settings import LoraSettings, all_settings, apply_lora_texts, save_settings
 from .model_configs import (
     ConfigError,
     ConfigStore,
@@ -40,8 +43,7 @@ from .paths import next_output_path
 from .presets import Preset, PresetError, PresetSaveRequest, PresetStore
 from .queue import GenerationQueue
 from .sag import SelfAttentionGuidance
-from .segmentation import (CONFIDENCE_THRESHOLD, MAX_FEATHER,
-                           SegmentationError, SegmentationService)
+from .segmentation import CONFIDENCE_THRESHOLD, MAX_FEATHER, SegmentationError, SegmentationService
 from .soft_inpaint import SoftInpainting
 from .styles import Style, StyleStore, apply_styles, strip_prompt_comments
 from .uistate import UiState, UiStateStore
@@ -994,7 +996,7 @@ def create_app(
                     [n for n, _ in loras], config, meta.get("lora_hashes")
                 )
                 meta.setdefault("loras", []).extend(
-                    f"{n}@{w:g}" for n, (_, w) in zip(resolved, loras)
+                    f"{n}@{w:g}" for n, (_, w) in zip(resolved, loras, strict=True)
                 )
             found, prompt, negative = app.state.style_store.extract_styles(
                 no_lora_prompt, meta.get("negative_prompt", "")

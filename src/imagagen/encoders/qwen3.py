@@ -23,6 +23,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from .zimage_prompt import ZIMAGE_PROMPT_TEMPLATE
+
 COMPUTE_DTYPE = torch.bfloat16
 
 
@@ -220,9 +222,6 @@ def load_zit_encoder(path, device):
         raise ValueError(f"Z-Image encoder file is missing keys: {missing}")
     model.to(device)
     return model
-
-
-from .zimage_prompt import ZIMAGE_PROMPT_TEMPLATE
 
 
 def zimage_prompt_template() -> str:

@@ -1,8 +1,6 @@
 """Unit tests for Forge/A1111-style token-weight prompt parsing."""
 
-import pytest
 
-from imagagen import token_weights
 from imagagen.token_weights import clean_prompt, has_token_weights, parse_prompt_weights
 
 

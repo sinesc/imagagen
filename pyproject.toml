@@ -55,6 +55,8 @@ select = ["E", "F", "W", "I", "UP", "B"]
 [tool.ruff.lint.per-file-ignores]
 # vendored k-diffusion code keeps upstream line style
 "src/imagagen/kdiff.py" = ["E501"]
+# dev/ scripts insert src/ into sys.path before importing imagagen
+"dev/**/*.py" = ["E402"]
 
 [[tool.uv.index]]
 name = "pytorch-cu129"

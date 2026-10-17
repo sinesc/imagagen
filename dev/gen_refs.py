@@ -7,10 +7,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "src")
-import torch
+from imagagen.backends import GenerateRequest
 from imagagen.config import load_config
 from imagagen.models import ModelRegistry
-from imagagen.backends import GenerateRequest
 
 CASES = {
     "dmd2": dict(

@@ -59,7 +59,6 @@ def forge_weighted_histogram_filter(img, kernel, kernel_center,
     (the scalar reference the vectorised version must match)."""
     result = np.zeros(img.shape)
     height, width = img.shape
-    max_radius = kernel_center
     kernel_width = kernel_center * 2 + 1
     for x in range(height):
         for y in range(width):
@@ -113,11 +112,11 @@ def test_defaults_match_forge():
 
 def test_ranges_match_forge_sliders():
     # Forge sliders: (0,8,0.1) (0,8,0.05) (1,32,0.5) (0,1,0.05) (0,8,0.25) (0,8,0.25)
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         SoftInpainting(mask_blend_power=8.01)
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         SoftInpainting(inpaint_detail_preservation=0.5)
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         SoftInpainting(composite_mask_influence=1.5)
     SoftInpainting(mask_blend_power=8, inpaint_detail_preservation=32,
                    composite_mask_influence=1, composite_difference_contrast=8)

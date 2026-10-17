@@ -115,8 +115,9 @@ def test_ui_state_keeps_loras_disabled(page, server):
 
 def _loras_png(model_name, loras, disabled_loras):
     """PNG whose parameters chunk carries the given LoRA lines."""
-    from imagagen import metadata as md
     from PIL import Image
+
+    from imagagen import metadata as md
     img, info = md.attach_metadata(
         Image.new("RGB", (64, 64), (240, 10, 40)),
         md.build_parameters("lora import test", "", 20, "Euler a", "Karras",

@@ -1,7 +1,6 @@
 """Phase 2c: every LoRA loader names an unsupported family (LoKr/LoHa/
 DoRA/GaLore/GGUF) up front instead of drowning in key-mismatch noise."""
 
-from types import SimpleNamespace
 
 import pytest
 import torch

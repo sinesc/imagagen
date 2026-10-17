@@ -16,8 +16,8 @@ import torch
 from imagagen.sag import (
     SagRecorder,
     SelfAttentionGuidance,
-    compute_sag_mass,
     compute_sag_mask,
+    compute_sag_mass,
     create_blur_map,
     gaussian_blur_2d,
     install_sag_hooks,
@@ -60,7 +60,7 @@ def test_sag_enabled_flag_roundtrips():
     off = SelfAttentionGuidance(enabled=False, scale=2.0)
     assert off.enabled is False
     assert off.scale == 2.0
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         SelfAttentionGuidance(enabled="maybe")
 
 
@@ -72,15 +72,15 @@ def test_sag_ranges_match_forge_sliders():
     ):
         s = SelfAttentionGuidance(**kwargs)
         assert getattr(s, field) == kwargs[field]
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         SelfAttentionGuidance(scale=-2.01)
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         SelfAttentionGuidance(scale=5.01)
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         SelfAttentionGuidance(blur_sigma=-0.01)
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         SelfAttentionGuidance(blur_sigma=10.01)
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         SelfAttentionGuidance(threshold=4.01)
 
 

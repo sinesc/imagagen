@@ -26,7 +26,7 @@ sys.path.insert(0, str(root / "src"))
 import numpy as np
 from PIL import Image
 
-from imagagen.backends import GenerateRequest
+from imagagen.backends import GenerateRequest, ModelBackend
 from imagagen.config import load_config
 from imagagen.models import ModelRegistry
 

@@ -42,7 +42,8 @@ from diffusers import StableDiffusionXLPipeline
 
 print("loading pipeline ...", flush=True)
 pipe = StableDiffusionXLPipeline.from_single_file(
-    sys.argv[1] if len(sys.argv) > 1 else os.path.join(root, "models/sdxl/epicrealismXL11.0.safetensors"),
+    sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+        root, "models/sdxl/epicrealismXL11.0.safetensors"),
     torch_dtype=torch.float16)
 pipe.to(device)
 cap = torch.cuda.get_device_capability(device)

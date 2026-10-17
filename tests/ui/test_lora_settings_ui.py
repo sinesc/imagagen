@@ -81,7 +81,9 @@ def test_lora_settings_ui(page, server):
     page.locator(
         f"{body} label:has-text('description') textarea"
     ).wait_for(timeout=500)
-    assert page.locator(f"{body} label:has-text('description') textarea").input_value() == "forge desc"
+    assert page.locator(
+        f"{body} label:has-text('description') textarea"
+    ).input_value() == "forge desc"
     assert page.locator(f"{body} label:has-text('preferred weight') input").input_value() == "0.7"
     assert page.locator(f"{body} label:has-text('activation text') textarea").input_value() == "act"
     assert page.locator(f"{body} label:has-text('negative text') textarea").input_value() == "neg"

@@ -79,6 +79,7 @@ def test_generate_rotation_180_mirrors(page, server):
         img = c.get("/api/canvas.png")
         assert img.status_code == 200
     import io
+
     import numpy as np
     from PIL import Image
     a = np.asarray(Image.open(io.BytesIO(img.content)))

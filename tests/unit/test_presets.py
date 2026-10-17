@@ -170,7 +170,7 @@ def test_rotation_roundtrip(tmp_path):
     assert "rotation" in PRESET_FIELDS
 
 
-def test_unknown_keys_ignored_on_save(tmp_path): 
+def test_unknown_keys_ignored_on_save(tmp_path):
     s = PresetStore(tmp_path / "presets")
     p = Preset.model_validate({"name": "p", "width": 64,
                                "controls": {"width": True, "bogus": True}})

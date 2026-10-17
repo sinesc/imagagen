@@ -18,7 +18,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-FORGE = Path("/workspaces/Projekte/sd-webui-forge-classic/modules_forge/packages/k_diffusion/sampling.py")
+FORGE = Path(
+    "/workspaces/Projekte/sd-webui-forge-classic/modules_forge/packages/k_diffusion/sampling.py"
+)
 from imagagen import kdiff  # noqa: E402
 
 

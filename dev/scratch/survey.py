@@ -1,5 +1,7 @@
-from safetensors import safe_open
 import collections
+
+from safetensors import safe_open
+
 
 def survey(path):
     with safe_open(path, framework="pt") as f:

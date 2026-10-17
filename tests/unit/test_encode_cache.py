@@ -14,7 +14,7 @@ import threading
 
 import torch
 
-from imagagen.backends import EncCache, _ENC_CACHE_MAX
+from imagagen.backends import _ENC_CACHE_MAX, EncCache
 from imagagen.backends.flux import FluxBackend
 from imagagen.backends.zimage import ZImageBackend
 

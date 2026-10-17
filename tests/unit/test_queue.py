@@ -211,7 +211,9 @@ def test_inpaint_retains_canvas_until_thumb_selected():
     mask[3:5, 3:5] = 255
     plan = InpaintPlan("inpaint_masked", requested_size=(8, 8),
                        bbox=(0, 0, 8, 8), work_image=base, work_mask=mask)
-    job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 1, plan=plan)
+    job = q.submit(
+        "m", GenerateRequest(prompt="x", width=8, height=8, steps=1, seed=1), 1, plan=plan
+    )
     _wait_done(q, job.id)
     # canvas untouched, no auto-set
     np.testing.assert_array_equal(canvas.image, base)

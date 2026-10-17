@@ -201,9 +201,9 @@ def test_save_updates_existing_and_rejects_collisions(tmp_path):
 def test_save_with_default_id_materializes_it(tmp_path):
     s = store(tmp_path)
     # saving with the in-memory default's id turns it into a file config
-    e = s.save(ModelConfig(name="A", model="sdxl/a.safetensors",
-                           t2i=ModeConfig(cfg=6.0)),
-               id_="sdxl/a.safetensors")
+    s.save(ModelConfig(name="A", model="sdxl/a.safetensors",
+                       t2i=ModeConfig(cfg=6.0)),
+           id_="sdxl/a.safetensors")
     assert (tmp_path / "user" / "model-configs" / "a.json").is_file()
     by_id = {x.id: x for x in s.entries()}
     # model A is covered now -> the default entry is gone
@@ -318,10 +318,14 @@ def test_resolve_mode_selects_section():
     e = _entry(cfg=4.0, steps=10, sag=False,
                i2i=ModeConfig(sampler="DPM++ 2M SDE", cfg=6.0, steps=14, sag=True))
     # inpaint modes use the i2i section (including the SAG flag)
-    sampler, _, cfg, steps, _, sag = resolve_settings(e, "inpaint_masked", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
+    sampler, _, cfg, steps, _, sag = resolve_settings(
+        e, "inpaint_masked", CFG_SENTINEL, None, None, [], STEPS_SENTINEL
+    )
     assert (sampler, cfg, steps) == ("DPM++ 2M SDE", 6.0, 14)
     assert sag is True
-    _, _, cfg_t2i, steps_t2i, _, sag_t2i = resolve_settings(e, "generate", CFG_SENTINEL, None, None, [], STEPS_SENTINEL)
+    _, _, cfg_t2i, steps_t2i, _, sag_t2i = resolve_settings(
+        e, "generate", CFG_SENTINEL, None, None, [], STEPS_SENTINEL
+    )
     assert (cfg_t2i, steps_t2i) == (4.0, 10)
     assert sag_t2i is False
 

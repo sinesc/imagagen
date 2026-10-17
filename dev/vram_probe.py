@@ -15,7 +15,8 @@ import numpy as np
 import torch
 
 device = torch.device("cuda:1")
-model_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(root, "models/sdxl/epicrealismXL11.0.safetensors")
+model_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+    root, "models/sdxl/epicrealismXL11.0.safetensors")
 w, h = (int(sys.argv[2]), int(sys.argv[3])) if len(sys.argv) > 3 else (3440, 1440)
 
 from diffusers import StableDiffusionXLPipeline

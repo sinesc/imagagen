@@ -263,14 +263,14 @@ class ModelBackend(ABC):
     def cancel(self) -> None:
         """Request cancellation of the in-flight generation (checked per step)."""
 
-    def unload(self) -> None:
+    def unload(self) -> None:  # noqa: B027  # optional hook, default no-op is meaningful
         """Move the model out of VRAM into RAM (inverse of :meth:`load`).
 
         The default does nothing: model types that cannot be moved simply
         stay in VRAM.
         """
 
-    def pre_encode(self, pairs: list[tuple[str, str]],
+    def pre_encode(self, pairs: list[tuple[str, str]],  # noqa: B027  # optional hook
                    reserve: int | None = None) -> None:
         """Encode every ``(prompt, negative_prompt)`` pair into the shared
         prompt-encoding cache (see :func:`shared_enc_cache`), ideally in a
@@ -284,7 +284,7 @@ class ModelBackend(ABC):
         per batch, not once per image. The default is a no-op (mock).
         """
 
-    def load(self) -> None:
+    def load(self) -> None:  # noqa: B027  # optional hook, default no-op is meaningful
         """Move a previously parked model back to its GPU (inverse of
         :meth:`unload`). The default does nothing for non-parkable types."""
 

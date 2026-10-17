@@ -5,8 +5,7 @@ import io
 import time
 
 import numpy as np
-from PIL import Image
-from PIL import PngImagePlugin
+from PIL import Image, PngImagePlugin
 from starlette.testclient import TestClient
 
 from imagagen.app import create_app

@@ -16,15 +16,14 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import torch
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+from imagagen.backends import GenerateRequest  # noqa: E402
 from imagagen.config import load_config  # noqa: E402
 from imagagen.models import ModelRegistry  # noqa: E402
-from imagagen.backends import GenerateRequest  # noqa: E402
 
 cfg = load_config(ROOT)
 reg = ModelRegistry(cfg, gpus=[1])

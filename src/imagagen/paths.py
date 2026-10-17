@@ -35,4 +35,5 @@ def next_output_path(output_dir: Path, prompt: str) -> Path:
 
     Digits from the prompt are dropped; the prepended image number is unaffected.
     """
-    return output_dir / f"{next_output_number(output_dir)}-{sanitize_prompt(prompt, keep_digits=False)}.png"
+    filename = f"{next_output_number(output_dir)}-{sanitize_prompt(prompt, keep_digits=False)}.png"
+    return output_dir / filename

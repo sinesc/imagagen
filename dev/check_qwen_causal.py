@@ -15,8 +15,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from imagagen.encoders import qwen3 as qe  # noqa: E402
-from imagagen.encoders.qwen3 import load_zit_encoder, COMPUTE_DTYPE  # noqa: E402
-from imagagen.encoders.qwen3 import zimage_prompt_template  # noqa: E402
+from imagagen.encoders.qwen3 import (  # noqa: E402
+    COMPUTE_DTYPE,
+    load_zit_encoder,
+    zimage_prompt_template,  # noqa: E402
+)
 
 DEVICE = torch.device("cuda:0")
 ENC = ROOT / "infra" / "zit_encoder.safetensors"
@@ -88,7 +91,7 @@ def main():
         rope_theta=1_000_000.0, attention_bias=False, tie_word_embeddings=False)
     ref = Qwen3Model(cfg)
     sd = {}
-    for k, v in ref.state_dict().items():
+    for k, _v in ref.state_dict().items():
         key = k if k.startswith("model.") else "model." + k
         t = file.get(key)
         if t is None:

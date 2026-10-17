@@ -31,7 +31,8 @@ def decode(tiled):
     with torch.inference_mode():
         img = pipe.vae.decode(x, return_dict=False)[0]
     torch.cuda.synchronize()
-    return img.float().cpu().numpy(), time.perf_counter() - t0, torch.cuda.max_memory_allocated(device) / 2**30
+    return (img.float().cpu().numpy(), time.perf_counter() - t0,
+            torch.cuda.max_memory_allocated(device) / 2**30)
 
 
 a, ta, pa = decode(False)
@@ -39,4 +40,5 @@ b, tb, pb = decode(True)
 d = np.abs(a.astype(np.int16) - b.astype(np.int16))
 print(f"untiled:   {ta:7.2f} s  peak {pa:7.2f} GiB")
 print(f"tiled:     {tb:7.2f} s  peak {pb:7.2f} GiB")
-print(f"diff: max {d.max()}  mean {d.mean():.4f}  p>1 {(d > 1).mean() * 100:.4f}%  p>2 {(d > 2).mean() * 100:.4f}%")
+print(f"diff: max {d.max()}  mean {d.mean():.4f}  "
+      f"p>1 {(d > 1).mean() * 100:.4f}%  p>2 {(d > 2).mean() * 100:.4f}%")

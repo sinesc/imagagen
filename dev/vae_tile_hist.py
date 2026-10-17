@@ -5,7 +5,6 @@ import time
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("HUGGINGFACE_HUB_CACHE", os.path.join(root, "cache"))
-import numpy as np
 import torch
 from diffusers import StableDiffusionXLPipeline
 

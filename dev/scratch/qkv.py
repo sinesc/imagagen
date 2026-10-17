@@ -1,5 +1,7 @@
-from safetensors import safe_open
 import collections
+
+from safetensors import safe_open
+
 
 def keys_of(path, n=0):
     with safe_open(path, framework="pt") as f:
@@ -24,5 +26,9 @@ def keys_of(path, n=0):
 ks = keys_of("infra/qwen_3vl_4b.safetensors", n=6)
 
 # layer count for the text model
-layers = sorted({k.split(".")[2] for k in ks if k.startswith("model.layers.") or k.startswith("language_model.layers.")}, key=lambda x: int(x) if x.isdigit() else 0)
+layers = sorted(
+    {k.split(".")[2] for k in ks
+     if k.startswith("model.layers.") or k.startswith("language_model.layers.")},
+    key=lambda x: int(x) if x.isdigit() else 0,
+)
 print("   text layers:", layers[:5], "..." if len(layers) > 8 else "", f"count={len(layers)}")

@@ -29,7 +29,7 @@ def load_clip_l(path: str, device):
     model = CLIPTextModel(cfg)
     file = st.load_file(path)
     remapped = {k[len("text_model."):]: v for k, v in file.items() if k.startswith("text_model.")}
-    missing, unexpected = model.load_state_dict(remapped, strict=True), None
+    model.load_state_dict(remapped, strict=True)
     model = model.to(device=device, dtype=torch.float16)
     model.eval()
     return model

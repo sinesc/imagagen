@@ -151,10 +151,16 @@ def test_tools_state_validated(tmp_path):
         # opacity outside the slider range
         assert c.post("/api/ui-state", json={"tools": {"brush": {"opacity": 0}}}).status_code == 422
         # colour must be #rrggbb, brush names are file names (no paths)
-        assert c.post("/api/ui-state", json={"tools": {"brush": {"color": "red"}}}).status_code == 422
-        assert c.post("/api/ui-state", json={"tools": {"brush": {"brush": "../../x"}}}).status_code == 422
+        assert c.post(
+            "/api/ui-state", json={"tools": {"brush": {"color": "red"}}}
+        ).status_code == 422
+        assert c.post(
+            "/api/ui-state", json={"tools": {"brush": {"brush": "../../x"}}}
+        ).status_code == 422
         # valid partial state is accepted
-        assert c.post("/api/ui-state", json={"tools": {"smudge": {"size": 200, "screen": True}}}).status_code == 200
+        assert c.post(
+            "/api/ui-state", json={"tools": {"smudge": {"size": 200, "screen": True}}}
+        ).status_code == 200
         assert c.get("/api/ui-state").json()["state"]["tools"]["smudge"]["size"] == 200
         assert c.get("/api/ui-state").json()["state"]["tools"]["current"] == "brush"
 

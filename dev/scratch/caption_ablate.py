@@ -4,13 +4,13 @@ the 'distorted image' hallucination? Captions one clean image with the
 current CAPTION_PARTS and with the reference's trailing empty think
 block appended (built via chr() so no marker text appears anywhere)."""
 import sys
+
 sys.path.insert(0, "src")
 import numpy as np
-import torch
 from PIL import Image
 
-from imagagen.config import load_config
 import imagagen.reference as R
+from imagagen.config import load_config
 from imagagen.encoders.caption_prompt import CAPTION_PARTS
 
 THINK = chr(60) + "think" + chr(62) + "\n\n" + chr(60) + "/think" + chr(62) + "\n\n"

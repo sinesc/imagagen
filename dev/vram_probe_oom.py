@@ -5,11 +5,11 @@ import sys
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("HUGGINGFACE_HUB_CACHE", os.path.join(root, "cache"))
 
-import numpy as np
 import torch
 
 device = torch.device("cuda:1")
-model_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(root, "models/sdxl/epicrealismXL11.0.safetensors")
+model_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+    root, "models/sdxl/epicrealismXL11.0.safetensors")
 w, h = (int(sys.argv[2]), int(sys.argv[3])) if len(sys.argv) > 3 else (3440, 1440)
 
 from diffusers import StableDiffusionXLPipeline
@@ -45,7 +45,10 @@ for name, mod in pipe.unet.named_modules():
     if hasattr(mod, "to_q"):
         names[name] = mod
         mod.register_forward_pre_hook(hook(name))
-        mod.register_forward_hook(lambda mod, inp, out: current.update({"out": tuple(out.shape) if torch.is_tensor(out) else type(out).__name__}))
+        mod.register_forward_hook(
+            lambda mod, inp, out: current.update({
+                "out": tuple(out.shape) if torch.is_tensor(out) else type(out).__name__})
+        )
 
 print("attn modules:", len(names), flush=True)
 assert names
@@ -69,7 +72,8 @@ with torch.inference_mode():
     try:
         y = unet_forward()
         torch.cuda.synchronize()
-        print("OK; unet forward peak:", torch.cuda.max_memory_allocated(device) / 2**30, "GiB", flush=True)
+        print("OK; unet forward peak:",
+              torch.cuda.max_memory_allocated(device) / 2**30, "GiB", flush=True)
     except torch.OutOfMemoryError as e:
         print("OOM at module:", current["name"], flush=True)
         print("  input shape:", current["in"], flush=True)

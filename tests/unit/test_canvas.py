@@ -12,8 +12,7 @@ import io
 
 import numpy as np
 import pytest
-from PIL import Image
-from PIL import PngImagePlugin
+from PIL import Image, PngImagePlugin
 
 from imagagen.canvas import Canvas
 

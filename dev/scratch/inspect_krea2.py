@@ -1,5 +1,6 @@
 """One-off inspection of the Krea2 Int8Extended checkpoint layout."""
 from collections import Counter
+
 from safetensors import safe_open
 
 path = "models/krea2/krea2_Int8Extended.safetensors"
@@ -20,7 +21,7 @@ with safe_open(path, framework="pt") as f:
 
     # find keys NOT of dtype INT8 (U8 is the marker string tensor)
     non_int8 = [k for k in keys if f.get_slice(k).get_dtype() not in ("INT8", "U8")]
-    print("\nnon-int8 keys ({}):".format(len(non_int8)))
+    print(f"\nnon-int8 keys ({len(non_int8)}):")
     for k in non_int8:
         print(" ", k, f.get_slice(k).get_shape(), f.get_slice(k).get_dtype())
 

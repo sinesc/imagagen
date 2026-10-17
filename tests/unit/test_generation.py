@@ -16,8 +16,8 @@ from imagagen.generation import (
     masked_bbox,
     paste_centered,
     resize_shift_mask,
-    rotation_size,
     rotate_canvas,
+    rotation_size,
     unrotate,
     with_inpaint,
 )
@@ -369,7 +369,6 @@ def test_inpaint_not_masked_outpaint_geometry():
 def test_inpaint_not_masked_postprocess_resizes_rounded_output():
     # the SDXL backend rounds generation sizes to multiples of 8; the canvas
     # must still come out exactly at the requested size
-    c = _canvas(100, 100)
     plan = InpaintPlan("inpaint_not_masked", requested_size=(100, 100),
                        work_mask=np.zeros((100, 100), dtype=np.uint8))
     gen = np.full((96, 96, 3), 42, dtype=np.uint8)

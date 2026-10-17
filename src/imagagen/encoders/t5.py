@@ -97,7 +97,9 @@ class T5Attention(nn.Module):
     def _relative_position_bucket(relative_position, num_buckets=32, max_distance=128):
         relative_buckets = 0
         num_buckets_half = num_buckets // 2
-        relative_buckets = relative_buckets + (relative_position > 0).to(torch.long) * num_buckets_half
+        relative_buckets = relative_buckets + (
+            (relative_position > 0).to(torch.long) * num_buckets_half
+        )
         relative_position = torch.abs(relative_position)
         max_exact = num_buckets_half // 2
         is_small = relative_position < max_exact
@@ -107,9 +109,12 @@ class T5Attention(nn.Module):
             * (num_buckets_half - max_exact)
         ).to(torch.long)
         relative_position_if_large = torch.min(
-            relative_position_if_large, torch.full_like(relative_position_if_large, num_buckets_half - 1)
+            relative_position_if_large,
+            torch.full_like(relative_position_if_large, num_buckets_half - 1),
         )
-        relative_buckets = relative_buckets + torch.where(is_small, relative_position, relative_position_if_large)
+        relative_buckets = relative_buckets + torch.where(
+            is_small, relative_position, relative_position_if_large
+        )
         return relative_buckets
 
     def compute_bias(self, query_length, key_length, device, dtype):
@@ -182,8 +187,8 @@ class T5Stack(nn.Module):
 
     def forward(self, x):
         past_bias = None
-        for l in self.block:
-            x, past_bias = l(x, past_bias)
+        for blk in self.block:
+            x, past_bias = blk(x, past_bias)
         x = self.final_layer_norm(x)
         return x
 
@@ -210,7 +215,13 @@ def T5XXL(
     num_heads=64,
     vocab_size=32128,
 ):
-    return T5(num_layers=num_layers, d_model=d_model, d_ff=d_ff, num_heads=num_heads, vocab_size=vocab_size)
+    return T5(
+        num_layers=num_layers,
+        d_model=d_model,
+        d_ff=d_ff,
+        num_heads=num_heads,
+        vocab_size=vocab_size,
+    )
 
 
 def load_t5_encoder(path, device):

@@ -75,9 +75,9 @@ class TestSingleBlocks:
         assert map_base_key("single_transformer_blocks.0.attn.to_q") == \
             (f"{P}.linear1", 0, D, False)
         assert map_base_key("single_transformer_blocks.1.attn.to_k") == \
-            (f"single_blocks.1.linear1", D, 2 * D, False)
+            ("single_blocks.1.linear1", D, 2 * D, False)
         assert map_base_key("single_transformer_blocks.2.attn.to_v") == \
-            (f"single_blocks.2.linear1", 2 * D, 3 * D, False)
+            ("single_blocks.2.linear1", 2 * D, 3 * D, False)
 
     def test_proj_mlp(self):
         # the mlp projection owns linear1 rows [3H:3H+M); BFL also names

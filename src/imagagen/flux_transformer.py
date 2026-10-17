@@ -20,9 +20,9 @@ encoding. Differences from the reference:
 from __future__ import annotations
 
 import math
+
 import torch
 from torch import nn
-
 
 # ---------------------------------------------------------------- rope ----
 
@@ -228,7 +228,8 @@ class DoubleStreamBlock(nn.Module):
         )
 
     def forward(self, img, txt, vec, pe):
-        img_mod1_shift, img_mod1_scale, img_mod1_gate, img_mod2_shift, img_mod2_scale, img_mod2_gate = self.img_mod(vec)
+        (img_mod1_shift, img_mod1_scale, img_mod1_gate,
+         img_mod2_shift, img_mod2_scale, img_mod2_gate) = self.img_mod(vec)
 
         img_modulated = self.img_norm1(img)
         img_modulated = (1 + img_mod1_scale) * img_modulated + img_mod1_shift
@@ -244,7 +245,8 @@ class DoubleStreamBlock(nn.Module):
 
         img_q, img_k = self.img_attn.norm(img_q, img_k, img_v)
 
-        txt_mod1_shift, txt_mod1_scale, txt_mod1_gate, txt_mod2_shift, txt_mod2_scale, txt_mod2_gate = self.txt_mod(vec)
+        (txt_mod1_shift, txt_mod1_scale, txt_mod1_gate,
+         txt_mod2_shift, txt_mod2_scale, txt_mod2_gate) = self.txt_mod(vec)
         del vec
 
         txt_modulated = self.txt_norm1(txt)
@@ -311,7 +313,9 @@ class SingleStreamBlock(nn.Module):
         del vec
         x_mod = (1 + mod_scale) * self.pre_norm(x) + mod_shift
         del mod_shift, mod_scale
-        qkv, mlp = torch.split(self.linear1(x_mod), [3 * self.hidden_size, self.mlp_hidden_dim], dim=-1)
+        qkv, mlp = torch.split(
+            self.linear1(x_mod), [3 * self.hidden_size, self.mlp_hidden_dim], dim=-1
+        )
         del x_mod
 
         qkv = qkv.view(qkv.size(0), qkv.size(1), 3, self.num_heads, self.head_dim)
@@ -335,7 +339,9 @@ class LastLayer(nn.Module):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
-        self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True))
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True)
+        )
 
     def forward(self, x, vec):
         shift, scale = self.adaLN_modulation(vec).chunk(2, dim=1)

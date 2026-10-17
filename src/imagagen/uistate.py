@@ -20,7 +20,6 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-
 # Canvas tools, same list as the TOOLS array in tools.js
 TOOL_NAMES = ("brush", "mask", "clone", "smudge", "crop", "copy", "paste")
 

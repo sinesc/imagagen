@@ -7,12 +7,10 @@ and the PNG metadata records the caption the backend applied.
 """
 
 import numpy as np
+from test_queue import _queue, _wait_done
 
 from imagagen import metadata
-from imagagen.backends import (GenerateRequest, MOCK_REFERENCE_CAPTION,
-                               MockBackend, PHASE_REFERENCE)
-
-from test_queue import _queue, _wait_done
+from imagagen.backends import MOCK_REFERENCE_CAPTION, PHASE_REFERENCE, GenerateRequest, MockBackend
 
 
 def test_reference_image_round_trips_through_the_queue_dump():
@@ -62,7 +60,6 @@ def test_queue_passes_reference_image_to_the_backend():
     # the mock echoes the reference into the caption, and the caption
     # rides onto the PNG metadata through the queue
     png = job.results[0]
-    from io import BytesIO
 
     meta = metadata.read_metadata(png)
     assert meta["reference_caption"] == MOCK_REFERENCE_CAPTION

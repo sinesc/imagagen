@@ -1,6 +1,5 @@
 """Layer-by-layer bisection between the reference SingleStreamDiT and my
 Krea2Transformer on identical inputs."""
-import os
 import sys
 
 ROOT = "/workspaces/Projekte/imagagen"
@@ -27,8 +26,8 @@ def _cpu_attention(q, k, v, mask=None, scale=None, gqa=False):
                             torch.full((), -1e9, dtype=q.dtype))
     x = torch.nn.functional.scaled_dot_product_attention(
         q, k, v, attn_mask=amask, scale=scale)
-    b, h, l, d = x.shape
-    return x.transpose(1, 2).reshape(b, l, h * d)
+    b, h, seq, d = x.shape
+    return x.transpose(1, 2).reshape(b, seq, h * d)
 
 
 _mmdit.attention = _cpu_attention
@@ -56,9 +55,9 @@ ref.load_state_dict(sd, strict=True, assign=True)
 ref = ref.to("cpu", dtype=torch.bfloat16).eval()
 del sd
 
+from imagagen.backends.krea2 import transformer as k2t
 from imagagen.config import load_config
 from imagagen.models import ModelRegistry
-from imagagen.backends.krea2 import transformer as k2t
 
 icfg = load_config(ROOT)
 reg = ModelRegistry(icfg, gpus=[1])
@@ -174,8 +173,10 @@ for i in range(2):
     xm = (xm + mlp_m.to(device))
     cmp(f"lay{i}.out", xr, xm)
 
-pr_r = xf_ref.projector(xr.reshape(1, 40, 12, 2560).permute(0, 1, 3, 2)).squeeze(-1)
-pr_m = xf_mine.projector(xm.reshape(1, 40, 12, 2560).to(device).permute(0, 1, 3, 2)).squeeze(-1).cpu()
+pr_r = xf_ref.projector(
+    xr.reshape(1, 40, 12, 2560).permute(0, 1, 3, 2)).squeeze(-1)
+pr_m = xf_mine.projector(
+    xm.reshape(1, 40, 12, 2560).to(device).permute(0, 1, 3, 2)).squeeze(-1).cpu()
 print("pr_r", pr_r.shape, "pr_m", pr_m.shape)
 cmp("projector", pr_r, pr_m)
 for i in range(2):

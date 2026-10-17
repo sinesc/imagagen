@@ -141,7 +141,8 @@ def test_paste_drop_is_an_overlay_until_applied(page, server):
     # the labels must not wrap: the buttons shrink-to-fit inside a ZERO-size
     # anchor, so without white-space: nowrap the text breaks after the glyph
     # and overflows the button box (checked with the labels visible)
-    fits = lambda: page.evaluate(
+    def fits():
+        return page.evaluate(
         "(() => ['sel-ok', 'sel-cancel'].map((id) => {"
         " const e = document.getElementById(id);"
         " return [e.scrollWidth <= e.clientWidth, e.scrollHeight <= e.clientHeight]; }))()"
@@ -149,10 +150,13 @@ def test_paste_drop_is_an_overlay_until_applied(page, server):
 
     # the pair drops its labels when it would cover the selection's handles
     # (a 40 px selection at this zoom), and shows them on a wide one
-    word_display = lambda: page.evaluate(
-        "getComputedStyle(document.querySelector('#sel-ok .sel-word')).display"
+    def word_display():
+        return page.evaluate(
+            "getComputedStyle(document.querySelector('#sel-ok .sel-word')).display"
+        )
+    assert page.evaluate(
+        "document.getElementById('sel-actions').classList.contains('compact')"
     )
-    assert page.evaluate("document.getElementById('sel-actions').classList.contains('compact')")
     assert word_display() == "none"
     page.evaluate("view.sel.sw = 300; viewRedraw()")
     assert not page.evaluate("document.getElementById('sel-actions').classList.contains('compact')")
@@ -236,7 +240,9 @@ def test_selection_handles_resize_and_rotate(page, server):
     assert sel["sw"] == sel["sh"]  # the aspect (1:1) is preserved
     assert sel["sw"] > 40
     # the pinned bottom-left corner did not move
-    assert page.evaluate("[view.sel.cx - view.sel.sw / 2, view.sel.cy + view.sel.sh / 2]") == [80, 95]
+    assert page.evaluate(
+        "[view.sel.cx - view.sel.sw / 2, view.sel.cy + view.sel.sh / 2]"
+    ) == [80, 95]
 
     # the canvas never changed while all this happened
     assert _canvas_size(base) == (200, 150)
@@ -420,7 +426,8 @@ def test_paste_mode_moves_the_selection_and_cursors(page, server):
     _copy(page, base)
     _paste(page, 100, 75)  # 40x40 at (80..120, 55..95)
 
-    cursor = lambda: page.evaluate("document.getElementById('canvas').style.cursor")
+    def cursor():
+        return page.evaluate("document.getElementById('canvas').style.cursor")
 
     # in paste mode the body is draggable: the cursor says move
     page.mouse.move(*screen_pos(page, 90, 65))
@@ -539,9 +546,10 @@ def test_selection_flip_buttons(page, server):
 
     # the flip labels follow the same fit rule as apply / discard: glyphs only
     # on a small selection (this one), full labels once the row fits
-    flip_word = lambda: page.evaluate(
-        "getComputedStyle(document.querySelector('#sel-flip-h .sel-word')).display"
-    )
+    def flip_word():
+        return page.evaluate(
+            "getComputedStyle(document.querySelector('#sel-flip-h .sel-word')).display"
+        )
     assert flip_word() == "none"
     page.evaluate("view.sel.sw = 300; viewRedraw()")
     assert flip_word() != "none"

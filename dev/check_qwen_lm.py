@@ -28,11 +28,14 @@ import torch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from imagagen.encoders import qwen3 as qe  # noqa: E402
-from imagagen.encoders.qwen3 import (COMPUTE_DTYPE,  # noqa: E402
-                                    load_zit_encoder,
-                                    zimage_prompt_template)
 from transformers import Qwen2Tokenizer  # noqa: E402
+
+from imagagen.encoders import qwen3 as qe  # noqa: E402
+from imagagen.encoders.qwen3 import (  # noqa: E402
+    COMPUTE_DTYPE,
+    load_zit_encoder,
+    zimage_prompt_template,
+)
 
 DEVICE = "cuda:0"
 ENC = ROOT / "infra" / "zit_encoder.safetensors"
@@ -81,7 +84,8 @@ def main():
           f"scale_input {q.scale_input.float().item():.5f}")
     print(f"  dequantized weight rms: weight*scale_weight = "
           f"{(w8 * q.scale_weight.float()).pow(2).mean().sqrt():.5f}, "
-          f"both scales = {(w8 * q.scale_weight.float() * q.scale_input.float()).pow(2).mean().sqrt():.7f}")
+          f"both scales = "
+          f"{(w8 * q.scale_weight.float() * q.scale_input.float()).pow(2).mean().sqrt():.7f}")
 
     for variant in ("folded", "weight-only", "divided"):
         set_variant(model, variant)

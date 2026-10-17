@@ -26,7 +26,9 @@ def _record(page):
         window.__status = [];
         window.__label = [];
         const origSet = setStatus;
-        setStatus = (text, isError) => { window.__status.push(text || ''); return origSet(text, isError); };
+        setStatus = (text, isError) => {
+            window.__status.push(text || ''); return origSet(text, isError);
+        };
         const label = document.getElementById('progress-label');
         new MutationObserver(() => window.__label.push(label.textContent))
             .observe(label, {childList: true, subtree: true, characterData: true,

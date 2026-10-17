@@ -16,6 +16,7 @@ import asyncio
 import httpx
 import pytest
 from playwright.async_api import expect as aexpect
+from playwright.sync_api import TimeoutError as PWTimeoutError
 from playwright.sync_api import expect
 
 
@@ -99,7 +100,7 @@ async def test_loading_overlay_blocks_input_until_settled(server, apage):
 
     # the overlay eats pointer events: clicking the prompt times out
     prompt = apage.locator("#prompt")
-    with pytest.raises(Exception):
+    with pytest.raises(PWTimeoutError):  # the overlay eats pointer events
         await prompt.click(timeout=500)
 
     # Tab/programmatic focus can still reach the field behind the overlay,

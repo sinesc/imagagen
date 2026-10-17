@@ -142,7 +142,8 @@ class TestDoraFold:
         m.set_lora_deltas([(fa, fb, 0, plain.shape[0])])
         # the EMITTED delta must be the DoRA-scaled one (comparing the
         # full output would fold in the int8 base's quantization floor)
-        rel = ((m(x).float() - base) - x.float() @ expected_delta.T).norm()             / x.float().matmul(expected_delta.T).norm()
+        rel = ((m(x).float() - base) - x.float() @ expected_delta.T).norm() \
+            / x.float().matmul(expected_delta.T).norm()
         assert rel < 0.05
 
     def test_dora_fold_plain_int8(self):
