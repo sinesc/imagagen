@@ -55,7 +55,7 @@ def _active(pid):
 
 def _copy(page, base, x0=10, y0=10, x1=50, y1=50):
     """Drag the copy rectangle (x0,y0) -> (x1,y1)."""
-    page.keyboard.press("c")
+    page.keyboard.press("y")
     page.mouse.move(*screen_pos(page, x0, y0))
     page.mouse.down()
     page.mouse.move(*screen_pos(page, x1, y1), steps=5)
@@ -64,7 +64,7 @@ def _copy(page, base, x0=10, y0=10, x1=50, y1=50):
 
 
 def _paste(page, x, y):
-    page.keyboard.press("v")
+    page.keyboard.press("e")
     page.mouse.click(*screen_pos(page, x, y))
     assert page.evaluate("view.sel") is not None
 
@@ -81,19 +81,22 @@ def test_copy_paste_toolbar_and_hotkeys(page, server):
     _open(page, base)
     _show(page, base)
 
-    # Clone moved from C to O; C arms the copy tool, V the paste tool
-    page.keyboard.press("o")
-    assert page.evaluate(_active("tool-clone"))
+    # C arms the clone tool, Y the copy tool, E the paste tool
     page.keyboard.press("c")
+    assert page.evaluate(_active("tool-clone"))
+    page.keyboard.press("y")
     assert page.evaluate(_active("tool-copy"))
-    page.keyboard.press("v")
+    page.keyboard.press("e")
     assert page.evaluate(_active("tool-paste"))
     page.keyboard.press("p")
     assert page.evaluate(_active("tool-crop"))
+    # Ctrl+C / Ctrl+V no longer arm anything: the browser clipboard is not
+    # ours to hijack, so the crop tool stays active
     page.keyboard.press("Control+c")
-    assert page.evaluate(_active("tool-copy"))
+    assert not page.evaluate(_active("tool-copy"))
     page.keyboard.press("Control+v")
-    assert page.evaluate(_active("tool-paste"))
+    assert not page.evaluate(_active("tool-paste"))
+    assert not page.evaluate(_active("tool-clone"))  # plain C, not Ctrl+C
 
     # copy / paste use no brush: all four brush controls are disabled
     for sel in ("#brush-color", "#brush-size", "#brush-screen", "#brush-opacity"):
@@ -315,7 +318,7 @@ def test_crop_and_clone_target_the_selection(page, server):
     page.keyboard.press("d")
     page.evaluate("Tools.state.brush.color = '#ff0000'; Tools.state.brush.size = 12")
     stroke(page, [[94, 66]])  # local (4, 6)
-    page.keyboard.press("o")
+    page.keyboard.press("c")
     page.keyboard.down("Control")
     page.mouse.move(*screen_pos(page, 94, 66))
     page.mouse.down()
@@ -470,7 +473,7 @@ def test_paste_mode_moves_the_selection_and_cursors(page, server):
 
     # and the move drag keeps working with the paste tool re-armed: inside
     # the selection a drag moves it, a click OUTSIDE it drops a new copy
-    page.keyboard.press("v")
+    page.keyboard.press("e")
     page.mouse.move(*screen_pos(page, 120, 95))
     page.mouse.down()
     page.mouse.move(*screen_pos(page, 130, 95), steps=3)
@@ -490,7 +493,7 @@ def test_paste_mode_moves_the_selection_and_cursors(page, server):
     # a new copy (discarding itself left the copy tool, like Apply does)
     page.keyboard.press("Escape")
     assert page.evaluate("view.sel") is None
-    page.keyboard.press("v")
+    page.keyboard.press("e")
     page.mouse.click(*screen_pos(page, 160, 120))
     assert page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]") == [160, 120]
 
@@ -502,7 +505,7 @@ def test_selection_survives_tool_switch_and_dies_with_the_view(page, server):
     _copy(page, base)
     _paste(page, 150, 100)
 
-    for key in ("d", "s", "o", "m", "p"):
+    for key in ("d", "s", "c", "m", "p"):
         page.keyboard.press(key)
         assert page.evaluate("view.sel") is not None, f"lost on {key}"
 

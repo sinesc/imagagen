@@ -70,8 +70,8 @@ def test_tool_and_view_hotkeys(page, server):
 
     # the mask tool is disabled in "generate" mode -> inpaint first
     page.select_option("#mode", "inpaint_masked")
-    for key, tool in {"d": "brush", "s": "smudge", "o": "clone",
-                      "m": "mask", "p": "crop", "c": "copy", "v": "paste"}.items():
+    for key, tool in {"d": "brush", "s": "smudge", "c": "clone",
+                      "m": "mask", "p": "crop", "y": "copy", "e": "paste"}.items():
         page.keyboard.press(key)
         assert page.evaluate("Tools.current") == tool
 
@@ -186,13 +186,13 @@ def test_escape_clears_field_focus(page, server):
 
     # a floating selection survives the focus-clearing ESC: it takes a
     # second, focus-free ESC to discard it
-    page.keyboard.press("c")
+    page.keyboard.press("y")
     page.mouse.move(*screen_pos(page, 10, 10))
     page.mouse.down()
     page.mouse.move(*screen_pos(page, 50, 50), steps=5)
     page.mouse.up()
     assert wait_until(lambda: page.evaluate("view.clip") is not None)
-    page.keyboard.press("v")
+    page.keyboard.press("e")
     page.mouse.click(*screen_pos(page, 100, 100))
     assert page.evaluate("view.sel") is not None
     page.click("#prompt")

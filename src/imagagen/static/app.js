@@ -2644,13 +2644,12 @@ document.addEventListener("keydown", (e) => {
   escBlurFlag = true;
 }, true);
 
-// D / S / O / M / P / C / V switch tools (draw, smudge, clone, mask, crop,
+// D / S / C / M / P / Y / E switch tools (draw, smudge, clone, mask, crop,
 // copy, paste), N / K / R act on the mask, F fits the image, CTRL+S saves,
-// CTRL+G generates, CTRL+Z / CTRL+Y undo / redo, CTRL+C / CTRL+V arm the
-// copy / paste tools, ENTER applies a floating selection and ESC aborts an
-// in-flight rectangle or discards the selection (all when not typing in a
-// field; ESC on a focused field only clears that focus -- see the ESC handler
-// above);
+// CTRL+G generates and CTRL+Z / CTRL+Y undo / redo; ENTER applies a floating
+// selection and ESC aborts an in-flight rectangle or discards the selection
+// (all when not typing in a field; ESC on a focused field only clears that
+// focus -- see the ESC handler above);
 // SHIFT (clone tool, a source set) makes the source follow the cursor
 // until it is released
 document.addEventListener("keydown", (e) => {
@@ -2677,23 +2676,16 @@ document.addEventListener("keydown", (e) => {
     $("btn-generate").onclick();
     return;
   }
-  if (e.ctrlKey && !e.shiftKey && (e.key === "c" || e.key === "C")) {
-    e.preventDefault(); // the browser clipboard holds nothing of ours
-    switchTool("copy");
-    return;
-  }
-  if (e.ctrlKey && !e.shiftKey && (e.key === "v" || e.key === "V")) {
-    e.preventDefault();
-    switchTool("paste");
-    return;
-  }
+  // the plain-letter hotkeys are unmodified: anything else with CTRL / META /
+  // ALT belongs to the browser (CTRL+Z/Y/S/G were handled above)
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === "d" || e.key === "D") switchTool("brush");
   else if (e.key === "m" || e.key === "M") switchTool("mask");
-  else if (e.key === "o" || e.key === "O") switchTool("clone");
+  else if (e.key === "c" || e.key === "C") switchTool("clone");
   else if (e.key === "s" || e.key === "S") switchTool("smudge");
   else if (e.key === "p" || e.key === "P") switchTool("crop");
-  else if (e.key === "c" || e.key === "C") switchTool("copy");
-  else if (e.key === "v" || e.key === "V") switchTool("paste");
+  else if (e.key === "y" || e.key === "Y") switchTool("copy");
+  else if (e.key === "e" || e.key === "E") switchTool("paste");
   else if (e.key === "n" || e.key === "N") $("mask-dilate").onclick();
   else if (e.key === "k" || e.key === "K") $("mask-erode").onclick();
   else if (e.key === "r" || e.key === "R") $("mask-clear").onclick();

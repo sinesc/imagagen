@@ -1754,7 +1754,7 @@ function commitCopy(r) {
   c.getContext("2d").drawImage(view.base, x, y, w, h, 0, 0, w, h);
   view.clip = { img: c, w, h };
   syncToolbar(); // app.js: the paste button becomes enabled
-  setStatus(`copied ${w}\u00d7${h} \u2014 paste tool (V), click to place it`);
+  setStatus(`copied ${w}\u00d7${h} \u2014 paste tool (E), click to place it`);
 }
 
 // crop tool with an active selection: crop the SELECTION to the dragged

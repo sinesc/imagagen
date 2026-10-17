@@ -701,8 +701,8 @@ def test_clone_toolbar_button_and_shortcut(page, server):
     _open(page, base)
     _show(page, base)
     assert page.is_visible("#tool-clone")
-    # keyboard shortcut O selects the clone tool (C is the copy tool now)...
-    page.keyboard.press("o")
+    # keyboard shortcut C selects the clone tool (it used to be O)...
+    page.keyboard.press("c")
     assert page.evaluate(
         "document.getElementById('tool-clone').classList.contains('active')")
     assert page.evaluate(
@@ -742,7 +742,7 @@ def test_clone_ctrl_click_picks_source(page, server):
     base, _ = server
     _open(page, base)
     _show(page, base)
-    page.keyboard.press("o")
+    page.keyboard.press("c")
     # ctrl+click picks the source; it is NOT a stroke (nothing committed)
     dot(page, 40, 75, ctrl=True)
     assert page.evaluate("view.cloneSource") == pytest.approx([40, 75], abs=0.5)
@@ -794,7 +794,7 @@ def test_clone_drag_without_source_shows_hint(page, server):
     base, _ = server
     _open(page, base)
     _show(page, base)
-    page.keyboard.press("o")
+    page.keyboard.press("c")
     # plain drag without a picked source: hint shown, nothing committed
     stroke(page, [(40, 75), (60, 75)])
     assert "ctrl-click" in page.text_content("#status-line").lower()
@@ -808,7 +808,7 @@ def test_clone_drag_copies_pixels(page, server):
     _two_band(base)
     page.evaluate("viewRefresh()")
     page.wait_for_function("document.getElementById('canvas').hidden === false")
-    page.keyboard.press("o")
+    page.keyboard.press("c")
     dot(page, 30, 75, ctrl=True)  # source S in the left band
     assert page.evaluate("view.cloneSource") == pytest.approx([30, 75], abs=0.5)
 
@@ -862,7 +862,7 @@ def test_clone_opacity_is_not_stacked(page, server):
     _two_band(base)
     page.evaluate("viewRefresh()")
     page.wait_for_function("document.getElementById('canvas').hidden === false")
-    page.keyboard.press("o")
+    page.keyboard.press("c")
     set_input(page, "#brush-opacity", "0.4")
     dot(page, 30, 75, ctrl=True)
     page.mouse.move(*screen_pos(page, 140, 75))
@@ -889,7 +889,7 @@ def test_clone_shift_moves_source_relative(page, server):
     _two_band(base)
     page.evaluate("viewRefresh()")
     page.wait_for_function("document.getElementById('canvas').hidden === false")
-    page.keyboard.press("o")
+    page.keyboard.press("c")
     dot(page, 30, 75, ctrl=True)  # source S
 
     page.mouse.move(*screen_pos(page, 140, 75))
@@ -927,7 +927,7 @@ def test_clone_shift_release_mid_stroke_reverts_after(page, server):
     _two_band(base)
     page.evaluate("viewRefresh()")
     page.wait_for_function("document.getElementById('canvas').hidden === false")
-    page.keyboard.press("o")
+    page.keyboard.press("c")
     dot(page, 30, 75, ctrl=True)
     page.mouse.move(*screen_pos(page, 140, 75))
     page.keyboard.down("Shift")
@@ -948,7 +948,7 @@ def test_clone_shift_without_source_is_inert(page, server):
     _two_band(base)
     page.evaluate("viewRefresh()")
     page.wait_for_function("document.getElementById('canvas').hidden === false")
-    page.keyboard.press("o")
+    page.keyboard.press("c")
     page.mouse.move(*screen_pos(page, 100, 75))
     page.keyboard.down("Shift")
     page.mouse.move(*screen_pos(page, 120, 75))
@@ -965,7 +965,7 @@ def test_clone_ctrl_click_reanchors_shift_gesture(page, server):
     _two_band(base)
     page.evaluate("viewRefresh()")
     page.wait_for_function("document.getElementById('canvas').hidden === false")
-    page.keyboard.press("o")
+    page.keyboard.press("c")
     dot(page, 30, 75, ctrl=True)
     page.mouse.move(*screen_pos(page, 140, 75))
     page.keyboard.down("Shift")
