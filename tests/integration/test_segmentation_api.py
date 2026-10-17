@@ -76,6 +76,22 @@ def set_canvas(client, w=8, h=8):
     assert r.status_code == 200, r.text
 
 
+def clear_mask(client, w=8, h=8) -> None:
+    """Reset the canvas mask to empty (an upload inherits the current mask,
+    so re-uploading alone does not clear it)."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    bi, bm = BytesIO(), BytesIO()
+    Image.new("RGB", (w, h), (200, 30, 30)).save(bi, format="PNG")
+    Image.new("L", (w, h), 0).save(bm, format="PNG")
+    r = client.post("/api/canvas/sync",
+                    files={"image": ("canvas.png", bi.getvalue(), "image/png"),
+                           "mask": ("mask.png", bm.getvalue(), "image/png")})
+    assert r.status_code == 200, r.text
+
+
 def mask_png(client) -> np.ndarray | None:
     from io import BytesIO
 
@@ -110,9 +126,51 @@ def test_segmentation_mask_endpoint_writes_mask(client):
 
     mask = mask_png(client)
     assert mask.shape == (8, 8)
-    assert mask[0, 0] == 127      # hair: 0.5 * 255 = 127.5, truncated on cast
+    assert mask[0, 0] == 255      # hair (0.5) clears the 0.25 threshold -> opaque
     assert mask[7, 7] == 255      # face: full confidence
     assert mask[0, 7] == 0        # neither class
+
+
+def test_segmentation_threshold_and_feather(client):
+    set_canvas(client)
+
+    def seg(**extra):
+        clear_mask(client)  # the endpoint unions: start from an empty mask
+        r = client.post("/api/segmentation/mask", json={
+            "model": "selfie_multiclass_256x256.tflite",
+            "classes": ["hair", "face"], **extra,
+        })
+        assert r.status_code == 200, r.text
+        return mask_png(client)
+
+    # default threshold 0.25: hair (0.5) and face (1.0) are both opaque
+    assert seg()[0, 0] == 255
+
+    # a threshold above the hair confidence drops the hair block entirely
+    above = seg(threshold=0.6)
+    assert (above[:4, :4] == 0).all()
+    assert (above[4:, 4:] == 255).all()
+
+    # feather blurs the binary mask. (The 8x8 canvas is smaller than the
+    # blur kernel, so the whole mask softens here; the core-stays-opaque /
+    # edge-only behaviour is covered at a real size in tests/unit.)
+    hard = seg(feather=0)
+    assert int((hard == 255).sum()) == 32 and int((hard > 0).sum()) == 32
+    soft = seg(feather=2)
+    assert soft[7, 7] > 200                      # the face block stays near-opaque
+    assert int((soft > 0).sum()) > int((hard > 0).sum())  # the edge bled outwards
+
+    # out-of-range values are rejected by the request model (422)
+    r = client.post("/api/segmentation/mask", json={
+        "model": "selfie_multiclass_256x256.tflite", "classes": ["hair"],
+        "threshold": 1.5,
+    })
+    assert r.status_code == 422
+    r = client.post("/api/segmentation/mask", json={
+        "model": "selfie_multiclass_256x256.tflite", "classes": ["hair"],
+        "feather": -1,
+    })
+    assert r.status_code == 422
 
 
 def test_segmentation_unions_with_existing_mask(client):

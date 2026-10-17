@@ -18,7 +18,10 @@ const state = {
   presets: [], // preset names
   styles: [], // styles from /api/styles ({name, prompt, negative_prompt, optgroup, temporary})
   segModels: [], // segmentation models from /api/segmentation/models
+  segModel: null, // last-used model file name (the dialog's dropdown)
   segClasses: [], // last-used person-mask class selection ([] = default)
+  segThreshold: 0.25, // confidence cut (0..1) of the segmenter dialog
+  segFeather: 0, // mask edge feather radius (canvas px) of that dialog
   // the preset currently matching the form: {name, keys} where keys are its
   // enabled control keys. While set, the preset stays selected; a user edit of
   // any covered field clears it (clearActivePreset).
@@ -1729,19 +1732,18 @@ async function maskOp(op) {
 }
 
 // ---------------- person mask generation (Phase 5 segmentation) ----------------
-// models/segmentation/*.tflite -> /api/segmentation/models; the class
-// checkboxes come from the model's own labels (background excluded). The
-// result replaces the mask buffer (one undo step).
+// models/segmentation/*.tflite -> /api/segmentation/models. The dialog picks
+// the model, the classes (from the model's own labels, background excluded),
+// the confidence threshold and the edge feather; the result is unioned into
+// the mask buffer (one undo step).
 function openSegDialog() {
-  const model =
-    state.segModels.find((m) => m.id === $("seg-model").value) || null;
-  if (!model) {
+  if (!state.segModels.length) {
     openDialog(
       "Generate person mask",
       el(
         "div",
         { class: "muted" },
-        "no segmentation model selected — put a .tflite (e.g. " +
+        "no segmentation models found — put a .tflite (e.g. " +
           "selfie_multiclass_256x256.tflite) into models/segmentation/ and reload"
       ),
       null,
@@ -1749,28 +1751,78 @@ function openSegDialog() {
     );
     return;
   }
-  const defaults = model.labels.filter((l) => l !== "background");
-  const prev = state.segClasses.length ? state.segClasses : defaults;
-  const rows = defaults.map((label) => {
-    const cb = el("input", { type: "checkbox" });
-    cb.checked = prev.includes(label);
-    return el("label", { class: "seg-class" }, cb, label);
+
+  const modelSel = el("select", { class: "seg-model" });
+  state.segModels.forEach((m) => modelSel.append(opt(m.id, m.name)));
+  modelSel.value = state.segModels.some((m) => m.id === state.segModel)
+    ? state.segModel
+    : state.segModels[0].id;
+
+  // The class checkboxes follow the selected model's labels, so they are
+  // rebuilt whenever the model changes.
+  const classWrap = el("div", { class: "seg-classes" });
+  let rows = [];
+  const renderClasses = () => {
+    const model = state.segModels.find((m) => m.id === modelSel.value);
+    const labels = model.labels.filter((l) => l !== "background");
+    const prev = state.segClasses.length ? state.segClasses : labels;
+    classWrap.innerHTML = "";
+    rows = labels.map((label) => {
+      const cb = el("input", { type: "checkbox" });
+      cb.checked = prev.includes(label);
+      const row = el("label", { class: "seg-class" }, cb, label);
+      classWrap.append(row);
+      return row;
+    });
+  };
+  modelSel.onchange = renderClasses;
+  renderClasses();
+
+  const threshold = el("input", {
+    class: "seg-threshold", type: "number", min: "0", max: "1", step: "0.05",
+    title: "segmenter confidence cut (0–1): at or below it a pixel stays unmasked, above it the mask is fully opaque",
   });
-  const body = el("div", {},
+  threshold.value = state.segThreshold;
+  const feather = el("input", {
+    class: "seg-feather", type: "number", min: "0", max: "64", step: "1",
+    title: "feather the mask edge by this many pixels (0 = hard edge; the opaque core stays opaque)",
+  });
+  feather.value = state.segFeather;
+
+  const body = el("div", { class: "seg-dialog" },
+    el("label", {}, "Model", modelSel),
     el("div", { class: "muted" },
       `classes to add to the mask (union with the current mask, undoable — clear it first to replace):`),
-    el("div", { class: "seg-classes" }, ...rows),
+    classWrap,
+    el("div", { class: "row" },
+      el("label", {}, "Threshold", threshold),
+      el("label", {}, "Feather (px)", feather)),
   );
   openDialog("Generate person mask", body, async () => {
     const classes = rows.filter((r) => r.querySelector("input").checked)
       .map((r) => r.textContent.trim());
     if (!classes.length) return false; // keep the dialog open
+    const thr = parseFloat(threshold.value);
+    const fea = parseFloat(feather.value);
+    if (!Number.isFinite(thr) || thr < 0 || thr > 1) {
+      dialogError("threshold must be between 0 and 1");
+      return false;
+    }
+    if (!Number.isFinite(fea) || fea < 0 || fea > 64) {
+      dialogError("feather must be between 0 and 64 pixels");
+      return false;
+    }
     try {
       await forceSync(); // the server unions with ITS copy of the mask
       const snap = view.maskValues ? await snapCanvas(view.maskValues) : null;
-      const r = await api("/api/segmentation/mask", { model: model.id, classes });
+      const r = await api("/api/segmentation/mask", {
+        model: modelSel.value, classes, threshold: thr, feather: fea,
+      });
       if (r.changed && snap) stashMaskUndo(snap); // undoable across the refresh
+      state.segModel = modelSel.value;
       state.segClasses = classes;
+      state.segThreshold = thr;
+      state.segFeather = fea;
       scheduleSaveUiState(0);
       setStatus(`mask generated: ${r.pixels.toLocaleString()} px (undo to revert)`);
       viewRefresh();
@@ -1967,7 +2019,6 @@ function wireToolbar() {
   $("mask-dilate").onclick = () => maskOp("dilate");
   $("mask-erode").onclick = () => maskOp("erode");
   $("mask-clear").onclick = () => maskOp("clear");
-  $("seg-model").onchange = () => scheduleSaveUiState(0);
   $("seg-run").onclick = () => openSegDialog();
   $("rotation").onchange = () => { onUserFieldChange("rotation"); scheduleSaveUiState(0); };
   $("zoom-in").onclick = () => zoomCenter(1.25);
@@ -2273,8 +2324,10 @@ function readUiState() {
     styles: getStyles(),
     disabled_styles: getAllStyles().filter((x) => !x[1]).map((x) => x[0]),
     // preset is not persisted either: the dropdown always starts at "—"
-    seg_model: $("seg-model").value || null,
+    seg_model: state.segModel,
     seg_classes: state.segClasses,
+    seg_threshold: state.segThreshold,
+    seg_feather: state.segFeather,
     // the checked reference thumbnail (the server drops it when the
     // entity no longer exists)
     reference_image_id: state.referenceImageId || null,
@@ -2319,10 +2372,12 @@ function applyUiState(st) {
   // display-only restore: the model itself is NOT preloaded (it loads
   // lazily on the next generation, matching the registry design)
   if (st.model) $("model").value = st.model;
-  // person mask generation: class selection lives in JS state, the model
-  // select is restored here (after loadSegModels populated the dropdown)
+  // person mask generation: model, class selection, threshold and feather
+  // all live in JS state (the dialog reads them, the save writes them back)
   if (Array.isArray(st.seg_classes)) state.segClasses = st.seg_classes;
-  if (st.seg_model && $("seg-model").options.length) $("seg-model").value = st.seg_model;
+  if (typeof st.seg_model === "string") state.segModel = st.seg_model;
+  if (Number.isFinite(st.seg_threshold)) state.segThreshold = st.seg_threshold;
+  if (Number.isFinite(st.seg_feather)) state.segFeather = st.seg_feather;
   // reference image: the checked thumbnail id (restoreQueueThumbs renders
   // the strip afterwards; renderThumbs re-checks the matching thumb)
   if (st.reference_image_id) state.referenceImageId = st.reference_image_id;
@@ -2381,10 +2436,6 @@ async function init() {
     return;
   }
   state.segModels = sm.models;
-  const segSel = $("seg-model");
-  segSel.innerHTML = "";
-  if (!state.segModels.length) segSel.append(opt("", "no models"));
-  state.segModels.forEach((x) => segSel.append(opt(x.id, x.name)));
   state.entries = m.models;
   state.samplers = s.samplers;
   state.schedulers = s.schedulers;

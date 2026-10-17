@@ -151,9 +151,7 @@
         <button id="mask-dilate" class="mini" title="expand the mask by the given pixels (N)">Expa<u>n</u>d</button>
         <button id="mask-erode" class="mini" title="shrink the mask by the given pixels (K)">Shrin<u>k</u></button>
         <button id="mask-clear" class="mini" title="clear the whole mask (R)">Clea<u>r</u></button>
-        <span class="sep"></span>
-        <select id="seg-model" title="segmentation model (tflite file from models/segmentation/)"></select>
-        <button id="seg-run" class="mini" title="generate a person mask (selected body-part classes) from the current image, added to the mask buffer (union, undoable)">Segment</button>
+        <button id="seg-run" class="mini" title="generate a person mask from the current image: pick the model, the body-part classes, the confidence threshold and the edge feather; the result is added to the mask buffer (union, undoable)">Segment</button>
         <span class="sep"></span>
         <button id="tool-crop" class="tool mini" title="crop tool (P); drag a rectangle to crop the displayed image (Esc while dragging aborts); with a floating selection active it crops that selection">Cro<u>p</u></button>
         <button id="tool-copy" class="tool mini" title="copy tool (C); drag a rectangle to copy that area of the image (Esc while dragging aborts)"><u>C</u>opy</button>

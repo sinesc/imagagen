@@ -793,6 +793,10 @@ button.danger:hover { background: #a33; }
 }
 .preset-manage-wrap > button { flex: none; }
 
+/* person mask generation dialog: model dropdown, the class checkboxes, and
+   the threshold / feather row (same field spacing as the other dialogs) */
+.seg-dialog { display: flex; flex-direction: column; gap: 0.55rem; }
+.seg-dialog select, .seg-dialog input { width: 100%; box-sizing: border-box; }
 /* person mask generation dialog: one checkbox per body-part class.
    #dialog-body label is flex-column (label-over-control for the config
    dialogs), so the checkbox rows must opt back into a row layout. */

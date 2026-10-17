@@ -1,4 +1,5 @@
-"""Person mask generation UI (Phase 5): model dropdown + class dialog.
+"""Person mask generation UI (Phase 5): the segment dialog (model dropdown,
+class checkboxes, threshold, feather) and the mask it writes.
 
 Drives a real Chromium against a mock-backend server that carries the
 *real* selfie tflite model (copied from the repo's models/segmentation/
@@ -42,22 +43,29 @@ def test_segment_mask_flow(seg_env, page):
     page.goto(base)
     page.wait_for_selector("#toolbar")
 
-    # the model dropdown is populated from /api/segmentation/models
-    sel = page.locator("#seg-model")
-    assert wait_until(
-        lambda: sel.locator("option").count() >= 1, timeout=30
-    ), "segmentation model dropdown not populated"
-    assert "selfie_multiclass_256x256" in sel.inner_text()
+    # the model dropdown lives in the dialog now, not in the toolbar
+    assert page.locator("#toolbar select").filter(
+        has=page.locator("#seg-model")).count() == 0
 
-    # open the class dialog: 5 checkboxes (background excluded)
+    # open the dialog: model dropdown, 5 class checkboxes (background
+    # excluded), threshold + feather inputs
     page.click("#seg-run")
     page.wait_for_selector("#dialog:not([hidden])")
+    model_sel = page.locator("#dialog select.seg-model")
+    assert wait_until(
+        lambda: model_sel.locator("option").count() >= 1, timeout=30
+    ), "segmentation model dropdown not populated"
+    assert "selfie_multiclass_256x256" in model_sel.inner_text()
     boxes = page.locator("#dialog .seg-class input")
     assert boxes.count() == 5
+    assert page.locator("#dialog input.seg-threshold").count() == 1
+    assert page.locator("#dialog input.seg-feather").count() == 1
 
     # keep only hair + face: uncheck body-skin, clothes, others
     for label in ("body-skin", "clothes", "others"):
         boxes.nth(_index_of(boxes, label)).uncheck()
+    # a feathered edge (the mask core stays fully opaque, the border softens)
+    page.fill("#dialog input.seg-feather", "6")
     page.click("#dialog-ok")  # "Generate"; the dialog stays open on failure
     assert wait_until(
         lambda: page.locator("#dialog").evaluate("el => el.hidden"), timeout=30
@@ -69,8 +77,10 @@ def test_segment_mask_flow(seg_env, page):
     mask = mask_arr(base)
     # hair+face only: the face/skirt (clothes) region must stay unmasked.
     # The woman's face is roughly at (700, 180); her skirt at (700, 700).
-    assert mask[180, 700] > 0, "face region should be masked"
+    assert mask[180, 700] == 255, "face region should be fully opaque"
     assert mask[700, 700] == 0, "clothes region should not be masked"
+    # the feather produced partial-alpha edge pixels (a soft border)
+    assert ((mask > 0) & (mask < 255)).sum() > 0, "feathered edge expected"
     # most of the image stays unmasked (a person is <50% of the frame)
     assert (mask > 0).mean() < 0.5
 
@@ -82,6 +92,41 @@ def test_segment_mask_flow(seg_env, page):
     page.click("#btn-undo")
     assert wait_until(
         lambda: (m := mask_arr(base)) is not None and m.max() == 0)
+
+
+def test_segment_dialog_values_are_persisted(seg_env, page):
+    """Threshold + feather + the chosen model ride in the ui-state."""
+    base, _ = seg_env
+    page.goto(base)
+    page.wait_for_selector("#toolbar")
+    page.click("#seg-run")
+    page.wait_for_selector("#dialog:not([hidden])")
+    page.fill("#dialog input.seg-threshold", "0.7")
+    page.fill("#dialog input.seg-feather", "12")
+    page.click("#dialog-ok")
+    assert wait_until(
+        lambda: page.locator("#dialog").evaluate("el => el.hidden"), timeout=30)
+
+    def ui_state():
+        import httpx
+
+        # GET /api/ui-state wraps the state object in {"state": {...}}
+        return httpx.get(f"{base}/api/ui-state", timeout=10).json()["state"]
+
+    assert wait_until(
+        lambda: ui_state().get("seg_threshold") == 0.7
+        and ui_state().get("seg_feather") == 12
+        and ui_state().get("seg_model") == "selfie_multiclass_256x256.tflite",
+        timeout=30,
+    ), f"segmentation values not persisted: {ui_state()}"
+
+    # a fresh page restores them into the dialog
+    page.reload()
+    page.wait_for_selector("#toolbar")
+    page.click("#seg-run")
+    page.wait_for_selector("#dialog:not([hidden])")
+    assert page.input_value("#dialog input.seg-threshold") == "0.7"
+    assert page.input_value("#dialog input.seg-feather") == "12"
 
 
 def _index_of(boxes, label) -> int:

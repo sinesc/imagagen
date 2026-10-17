@@ -40,7 +40,8 @@ from .paths import next_output_path
 from .presets import Preset, PresetError, PresetSaveRequest, PresetStore
 from .queue import GenerationQueue
 from .sag import SelfAttentionGuidance
-from .segmentation import SegmentationError, SegmentationService
+from .segmentation import (CONFIDENCE_THRESHOLD, MAX_FEATHER,
+                           SegmentationError, SegmentationService)
 from .soft_inpaint import SoftInpainting
 from .styles import Style, StyleStore, apply_styles, strip_prompt_comments
 from .uistate import UiState, UiStateStore
@@ -246,6 +247,11 @@ class SaveBody(BaseModel):
 class SegmentationMaskBody(BaseModel):
     model: str  # file name in models/segmentation/
     classes: list[str] = Field(default_factory=list)  # class labels to union
+    # cut on the segmenter confidence (0..1): at/below it a pixel stays
+    # transparent, above it it is fully opaque (see segmentation.py)
+    threshold: float = Field(CONFIDENCE_THRESHOLD, ge=0.0, le=1.0)
+    # edge feather radius in canvas px (0 = hard edge)
+    feather: float = Field(0.0, ge=0.0, le=MAX_FEATHER)
 
 
 class SelectBody(BaseModel):
@@ -1134,7 +1140,9 @@ def create_app(
         image = canvas.image
         assert image is not None
         try:
-            seg = app.state.segmentation.generate(body.model, body.classes, image)
+            seg = app.state.segmentation.generate(
+                body.model, body.classes, image,
+                threshold=body.threshold, feather=body.feather)
         except SegmentationError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         # union with the existing mask (element-wise max of the alpha);

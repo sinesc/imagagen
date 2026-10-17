@@ -116,37 +116,89 @@ def test_generate_unions_classes_by_max_confidence(tmp_path):
     hair[0, :3] = 0.5
     face = np.zeros((H, W), np.float32)
     face[0, 2] = 0.9  # overlaps hair's support at (0,2)
-    face[3, 4] = 0.3  # above the 0.25 confidence threshold
+    face[3, 4] = 0.3  # above the 0.25 threshold (after peak-normalizing)
     svc = make_service(tmp_path, {
         "m.tflite": (["background", "hair", "face"], [[0.0], hair, face]),
     })
     rgb = np.zeros((H, W, 3), np.uint8)
     mask = svc.generate("m.tflite", ["hair", "face"], rgb)
     assert mask.shape == (H, W) and mask.dtype == np.uint8
-    expected = (np.maximum(hair, face) / 0.9 * 255).astype(np.uint8)
+    # binarized: every pixel whose union confidence clears the threshold is
+    # FULLY opaque (no partial alpha), everything else is zero
+    union = np.maximum(hair, face)
+    expected = np.where(union > 0.25, 255, 0).astype(np.uint8)
     assert np.array_equal(mask, expected)
-    # the overlap pixel keeps the higher confidence (0.9, the peak -> 255)
-    assert mask[0, 2] == 255
-    # and the peak normalizes the rest proportionally (0.5 -> 0.5/0.9)
-    assert mask[0, 0] == 141
+    assert mask[0, 2] == 255  # the overlap pixel (the peak)
+    assert mask[0, 0] == 255  # hair at 0.5 -> above the cut -> opaque
+    assert mask[3, 4] == 255  # 0.3 -> above the cut -> opaque
+    assert mask[1, 1] == 0    # no class support here
 
 
-def test_generate_peak_normalized_to_full_opacity(tmp_path):
-    # the models' confidences are not calibrated to 1.0 (solid regions
-    # top out ~0.7-0.9): the highest confidence of the run must map to
-    # a fully opaque mask
+def test_generate_threshold_binarizes_the_union(tmp_path):
+    # at/below the cut -> transparent, above -> FULLY opaque (the raw
+    # confidence is not kept as the alpha: a solid region only reaches
+    # ~0.7-0.9, which would render the core semi-transparent)
     conf = np.zeros((2, 3), np.float32)
     conf[0, :] = [0.2, 0.8, 0.4]
     svc = make_service(tmp_path, {"m.tflite": (["background", "hair"], [[0.0], conf])})
     mask = svc.generate("m.tflite", ["hair"], np.zeros((2, 3, 3), np.uint8))
-    assert mask.max() == 255  # 0.8 -> 1.0
-    assert mask[0, 1] == 255  # the peak pixel is fully opaque
-    assert mask[0, 2] == 127  # 0.4 / 0.8 * 255 = 127.5, truncated on cast
-    assert mask[0, 0] == 0    # 0.2 is below the 0.25 threshold
+    assert mask[0].tolist() == [0, 255, 255]
     assert mask[1].tolist() == [0, 0, 0]
 
+    # a higher threshold drops the mid-confidence pixels as well
+    mask = svc.generate("m.tflite", ["hair"], np.zeros((2, 3, 3), np.uint8),
+                        threshold=0.6)
+    assert mask[0].tolist() == [0, 255, 0]
 
-def test_generate_single_class_is_confidence_alpha(tmp_path):
+
+def test_generate_threshold_zero_keeps_every_supporting_pixel(tmp_path):
+    conf = np.zeros((1, 3), np.float32)
+    conf[0] = [0.01, 0.5, 0.0]
+    svc = make_service(tmp_path, {"m.tflite": (["background", "hair"], [[0.0], conf])})
+    mask = svc.generate("m.tflite", ["hair"], np.zeros((1, 3, 3), np.uint8),
+                        threshold=0.0)
+    assert mask[0].tolist() == [255, 255, 0]  # 0.01 > 0, exact 0 is not
+
+
+def test_generate_feather_softens_the_edge_and_keeps_the_core(tmp_path):
+    # a solid block with a hard edge: feathering must keep the interior
+    # fully opaque and only soften the boundary
+    conf = np.zeros((40, 40), np.float32)
+    conf[10:30, 10:30] = 1.0
+    svc = make_service(tmp_path, {"m.tflite": (["background", "hair"], [[0.0], conf])})
+    rgb = np.zeros((40, 40, 3), np.uint8)
+
+    hard = svc.generate("m.tflite", ["hair"], rgb, feather=0.0)
+    assert (hard[10:30, 10:30] == 255).all()
+    assert hard[9, 9] == 0 and hard[30, 30] == 0  # hard edge
+
+    soft = svc.generate("m.tflite", ["hair"], rgb, feather=3.0)
+    assert soft[20, 20] == 255  # the core stays fully opaque
+    assert soft[9, 20] > 0      # the edge feathered outwards
+    assert soft[0, 20] == 0     # far outside stays unmasked
+    assert int((soft > 0).sum()) > int((hard > 0).sum())  # feather grew the mask
+    assert soft[10, 10] < 255   # the corner softened
+
+
+def test_generate_feather_rejects_out_of_range(tmp_path):
+    conf = np.full((2, 2), 1.0, np.float32)
+    svc = make_service(tmp_path, {"m.tflite": (["background", "hair"], [[0.0], conf])})
+    rgb = np.zeros((2, 2, 3), np.uint8)
+    with pytest.raises(SegmentationError, match="feather must be between"):
+        svc.generate("m.tflite", ["hair"], rgb, feather=-1)
+    with pytest.raises(SegmentationError, match="feather must be between"):
+        svc.generate("m.tflite", ["hair"], rgb, feather=1000)
+
+
+def test_generate_threshold_rejects_out_of_range(tmp_path):
+    conf = np.full((2, 2), 1.0, np.float32)
+    svc = make_service(tmp_path, {"m.tflite": (["background", "hair"], [[0.0], conf])})
+    rgb = np.zeros((2, 2, 3), np.uint8)
+    with pytest.raises(SegmentationError, match="threshold must be between"):
+        svc.generate("m.tflite", ["hair"], rgb, threshold=1.5)
+
+
+def test_generate_single_class_is_fully_opaque(tmp_path):
     conf = np.full((2, 2), 1.0, np.float32)
     svc = make_service(tmp_path, {"m.tflite": (["background", "hair"], [[0.0], conf])})
     mask = svc.generate("m.tflite", ["hair"], np.zeros((2, 2, 3), np.uint8))
@@ -155,12 +207,13 @@ def test_generate_single_class_is_confidence_alpha(tmp_path):
 
 def test_generate_sub_threshold_confidence_is_zero(tmp_path):
     # the real model scores ~0.017 (baseline) on every pixel for every
-    # class: below CONFIDENCE_THRESHOLD a class is "not there". An all-
-    # sub-threshold run stays all zero (peak-normalization must not
-    # divide by zero / rescale noise).
+    # class: a run that never clears the threshold stays all zero (the
+    # threshold runs on the raw confidence, so baseline noise can never
+    # be rescaled into a mask).
     conf = np.full((2, 2), 0.1, np.float32)
     svc = make_service(tmp_path, {"m.tflite": (["background", "hair"], [[0.0], conf])})
-    mask = svc.generate("m.tflite", ["hair"], np.zeros((2, 2, 3), np.uint8))
+    mask = svc.generate("m.tflite", ["hair"], np.zeros((2, 2, 3), np.uint8),
+                        threshold=0.5)
     assert (mask == 0).all()
 
 

@@ -141,10 +141,13 @@ class UiState(BaseModel):
     # style names shown toggled off in the UI (not applied, kept in the list)
     disabled_styles: list[str] = Field(default_factory=list)
     # person mask generation (Phase 5): the selected segmentation model
-    # (file name in models/segmentation/) and the last-used class
-    # selection (empty = "all classes except background")
+    # (file name in models/segmentation/), the last-used class selection
+    # (empty = "all classes except background"), the confidence threshold
+    # (0..1) and the mask edge feather radius in canvas px (0 = hard edge)
     seg_model: str | None = None
     seg_classes: list[str] = Field(default_factory=list)
+    seg_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
+    seg_feather: float = Field(default=0.0, ge=0.0, le=64.0)
     # the thumbnail checked as "reference image" (canvas entity id; the
     # generation conditions on it). Not a generation parameter -- it is a
     # UI selection, allowed by the ui-state exclusions rule. The server

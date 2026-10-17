@@ -5,15 +5,12 @@ MediaPipe *image segmenter* tflite model (e.g.
 ``selfie_multiclass_256x256.tflite``, whose classes are
 background / hair / body-skin / face-skin / clothes / others) runs on the
 current canvas image and the per-class *confidence* masks of the selected
-classes are unioned (element-wise maximum) into the canvas mask buffer
-as 0..255 alpha. Unlike the reference implementation (which thresholds
-confidence at 0.25 into a binary mask) we keep the confidence as the
-alpha, so the mask gets soft edges and the inpaint mask-blending uses
-them. The union is then peak-normalized per run (highest confidence ->
-full opacity), because the models' confidences are not calibrated to
-1.0 — a "solid" region typically only reaches ~0.7–0.9, which would
-render the mask core as semi-transparent.
-
+classes are unioned (element-wise maximum). The union is then
+**binarized** at a user threshold: confidence at or below the threshold
+produces no mask pixel, everything above it is fully opaque — a mask with
+a hard, fully opaque core. An optional *feather* radius Gaussian-blurs
+that binary mask, which softens the edge (and only the edge: the core
+stays fully opaque) so the inpaint blend gets a smooth transition.
 Every ``*.tflite`` file in ``models/segmentation/`` is offered to the UI;
 the class names come from the model itself (``ImageSegmenter.labels``),
 so any multiclass segmenter works, not just the selfie one. MediaPipe is
@@ -71,13 +68,15 @@ def _quiet_stderr():
     os.close(saved_fd)
 
 
-# The selfie model's per-class confidences are not sparse: every class
-# scores ~0.017 (a baseline) on every pixel, with boundary pixels up to
-# ~0.6. Below the threshold a class counts as "not there"; above it the
-# raw confidence is kept as the mask alpha, so the mask gets soft edges
-# (the reference implementation uses this same 0.25 cut, but binarizes
-# everything instead).
+# Default cut for the union confidence: the selfie model's per-class
+# confidences are not sparse — every class scores ~0.017 (a baseline) on
+# every pixel, with boundary pixels up to ~0.6 and solid regions around
+# 0.7–0.9. Confidence at or below the cut produces no mask; above it the
+# pixel is fully opaque (the UI exposes this as the "Threshold" field).
 CONFIDENCE_THRESHOLD = 0.25
+
+# Upper bound for the feather radius in canvas px (mirrors the UI input).
+MAX_FEATHER = 64
 
 
 class SegmentationError(Exception):
@@ -184,20 +183,36 @@ class SegmentationService:
             self._segmenters.clear()
 
     def generate(
-        self, model_id: str, classes: list[str], rgb: np.ndarray
+        self,
+        model_id: str,
+        classes: list[str],
+        rgb: np.ndarray,
+        threshold: float = CONFIDENCE_THRESHOLD,
+        feather: float = 0.0,
     ) -> np.ndarray:
         """Segment ``rgb`` (HxWx3 uint8) and return the union mask of the
         selected classes as HxW uint8 alpha.
 
-        Alpha = confidence * 255, peak-normalized per run so the highest
-        confidence of the union maps to full opacity (the models' raw
-        confidences top out well below 1.0).
+        The union is cut at ``threshold`` (a confidence in 0..1): at or
+        below it a pixel stays transparent, above it it is fully opaque.
+        The models' confidences are not calibrated to 1.0 (a solid region
+        tops out around 0.7–0.9), which is why the binarized mask is fully
+        opaque instead of carrying the confidence as alpha. ``feather``
+        (canvas px, 0 = off) Gaussian-blurs the resulting binary mask,
+        softening only its edge.
 
         Raises :class:`SegmentationError` for unknown models, unknown
-        classes, or an empty selection.
+        classes, an empty selection, or an out-of-range threshold/feather.
         """
         if not classes:
             raise SegmentationError("no classes selected")
+        if not 0.0 <= threshold <= 1.0:
+            raise SegmentationError(
+                f"threshold must be between 0.0 and 1.0 (got {threshold})")
+        if not 0.0 <= feather <= MAX_FEATHER:
+            raise SegmentationError(
+                f"feather must be between 0 and {MAX_FEATHER} px "
+                f"(got {feather})")
         seg = self.segmenter(model_id)
         labels = list(seg.labels)
         missing = sorted({c for c in classes if c not in labels})
@@ -217,19 +232,26 @@ class SegmentationService:
                     a = a.reshape(rgb.shape[:2])
                 confs.append(a)
         # Union: element-wise maximum of the selected classes' confidences
-        # (dedup preserves the user's order; order does not matter for max),
-        # then drop the sub-threshold baseline ("not there" pixels -> 0)
+        # (dedup preserves the user's order; order does not matter for max)
         mask = None
         for name in dict.fromkeys(classes):
             a = np.clip(confs[labels.index(name)], 0.0, 1.0)
             mask = a if mask is None else np.maximum(mask, a)
         assert mask is not None
-        mask = np.where(mask > CONFIDENCE_THRESHOLD, mask, 0.0)
-        # Peak-normalize: the models' confidences are not calibrated to
-        # 1.0 (solid regions top out ~0.7-0.9), so scale the union so its
-        # highest confidence is fully opaque. (Monotone, so the threshold
-        # cut above is unaffected.)
-        peak = float(mask.max())
-        if peak > 0.0:
-            mask = mask / peak
-        return (mask * 255.0).astype(np.uint8)
+        # Cut at the threshold and binarize: the confidence is NOT kept as
+        # the alpha (a solid region only reaches ~0.7-0.9, which would
+        # render the core semi-transparent), so above the cut a pixel is
+        # fully opaque. The cut runs on the raw confidence on purpose: a
+        # per-run peak-normalization would make the threshold relative and
+        # turn an all-noise run (a class that is not in the image at all)
+        # into a fully masked canvas.
+        mask = np.where(mask > threshold, 255.0, 0.0)
+        if feather > 0.0:
+            # Blur the binary mask: the edge softens, the opaque core
+            # (interior) stays fully opaque.
+            from PIL import Image, ImageFilter
+
+            im = Image.fromarray(mask.astype(np.uint8), mode="L")
+            im = im.filter(ImageFilter.GaussianBlur(radius=feather))
+            mask = np.asarray(im, dtype=np.float64)
+        return mask.astype(np.uint8)
