@@ -1798,3 +1798,88 @@ def test_shift_wheel_changes_opacity(page, server):
     for _ in range(300):
         _wheel(page, delta_y=120, shift=True)
     assert page.evaluate("Tools.get().opacity") == 0.05
+
+
+# ---------------- cursor tool indicator ----------------
+
+
+def test_tool_indicator_text_and_rendering(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+
+    def indicator():
+        return page.evaluate("toolIndicatorText()")
+
+    def hover(x, y):
+        page.mouse.move(*screen_pos(page, x, y))
+        page.wait_for_function("view.cursor !== null")
+
+    hover(100, 75)
+    assert indicator() == "D"  # brush (draw)
+    page.keyboard.down("Control")
+    assert indicator() == "D:P"  # colour-picker mode
+    page.keyboard.up("Control")
+    # brush eraser only within a floating selection (probe the function
+    # directly; a fake view.sel must not go through viewRedraw)
+    assert (
+        page.evaluate(
+            """() => {
+                const s = view.sel, sh = shiftDown;
+                shiftDown = true;
+                view.sel = { sw: 10, sh: 10 };
+                const t = toolIndicatorText();
+                shiftDown = sh; view.sel = s;
+                return t;
+            }"""
+        )
+        == "D:E"
+    )
+    page.keyboard.press("s")
+    assert indicator() == "S"
+    page.keyboard.press("c")
+    assert indicator() == "C"
+    page.keyboard.press("m")
+    assert indicator() == "M"
+    page.keyboard.down("Shift")
+    assert indicator() == "M:E"
+    page.keyboard.up("Shift")
+    page.keyboard.press("p")
+    assert indicator() == "Crop"
+    page.keyboard.press("y")
+    assert indicator() == "Copy"
+    page.keyboard.press("e")
+    assert indicator() is None  # paste: no indicator
+    page.keyboard.press("d")
+    hover(100, 75)
+    page.wait_for_timeout(100)
+
+    # the badge is actually painted bottom-right of the cursor: grey text
+    # pixels (r ~ 117 over the dark BG) in the box right of/below the point
+    hits = page.evaluate(
+        """() => {
+            const c = document.getElementById('canvas');
+            const dpr = view.dpr;
+            const d = c.getContext('2d').getImageData(
+                Math.round((view.cursor[0] + 8) * dpr),
+                Math.round((view.cursor[1] + 4) * dpr),
+                Math.round(16 * dpr), Math.round(16 * dpr)).data;
+            let n = 0;
+            for (let i = 0; i < d.length; i += 4) if (d[i] > 100) n++;
+            return n;
+        }"""
+    )
+    assert hits > 5, f"no badge pixels near the cursor ({hits})"
+    # leaving the canvas removes cursor and badge (no stale text)
+    page.mouse.move(5, 5)
+    page.wait_for_function("!document.getElementById('canvas').hidden && view.cursor === null")
+    hits = page.evaluate(
+        """() => {
+            const c = document.getElementById('canvas');
+            const d = c.getContext('2d').getImageData(108, 79, 16, 16).data;
+            let n = 0;
+            for (let i = 0; i < d.length; i += 4) if (d[i] > 100) n++;
+            return n;
+        }"""
+    )
+    assert hits == 0

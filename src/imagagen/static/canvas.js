@@ -139,6 +139,7 @@ function viewRedraw() {
   if (view.crop) drawCropOverlay(ctx);
   if (view.sel) drawSelectionOverlay(ctx);
   drawCursor(ctx);
+  drawToolIndicator(ctx);
   drawCloneCrosshairs(ctx);
   syncSelActions(); // the apply / discard pair follows the selection
   syncCanvasCursor(); // hovering a handle changes the cursor
@@ -748,6 +749,42 @@ function drawCursor(ctx) {
     return;
   }
   drawBrushRing(ctx, p[0], p[1]);
+}
+
+// text badge for the current tool, drawn bottom-right of the cursor (see
+// drawToolIndicator). null = no indicator (paste).
+function toolIndicatorText() {
+  const tool = Tools.current;
+  if (tool === "brush") {
+    if (ctrlDown) return "D:P"; // colour-picker mode
+    if (shiftDown && view.sel) return "D:E"; // eraser within a selection
+    return "D";
+  }
+  if (tool === "smudge") return "S";
+  if (tool === "clone") return "C";
+  if (tool === "mask") return shiftDown ? "M:E" : "M";
+  if (tool === "crop") return "Crop";
+  if (tool === "copy") return "Copy";
+  return null; // paste (and anything else): no indicator
+}
+
+// The badge is drawn in screen space (constant size at any zoom) with the
+// same font size / grey colour / drop shadow as the mask bbox size label.
+function drawToolIndicator(ctx) {
+  if (!view.has || !view.cursor) return;
+  const text = toolIndicatorText();
+  if (!text) return;
+  ctx.save();
+  ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+  ctx.font = "15px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(128,128,128,0.9)";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.shadowColor = "rgba(0,0,0,0.85)";
+  ctx.shadowBlur = 1;
+  ctx.shadowOffsetY = 1;
+  ctx.fillText(text, view.cursor[0] + 10, view.cursor[1] + 6);
+  ctx.restore();
 }
 
 // shift held: with a floating selection active the draw tool erases (see
