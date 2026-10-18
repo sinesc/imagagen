@@ -256,6 +256,31 @@ def test_selection_handles_resize_and_rotate(page, server):
     assert _canvas_size(base) == (200, 150)
 
 
+def test_ctrl_picker_samples_the_blended_selection(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base)
+    _paste(page, 150, 100)  # selection covers world (130,80)..(170,120)
+    page.keyboard.press("d")  # draw tool; ctrl+click = colour picker
+    page.evaluate("Tools.state.brush.color = '#123456'")
+
+    # inside the selection: pick the SELECTION's colour, not the base behind it
+    dot(page, 150, 100, ctrl=True)
+    assert page.evaluate("Tools.state.brush.color") == "#f0dc0a"
+
+    # off the selection: the picker still reads the plain background
+    page.evaluate("Tools.state.brush.color = '#123456'")
+    dot(page, 60, 120, ctrl=True)
+    assert page.evaluate("Tools.state.brush.color") == "#141e28"
+
+    # a pick is not a stroke: the selection and the base are untouched
+    assert page.evaluate(
+        "view.sel.img.getContext('2d').getImageData(20, 20, 1, 1).data.slice(0, 4).join(',')"
+    ) == "240,220,10,255"
+    assert canvas_px(base, 150, 100) == BG
+
+
 def test_draw_on_selection_and_shift_erase(page, server):
     base, _ = server
     _open(page, base)

@@ -814,8 +814,25 @@ function pickBrushColor(p) {
   const x = Math.min(view.w - 1, Math.max(0, Math.round(p[0])));
   const y = Math.min(view.h - 1, Math.max(0, Math.round(p[1])));
   const d = view.base.getContext("2d").getImageData(x, y, 1, 1).data;
+  let r = d[0], g = d[1], b = d[2];
+  // with an active floating selection over the click, the colour the user
+  // SEES is the base blended with the selection overlay, so the picker must
+  // blend too (the overlay never lives in view.base)
+  if (view.sel && selContains(p)) {
+    const s = view.sel;
+    const q = selLocal(p); // [0..sw] x [0..sh]; the image is stretched to fill
+    const ix = Math.min(s.img.width - 1, Math.max(0, Math.floor((q[0] / s.sw) * s.img.width)));
+    const iy = Math.min(s.img.height - 1, Math.max(0, Math.floor((q[1] / s.sh) * s.img.height)));
+    const sd = s.img.getContext("2d").getImageData(ix, iy, 1, 1).data;
+    const a = sd[3] / 255;
+    if (a > 0) {
+      r = Math.round(sd[0] * a + r * (1 - a));
+      g = Math.round(sd[1] * a + g * (1 - a));
+      b = Math.round(sd[2] * a + b * (1 - a));
+    }
+  }
   const hex =
-    "#" + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join("");
+    "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
   Tools.state.brush.color = hex;
   scheduleSaveUiState(); // app.js
   syncToolbar(); // app.js: update the swatch
