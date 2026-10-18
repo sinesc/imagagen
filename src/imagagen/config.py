@@ -30,6 +30,16 @@ class Config:
     unet_quantization: str = "off"  # "off" | "nf4"
     text_encoder_device: str = "gpu"  # "gpu" | "cpu"
     vae_tiling: bool = False
+    # Seconds the queue waits after going idle before parking the loaded
+    # models out of VRAM into RAM (0 = park immediately, -1 = never park
+    # explicitly; the models are still unloaded whenever VRAM is needed).
+    transformer_parking_delay: float = 90.0
+    # On a prompt change whose final prompt would miss the prompt-encoding
+    # cache (always true for wildcard prompts), immediately move the GPU to
+    # its "about to encode" layout (text encoders resident, transformer
+    # parked when they cannot co-reside) instead of waiting for the next
+    # generation to pay the swap.
+    prefetch_text_encoder: bool = False
     # Development aid: no-store on all responses (see cache middleware in
     # app.py); without it responses are revalidated on every request.
     debug: bool = False
@@ -132,6 +142,8 @@ def load_config(root: Path | str | None = None) -> Config:
         debug,
         save_ui_state,
         mask_overlay_opacity,
+        transformer_parking_delay,
+        prefetch_text_encoder,
     ) = _parse_ini(root / "user" / "imagagen.ini")
     config = Config(
         root=root,
@@ -143,6 +155,8 @@ def load_config(root: Path | str | None = None) -> Config:
         debug=debug,
         save_ui_state=save_ui_state,
         mask_overlay_opacity=mask_overlay_opacity,
+        transformer_parking_delay=transformer_parking_delay,
+        prefetch_text_encoder=prefetch_text_encoder,
     )
     # Must happen before huggingface_hub is imported (it reads these at
     # import time): cache hub files in the project, keep the console quiet.
@@ -195,21 +209,24 @@ def load_config(root: Path | str | None = None) -> Config:
 
 def _parse_ini(
     path: Path,
-) -> tuple[int | None, frozenset[int], str, str, bool, bool, bool, float]:
+) -> tuple[int | None, frozenset[int], str, str, bool, bool, bool, float,
+           float, bool]:
     """Parse ``<root>/user/imagagen.ini``: GPU selection, VRAM options, debug.
 
     A missing file yields the defaults
-    (auto, none, off, gpu, False, False, True, 0.9).
+    (auto, none, off, gpu, False, False, True, 0.9, 90.0, False).
     """
     if not path.is_file():
-        return None, frozenset(), "off", "gpu", False, False, True, 0.9
+        return (None, frozenset(), "off", "gpu", False, False, True, 0.9,
+                90.0, False)
     cp = configparser.ConfigParser()
     try:
         cp.read(path, encoding="utf-8")
     except configparser.Error as e:
         raise ValueError(f"cannot parse {path.name}: {e}") from e
     if not cp.has_section("imagagen"):
-        return None, frozenset(), "off", "gpu", False, False, True, 0.9
+        return (None, frozenset(), "off", "gpu", False, False, True, 0.9,
+                90.0, False)
     sec = cp["imagagen"]
 
     raw = sec.get("primary-gpu", "auto").strip().lower()
@@ -274,6 +291,27 @@ def _parse_ini(
             f"{path.name}: mask-overlay-opacity must be in [0, 1], "
             f"got {mask_overlay_opacity!r}"
         )
+    try:
+        parking_delay = float(sec.get("transformer-parking-delay", "90"))
+    except ValueError:
+        raise ValueError(
+            f"{path.name}: transformer-parking-delay must be a number of "
+            f"seconds, -1 (never park) or 0 (park immediately), got "
+            f"{sec.get('transformer-parking-delay')!r}"
+        ) from None
+    if parking_delay < -1.0:
+        raise ValueError(
+            f"{path.name}: transformer-parking-delay must be -1 (never "
+            f"park), 0 (park immediately) or a number of seconds, got "
+            f"{parking_delay!r}"
+        )
+    try:
+        prefetch_te = sec.getboolean("prefetch-text-encoder", False)
+    except ValueError:
+        raise ValueError(
+            f"{path.name}: prefetch-text-encoder must be true/false, "
+            f"got {sec.get('prefetch-text-encoder')!r}"
+        ) from None
     return (
         primary,
         frozenset(ignored),
@@ -283,6 +321,8 @@ def _parse_ini(
         debug,
         save_ui_state,
         mask_overlay_opacity,
+        parking_delay,
+        prefetch_te,
     )
 
 

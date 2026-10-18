@@ -32,6 +32,27 @@
 #                saved form inputs are not persisted). An existing
 #                file is still loaded on start.
 #
+#   Speed (VRAM residency after/before a generation):
+#   transformer-parking-delay  90 (default, seconds)
+#                Seconds the queue waits after going idle before parking
+#                the loaded model out of VRAM into RAM. Keeps the model
+#                warm for follow-up generations (re-run = no reload).
+#                0: park immediately (previous behavior); -1: never park
+#                explicitly (the model stays resident until something
+#                else needs the VRAM, e.g. a text encode swap or a model
+#                switch).
+#   prefetch-text-encoder      false (default) | true
+#                true: when the UI's prompt changes and the final prompt
+#                would MISS the prompt-encoding cache (always true for
+#                wildcard prompts), immediately switch the GPU to its
+#                "about to encode" layout: text encoders to VRAM, the
+#                transformer parked to RAM if the two cannot co-reside
+#                (SDXL's always fit, so its UNet stays put). The bus swap
+#                then happens while you keep typing instead of at
+#                Generate time. Ignores transformer-parking-delay; a
+#                model that is already parked stays parked (nothing is
+#                loaded for a prompt alone).
+#
 #   Combined (all three on): 1024² generation peaks at ~4.3 GiB and runs
 #   in ~14 s -- SDXL fits on a 6 GB card or shares a GPU with a large LLM.
 #
@@ -50,3 +71,5 @@ ignore-gpus =
 #vae-tiling = false
 #save-ui-state = true
 #debug = false
+#transformer-parking-delay = 90
+#prefetch-text-encoder = false

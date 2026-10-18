@@ -499,10 +499,16 @@ class Krea2Backend(ModelBackend):
             # _encode_prompts never runs: if the co-resident fit check
             # (cold load / parked restore) left the encoder on the GPU,
             # drop it now, or its ~4.8 GiB sits next to the transformer
-            # through sampling and starves the VAE decode
-            if (self.te_device != "cpu"
-                    and next(self.te.parameters()).device == self.device):
-                self._text_offload()
+            # through sampling and starves the VAE decode. A CPU-side
+            # transformer here means the prompt-change prefetch
+            # (prepare_text_encode) parked it for an encode that never
+            # ran: bring it back for sampling.
+            if self.te_device != "cpu":
+                if next(self.te.parameters()).device == self.device:
+                    self._text_offload()
+                if next(self.transformer.parameters()).device != self.device:
+                    self.transformer.to(self.device)
+                    torch.cuda.empty_cache()
             return cached.to(self.device)
         report_phase(progress, PHASE_ENCODING)
         self._encode_prompts([prompt])
@@ -545,6 +551,13 @@ class Krea2Backend(ModelBackend):
             self.transformer.to("cpu")
             torch.cuda.empty_cache()
             swapped = True
+        elif (self.te_device != "cpu"
+              and next(self.transformer.parameters()).device != self.device):
+            # The encoder is already resident but the transformer is not:
+            # the prompt-change prefetch (prepare_text_encode) parked it to
+            # free VRAM for the encoder. Encode in place, and let the
+            # epilogue bring the transformer back (sampling needs it).
+            swapped = True
         self._text_to(self.te_device)
         with torch.inference_mode():
             for p in missing:
@@ -574,6 +587,35 @@ class Krea2Backend(ModelBackend):
     def _text_offload(self) -> None:
         self.te.to("cpu")
         torch.cuda.empty_cache()
+
+    def encoding_cached(self, prompt: str, negative: str) -> bool:
+        """True when the POSITIVE prompt's encoding is cached. A classic
+        (CFG) generation with an uncached negative prompt still misses --
+        but that only skips the prefetch; its encode performs the normal
+        swap itself."""
+        return prompt in self._enc_cache
+
+    def prepare_text_encode(self) -> None:
+        """Prompt-change prefetch: bring the Qwen3-VL tower to the GPU NOW
+        (parking the transformer to the CPU first, which never co-resides
+        with the ~4.8 GiB tower on a 16 GiB card; te_device=cpu: no-op).
+
+        The encode path (and the _get_context cache-hit path) restores the
+        transformer to the GPU before sampling."""
+        if self.te_device == "cpu":
+            return
+        with self._lock, _PARAM_INIT_LOCK:
+            if next(self.te.parameters()).device == self.device:
+                return  # co-resident, or already prepared
+            if (next(self.transformer.parameters()).device == self.device
+                    and self._encoder_bytes + (1 << 30)
+                    > torch.cuda.mem_get_info(self.device)[0]):
+                log.info("%s: prefetch: parking the transformer to the CPU "
+                         "to load the text encoder (%.2f GiB)",
+                         self.name, self._encoder_bytes / 2**30)
+                self.transformer.to("cpu")
+                torch.cuda.empty_cache()
+            self._text_to(self.te_device)
 
     def _transformer_out(self) -> bool:
         """Park the transformer on the CPU to free its VRAM for the VAE

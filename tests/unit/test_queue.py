@@ -681,3 +681,88 @@ def test_lone_image_uses_other_gpu_when_primary_busy():
     mapping = {seed: gpu for gpu, seed in q.registry.uses}
     assert mapping[1] == 0
     assert mapping[100] == 1
+
+
+# ---------------- parking delay (imagagen.ini transformer-parking-delay) --
+
+def _delay_queue(backend, events, parking_delay, gpus=None):
+    """Queue whose idle parking uses ``parking_delay`` (the ini value)."""
+    q = GenerationQueue(
+        registry=FakeRegistry(backend, gpus or (0,)), canvas=Canvas(),
+        emit=events.append, parking_delay=parking_delay,
+    )
+    q.start(gpus=gpus)
+    return q
+
+
+def _unloads(q):
+    return getattr(q.registry, "unloads", 0)
+
+
+def test_parking_delay_defers_idle_park():
+    # delay > 0: the model stays resident right after the batch, and is
+    # parked once the delay elapses (the queue is still idle then)
+    q = _delay_queue(MockBackend(), [], parking_delay=1.0)
+    try:
+        job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8,
+                                            steps=1, seed=1), 1)
+        _wait_done(q, job.id)
+        assert _unloads(q) == 0  # not parked yet (timer still running)
+        deadline = time.time() + 5.0
+        while time.time() < deadline and _unloads(q) == 0:
+            time.sleep(0.05)
+        assert _unloads(q) == 1
+    finally:
+        q.stop()
+
+
+def test_parking_delay_minus_one_never_parks():
+    # -1: no explicit parking; models stay resident (they are only moved
+    # when something else needs the VRAM, which the queue never forces)
+    q = _delay_queue(MockBackend(), [], parking_delay=-1.0)
+    try:
+        job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8,
+                                            steps=1, seed=1), 1)
+        _wait_done(q, job.id)
+        time.sleep(0.5)
+        assert _unloads(q) == 0
+    finally:
+        q.stop()
+
+
+def test_parking_delay_timer_skips_busy_and_rearms():
+    # a job started before the delay elapses must not be interrupted by a
+    # park, and the park still happens (once) after the LAST idle moment
+    q = _delay_queue(MockBackend(steps_delay=0.4), [], parking_delay=0.3)
+    try:
+        j1 = q.submit("m", GenerateRequest(prompt="x", width=8, height=8,
+                                           steps=1, seed=1), 1)
+        _wait_done(q, j1.id)
+        assert _unloads(q) == 0
+        # second (slow) job starts before the first timer can fire+park:
+        # the timer re-checks idleness and skips
+        j2 = q.submit("m", GenerateRequest(prompt="y", width=8, height=8,
+                                           steps=2, seed=2), 1)
+        _wait_done(q, j2.id)
+        assert _unloads(q) == 0  # old timer skipped; new one just armed
+        deadline = time.time() + 5.0
+        while time.time() < deadline and _unloads(q) == 0:
+            time.sleep(0.05)
+        assert _unloads(q) == 1  # parked exactly once, after job 2
+    finally:
+        q.stop()
+
+
+def test_parking_delay_zero_parks_immediately():
+    # 0 keeps the old behavior: park as soon as the queue goes idle
+    q = _delay_queue(MockBackend(), [], parking_delay=0.0)
+    try:
+        job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8,
+                                            steps=1, seed=1), 1)
+        _wait_done(q, job.id)
+        deadline = time.time() + 2.0
+        while time.time() < deadline and _unloads(q) == 0:
+            time.sleep(0.02)
+        assert _unloads(q) == 1
+    finally:
+        q.stop()

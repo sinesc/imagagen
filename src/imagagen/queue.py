@@ -149,6 +149,7 @@ class GenerationQueue:
         canvas,
         emit: Callable[[dict], None],
         wildcards_dir: Path | None = None,
+        parking_delay: float = 0.0,
     ) -> None:
         self.registry = registry
         self.canvas = canvas
@@ -156,6 +157,13 @@ class GenerationQueue:
         # when set, each task's prompt / negative prompt is wildcard-resolved
         # per seed before generation (None = no wildcard processing)
         self._wildcards_dir = wildcards_dir
+        # Seconds between the queue going idle and parking the loaded models
+        # out of VRAM (imagagen.ini transformer-parking-delay): 0 parks
+        # immediately, < 0 never parks explicitly.
+        self._parking_delay = parking_delay
+        # Pending deferred park (threading.Timer); guarded by ``self._cond``
+        # like every other queue-state field.
+        self._park_timer: threading.Timer | None = None
         self._jobs: dict[int, Job] = {}
         self._gpus: list[int] = []
         self._pending: list[_Task] = []
@@ -198,6 +206,9 @@ class GenerationQueue:
     def stop(self) -> None:
         self._stop = True
         with self._cond:
+            if self._park_timer is not None:
+                self._park_timer.cancel()
+                self._park_timer = None
             self._cond.notify_all()
 
     def jobs(self) -> dict[int, Job]:
@@ -747,25 +758,64 @@ class GenerationQueue:
         return True
 
     def _maybe_unload_idle(self) -> None:
-        """Once the queue is fully idle, move every loaded model out of
-        VRAM into RAM so the app does not hold VRAM while not generating.
+        """Once the queue is fully idle, schedule moving every loaded model
+        out of VRAM into RAM so the app does not hold VRAM while not
+        generating.
+
+        ``self._parking_delay`` (imagagen.ini transformer-parking-delay)
+        controls WHEN the park happens: 0 parks immediately, > 0 defers via
+        a one-shot timer that re-checks idleness when it fires (a batch
+        that started meanwhile keeps the models resident; the next idle
+        transition re-arms), < 0 never parks explicitly (models stay
+        resident until something else needs the VRAM).
 
         Model types that cannot be moved (can_park is False) are left
-        in VRAM by the registry.  Runs outside the queue lock; the
-        per-GPU registry locks keep the device move from racing a
-        generation.
+        in VRAM by the registry.  The device move runs outside the queue
+        lock; the per-GPU registry locks keep it from racing a generation.
         """
+        park_now = False
         with self._cond:
             idle = self._is_idle_locked()
-        if idle:
+            if self._park_timer is not None:
+                self._park_timer.cancel()
+                self._park_timer = None
+            if idle:
+                delay = self._parking_delay
+                if delay > 0:
+                    log.info("queue idle: parking models to RAM in %.0fs",
+                             delay)
+                    timer = threading.Timer(delay, self._park_idle_fired)
+                    timer.daemon = True
+                    self._park_timer = timer
+                    timer.start()
+                elif delay >= 0:
+                    park_now = True
+        if park_now:
             log.info("queue idle: parking all models to RAM")
-            try:
-                self.registry.unload_all()
-            except Exception:
-                # a parking failure must not kill the worker thread (this
-                # runs in the worker's finally); the model stays resident and
-                # the next load handles it
-                log.exception("parking models to RAM failed; leaving them resident")
+            self._unload_all_guarded()
+
+    def _park_idle_fired(self) -> None:
+        """Timer body for ``transformer-parking-delay``: park, but only if
+        the queue is STILL idle (new work may have arrived meanwhile)."""
+        with self._cond:
+            self._park_timer = None
+            idle = self._is_idle_locked()
+        if not idle:
+            # the workers' _maybe_unload_idle re-arms the timer once this
+            # work is done
+            return
+        log.info("queue idle: parking all models to RAM "
+                 "(transformer-parking-delay elapsed)")
+        self._unload_all_guarded()
+
+    def _unload_all_guarded(self) -> None:
+        try:
+            self.registry.unload_all()
+        except Exception:
+            # a parking failure must not kill the worker thread (this
+            # runs in the worker's finally); the model stays resident and
+            # the next load handles it
+            log.exception("parking models to RAM failed; leaving them resident")
 
 
 def _uniform_color(image: np.ndarray) -> tuple[int, int, int] | None:

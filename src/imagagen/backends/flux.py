@@ -304,10 +304,15 @@ class FluxBackend(ModelBackend):
             # _encode_pairs never runs: if the co-resident fit check left
             # the T5/CLIP encoders on the GPU, drop them now, or they sit
             # next to the transformer through sampling and starve the VAE
-            # decode (see zimage's note)
-            if (self.te_device != "cpu"
-                    and next(self.t5.parameters()).device == self.device):
-                self._text_offload()
+            # decode (see zimage's note). A CPU-side transformer here means
+            # the prompt-change prefetch (prepare_text_encode) parked it
+            # for an encode that never ran: bring it back for sampling.
+            if self.te_device != "cpu":
+                if next(self.t5.parameters()).device == self.device:
+                    self._text_offload()
+                if next(self.transformer.parameters()).device != self.device:
+                    self.transformer.to(self.device)
+                    torch.cuda.empty_cache()
             tensors = [t.to(self.device) for t in entry]
             if negative is not None:
                 return tensors[0], tensors[1], (tensors[2], tensors[3])
@@ -362,6 +367,13 @@ class FluxBackend(ModelBackend):
             self.transformer.to("cpu")
             torch.cuda.empty_cache()
             swapped = True
+        elif (self.te_device != "cpu"
+              and next(self.transformer.parameters()).device != self.device):
+            # The encoders are already resident but the transformer is not:
+            # the prompt-change prefetch (prepare_text_encode) parked it to
+            # the GPU's free VRAM. Encode in place, and let the epilogue
+            # bring the transformer back (sampling needs it on the GPU).
+            swapped = True
         self._text_to(self.te_device)
         with torch.inference_mode():
             # sorted: a stable encode order (the result does not depend on
@@ -413,6 +425,37 @@ class FluxBackend(ModelBackend):
         self.clip.to("cpu")
         self.t5.to("cpu")
         torch.cuda.empty_cache()
+
+    def encoding_cached(self, prompt: str, negative: str) -> bool:
+        """True when the POSITIVE prompt's encoding is cached ((prompt,
+        None), the entry a distilled generation consumes). A classic-CFG
+        generation with an uncached negative still misses -- but that only
+        skips the prefetch; its encode performs the normal swap itself."""
+        return (prompt, None) in self._enc_cache
+
+    def prepare_text_encode(self) -> None:
+        """Prompt-change prefetch: bring the T5/CLIP encoders to the GPU
+        NOW (parking the transformer to the CPU first when the two cannot
+        co-reside, the same fit check __init__/load apply).
+
+        A later generation with this prompt encodes on the resident
+        encoder without a mid-generation swap; the encode path (and the
+        _get_encoding cache-hit path) restores the transformer to the GPU
+        before sampling."""
+        if self.te_device == "cpu":
+            return
+        with self._lock, _PARAM_INIT_LOCK:
+            if next(self.t5.parameters()).device == self.device:
+                return  # co-resident, or already prepared
+            if (next(self.transformer.parameters()).device == self.device
+                    and self._encoder_bytes + (1 << 30)
+                    > torch.cuda.mem_get_info(self.device)[0]):
+                log.info("%s: prefetch: parking the transformer to the CPU "
+                         "to load the text encoders (%.2f GiB encoders)",
+                         self.name, self._encoder_bytes / 2**30)
+                self.transformer.to("cpu")
+                torch.cuda.empty_cache()
+            self._text_to(self.te_device)
 
     # ------------------------------------------------------------- ctrl ----
 

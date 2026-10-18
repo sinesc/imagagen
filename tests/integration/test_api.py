@@ -456,3 +456,33 @@ def test_generate_records_disabled_loras(client):
     assert r.status_code == 200
     st = client.get("/api/ui-state").json()["state"]
     assert st["disabled_loras"] == [["beta", -0.3]]
+
+
+# ---------- prompt-change prefetch (imagagen.ini prefetch-text-encoder) --
+
+def test_prefetch_text_encoder_disabled_by_default(client):
+    # ini default: the feature is off, the endpoint says so and does nothing
+    r = client.post("/api/prefetch-text-encoder",
+                    json={"prompt": "a dog", "negative_prompt": "blurry"})
+    assert r.status_code == 200
+    assert r.json() == {"action": "disabled"}
+
+
+def test_prefetch_text_encoder_enabled(tmp_path):
+    backend = MockBackend()
+    app = create_app(config=Config(root=tmp_path, prefetch_text_encoder=True),
+                     backend=backend)
+    with TestClient(app) as c:
+        # known model, MockBackend's encoding_cached is True (base default)
+        r = c.post("/api/prefetch-text-encoder", json={
+            "model_id": "mock/mock.safetensors", "prompt": "a dog"})
+        assert r.json() == {"action": "cached"}
+        # force path (wildcard prompt always misses): prepare_text_encode
+        # (a mock no-op) runs and the backend was "resident"
+        r = c.post("/api/prefetch-text-encoder", json={
+            "model_id": "mock/mock.safetensors", "prompt": "__animals__ dog"})
+        assert r.json() == {"action": "prepared"}
+        # an unknown configuration id resolves to no model at all
+        r = c.post("/api/prefetch-text-encoder",
+                   json={"model_id": "nope/nope", "prompt": "x"})
+        assert r.json() == {"action": "no-model"}

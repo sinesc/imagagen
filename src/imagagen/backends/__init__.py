@@ -284,6 +284,32 @@ class ModelBackend(ABC):
         per batch, not once per image. The default is a no-op (mock).
         """
 
+    def encoding_cached(self, prompt: str, negative: str) -> bool:
+        """True when a generation with this (positive, negative) prompt
+        would HIT the shared prompt-encoding cache, i.e. the text encoders
+        would not have to run for it. The default is True (types without a
+        text-encoder swap have nothing to prefetch).
+
+        :meth:`imagagen.models.ModelRegistry.prefetch_text_encoder` skips
+        the prompt-change prefetch when this returns True.
+        """
+        return True
+
+    def prepare_text_encode(self) -> None:  # noqa: B027  # optional hook
+        """Move this backend's VRAM into its "about to encode" layout: text
+        encoders on ``te_device``, transformer parked on the CPU **only**
+        when the two cannot co-reside (the same fit check an actual encode
+        performs). Called on a prompt change whose encoding would miss the
+        cache (imagagen.ini prefetch-text-encoder), so the expensive bus
+        swap happens while the user still types instead of at generation
+        start; the next generation encodes on the resident encoder.
+
+        Must leave the backend generation-ready: the encode path
+        (``_encode_pairs`` and the cache-hit paths) restores a
+        CPU-parked transformer before sampling. The default is a no-op
+        (mock and families without a swap).
+        """
+
     def load(self) -> None:  # noqa: B027  # optional hook, default no-op is meaningful
         """Move a previously parked model back to its GPU (inverse of
         :meth:`unload`). The default does nothing for non-parkable types."""

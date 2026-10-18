@@ -448,6 +448,56 @@ class ModelRegistry:
             backend = self._load_backend_locked(state, model_id)
             backend.pre_encode(pairs, reserve=reserve)
 
+    def prefetch_text_encoder(self, model_id: str, prompt: str,
+                              negative: str, force: bool = False) -> str:
+        """Prompt-change prefetch (imagagen.ini prefetch-text-encoder).
+
+        Move every GPU that currently has ``model_id`` VRAM-resident into
+        its "about to encode" layout (see
+        :meth:`ModelBackend.prepare_text_encode`): text encoders to the
+        GPU (parking the transformer when the two cannot co-reside) so the
+        expensive bus swap happens while the user still edits the prompt
+        instead of at generation start. Deliberately lazy like model
+        selection: a model that is parked or was never loaded is NOT
+        woken up (``not-resident``), and a cached prompt needs no encoder
+        at all (``cached``) -- unless ``force``, set for wildcard prompts
+        whose per-seed resolutions always miss the cache.
+
+        Never queues behind an in-flight generation: a GPU whose lock is
+        busy is skipped (its generation encodes on its own anyway). The
+        per-GPU lock IS taken while preparing, so the moves never race a
+        load/unload/generate. Returns a status string:
+        ``not-resident`` | ``cached`` | ``prepared`` | ``busy``.
+        """
+        with self._meta_lock:
+            states = [s for s in self._gpu_states.values()
+                      if s.backend is not None and s.model_id == model_id]
+        if not states:
+            return "not-resident"
+        # the prompt-encoding cache is shared across the model's per-GPU
+        # instances, so one check decides for all of them
+        if not force and states[0].backend.encoding_cached(prompt, negative):
+            return "cached"
+        prepared = 0
+        for state in states:
+            if not state.lock.acquire(blocking=False):
+                continue  # generating on this GPU: its encode runs anyway
+            try:
+                backend = state.backend
+                if backend is None or state.model_id != model_id:
+                    continue  # parked/switched between snapshot and lock
+                log.info(
+                    "prompt prefetch: %s on GPU %d -- loading text encoder, "
+                    "parking transformer (prompt cache miss)",
+                    backend.name, state.gpu)
+                backend.prepare_text_encode()
+                prepared += 1
+            except Exception:
+                log.exception("prompt prefetch failed on GPU %d", state.gpu)
+            finally:
+                state.lock.release()
+        return "prepared" if prepared else "busy"
+
     def run(self, model_id: str, gpu: int, request, progress=None):
         """Atomically ensure ``model_id`` is loaded on ``gpu`` and run one
         generation.

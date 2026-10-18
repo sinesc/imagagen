@@ -662,6 +662,35 @@ class SdxlBackend(ModelBackend):
         with self._lock:
             self._encode_pairs(list(pairs), reserve)
 
+    def encoding_cached(self, prompt: str, negative: str) -> bool:
+        """True when the (prompt, negative-or-"") encoding is cached --
+        SDXL always encodes BOTH sides, so the key is the pair."""
+        return (prompt, negative or "") in self._enc_cache
+
+    def prepare_text_encode(self) -> None:
+        """Prompt-change prefetch: bring the ~1.4 GiB CLIP encoders to the
+        GPU NOW so the next (uncached) encode skips that move.
+
+        SDXL's UNet and text encoders always co-reside (no encode swap
+        exists), so the UNet deliberately stays in VRAM: offloading it on
+        every prompt edit would only add a pointless bus round-trip.
+        _encode_pairs / the generate path park the encoders again after
+        encoding, so the sampling-time VRAM layout is unchanged."""
+        import torch
+
+        if self.text_encoder_device == "cpu":
+            return
+        pipe = self.pipe
+        with self._lock, _PARAM_INIT_LOCK:
+            if next(pipe.text_encoder.parameters()).device != self.device:
+                # the pipeline is only moved between devices here, never
+                # run on the CPU -- same rationale as unload()/load()
+                pipe.text_encoder.to(self.device, silence_dtype_warnings=True)
+                if getattr(pipe, "text_encoder_2", None) is not None:
+                    pipe.text_encoder_2.to(self.device,
+                                            silence_dtype_warnings=True)
+                torch.cuda.empty_cache()
+
     def cancel(self) -> None:
         self._cancel = True
 

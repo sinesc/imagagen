@@ -145,3 +145,42 @@ def test_bad_mask_overlay_opacity_raises(tmp_path):
         ini(tmp_path).write_text(f"[imagagen]\nmask-overlay-opacity = {v}\n")
         with pytest.raises(ValueError, match="mask-overlay-opacity"):
             load_config(tmp_path)
+
+
+def test_transformer_parking_delay_default(tmp_path):
+    # 90 s even with no ini file / no section
+    assert load_config(tmp_path).transformer_parking_delay == 90.0
+    ini(tmp_path).write_text("[other]\n")
+    assert load_config(tmp_path).transformer_parking_delay == 90.0
+
+
+def test_transformer_parking_delay_values(tmp_path):
+    ini(tmp_path).write_text("[imagagen]\ntransformer-parking-delay = 0\n")
+    assert load_config(tmp_path).transformer_parking_delay == 0.0
+    ini(tmp_path).write_text("[imagagen]\ntransformer-parking-delay = -1\n")
+    assert load_config(tmp_path).transformer_parking_delay == -1.0
+    ini(tmp_path).write_text("[imagagen]\ntransformer-parking-delay = 30.5\n")
+    assert load_config(tmp_path).transformer_parking_delay == 30.5
+
+
+def test_bad_transformer_parking_delay_raises(tmp_path):
+    for v in ("abc", "-2"):
+        ini(tmp_path).write_text(
+            f"[imagagen]\ntransformer-parking-delay = {v}\n")
+        with pytest.raises(ValueError, match="transformer-parking-delay"):
+            load_config(tmp_path)
+
+
+def test_prefetch_text_encoder_flag(tmp_path):
+    # disabled by default (even with no ini file at all)
+    assert load_config(tmp_path).prefetch_text_encoder is False
+    ini(tmp_path).write_text("[imagagen]\nprefetch-text-encoder = true\n")
+    assert load_config(tmp_path).prefetch_text_encoder is True
+    ini(tmp_path).write_text("[imagagen]\nprefetch-text-encoder = false\n")
+    assert load_config(tmp_path).prefetch_text_encoder is False
+
+
+def test_bad_prefetch_text_encoder_raises(tmp_path):
+    ini(tmp_path).write_text("[imagagen]\nprefetch-text-encoder = maybe\n")
+    with pytest.raises(ValueError, match="prefetch-text-encoder"):
+        load_config(tmp_path)

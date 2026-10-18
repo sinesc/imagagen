@@ -152,6 +152,17 @@ class _MockRegistry:
                    reserve: int | None = None):
         self._backend.pre_encode(list(pairs), reserve=reserve)
 
+    def prefetch_text_encoder(self, model_id: str, prompt: str,
+                              negative: str, force: bool = False) -> str:
+        # mirrors ModelRegistry.prefetch_text_encoder for mock mode (the
+        # single mock backend stands in for the resident one)
+        if model_id != self._backend.model_id:
+            return "not-resident"
+        if not force and self._backend.encoding_cached(prompt, negative):
+            return "cached"
+        self._backend.prepare_text_encode()
+        return "prepared"
+
     def unload_all(self) -> None:
         self._backend.unload()
 
@@ -301,7 +312,8 @@ def create_app(
         # first, then the remaining usable non-ignored GPUs).
         registry = ModelRegistry(config, emit=hub.emit)
     queue = GenerationQueue(registry=registry, canvas=canvas, emit=hub.emit,
-                            wildcards_dir=config.wildcards_dir)
+                            wildcards_dir=config.wildcards_dir,
+                            parking_delay=config.transformer_parking_delay)
     queue.start()
 
     app = FastAPI(title="imagagen", lifespan=_lifespan(segmentation))
@@ -469,6 +481,53 @@ def create_app(
         if tokens is None:
             return {"tokens": None, "windows": 0}
         return {"tokens": tokens, "windows": prompt_windows(tokens)}
+
+    @app.post("/api/prefetch-text-encoder")
+    def prefetch_text_encoder(body: dict) -> dict:  # sync: threadpool
+        """Prompt-change prefetch (imagagen.ini prefetch-text-encoder).
+
+        The UI posts the current prompt form shortly after every prompt
+        change. When the FINAL prompt (comments stripped, styles and LoRA
+        activation texts applied, exactly as /api/generate computes it)
+        would miss the model's prompt-encoding cache, the server moves the
+        GPU-resident model into its "about to encode" layout right away:
+        text encoders to the GPU, transformer parked to RAM when the two
+        cannot co-reside -- instead of waiting for the next generation to
+        pay the swap. ``action``: ``disabled`` (ini off) | ``cached`` (no
+        work needed) | ``prepared`` | ``not-resident`` (lazy loading wins:
+        nothing is woken up for a prompt alone) | ``busy`` | ``no-model``.
+
+        Wildcard prompts always count as a miss (the per-seed line picks
+        cannot be predicted, so the raw text is never encoded here); the
+        layout preparation still applies.
+        """
+        if not config.prefetch_text_encoder:
+            return {"action": "disabled"}
+        cfg_id = body.get("model_id") or app.state.last_config_id
+        if not cfg_id:
+            return {"action": "no-model"}
+        try:
+            entry = app.state.config_store.resolve(cfg_id)
+        except ConfigError:
+            return {"action": "no-model"}
+        prompt, negative = apply_styles(
+            strip_prompt_comments(body.get("prompt", "")),
+            strip_prompt_comments(body.get("negative_prompt", "")),
+            body.get("styles", []),
+            app.state.style_store.get,
+        )
+        prompt, negative = apply_lora_texts(
+            prompt, negative, body.get("loras", []), config)
+        # wildcards: the per-seed resolution always misses the cache, so
+        # the raw text must not be checked (nor encoded)
+        force = (wildcards.has_wildcards(prompt)
+                 or wildcards.has_wildcards(negative))
+        action = registry.prefetch_text_encoder(entry.model_id, prompt,
+                                                negative, force=force)
+        if action not in ("cached", "not-resident"):
+            log.info("prompt prefetch: model=%s action=%s", entry.model_id,
+                     action)
+        return {"action": action}
 
     @app.post("/api/models/select")
     def select_model(body: dict) -> dict:  # sync: runs in the threadpool

@@ -101,6 +101,29 @@ async function updatePromptTokens() {
 function schedulePromptTokens() {
   clearTimeout(tokenTimer);
   tokenTimer = setTimeout(updatePromptTokens, 200);
+  // the prefetch trigger rides along: every change that can alter the
+  // final prompt (input, styles, PNG import, ...) re-checks it
+  scheduleTextPrefetch();
+}
+// Prompt-change prefetch (imagagen.ini prefetch-text-encoder): tell the
+// server the current form so it can park the warm transformer and warm the
+// text encoder already when the (final) prompt would miss its encoding
+// cache. Best-effort; the server gates/dispatches everything.
+let prefetchTimer = null;
+async function postTextPrefetch() {
+  try {
+    await api("/api/prefetch-text-encoder", {
+      model_id: $("model").value || null,
+      prompt: $("prompt").value,
+      negative_prompt: $("negative").value,
+      styles: getStyles(),
+      loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
+    });
+  } catch (e) { /* prefetch is fire-and-forget */ }
+}
+function scheduleTextPrefetch() {
+  clearTimeout(prefetchTimer);
+  prefetchTimer = setTimeout(postTextPrefetch, 400);
 }
 // selected styles feed the (server-side applied) prompt, so any change to the
 // style list must refresh the counter as well as the persisted UI state
@@ -961,6 +984,10 @@ async function selectModel(id) {
   try {
     await api("/api/models/select", { id });
     setStatus("");
+    // the encoding cache is per model: the prompt must be re-checked
+    // against the newly selected model's cache (no-op while the queue
+    // runs or when the feature is off)
+    scheduleTextPrefetch();
   } catch (e) {
     setStatus(`model select failed: ${e.message}`, true);
   }
@@ -2829,6 +2856,9 @@ document.addEventListener(
   $(id).addEventListener("input", () => { onUserFieldChange(id); scheduleSaveUiState(); });
 });
 $("prompt").addEventListener("input", schedulePromptTokens);
+// the negative prompt is not counted by the token counter but is part of
+// the prefetch decision (SDXL caches the (prompt, negative) pair)
+$("negative").addEventListener("input", scheduleTextPrefetch);
 // the mask bbox outline is grown by this field: redraw as it changes
 $("mask-padding").addEventListener("input", viewRedraw);
 $("seed-reset").onclick = () => {
