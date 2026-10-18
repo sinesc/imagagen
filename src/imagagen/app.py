@@ -1159,12 +1159,34 @@ def create_app(
         }
 
     # --- save ---
+    def _origin_prompt(fallback: str) -> str:
+        """The prompt recorded in the current canvas image's PNG metadata
+        (i.e. the prompt used when the image was generated); falls back to
+        the UI's current prompt for images without generation metadata
+        (uploads, edits that dropped the chunks)."""
+        cid = canvas.current_id()
+        info = canvas.entity_info(cid) if cid is not None else None
+        if info:
+            params = info.get("parameters")
+            if params:
+                try:
+                    meta = metadata.parse_parameters(params)
+                except Exception:
+                    meta = None
+                prompt = (meta or {}).get("prompt")
+                if isinstance(prompt, str) and prompt.strip():
+                    return prompt
+            prompt = info.get("prompt")  # standalone-chunk fallback
+            if isinstance(prompt, str) and prompt.strip():
+                return prompt
+        return fallback
+
     @app.post("/api/save")
     def save(body: SaveBody) -> dict:
         data = canvas.to_png_bytes()
         if data is None:
             return {"error": "canvas is empty"}
-        out = next_output_path(config.output_dir, body.prompt)
+        out = next_output_path(config.output_dir, _origin_prompt(body.prompt))
         out.write_bytes(data)
         return {"ok": True, "path": out.name}
 

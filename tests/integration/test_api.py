@@ -148,6 +148,23 @@ def test_generate_single_and_save(client, tmp_path):
         assert (tmp_path / "output" / "1-photo-of-a-turtle.png").is_file()
 
 
+def test_save_names_file_after_generated_prompt_not_current_prompt(
+    client, tmp_path
+):
+    """The output file name comes from the prompt embedded in the image's
+    metadata (the prompt used at generation time), not the UI's current
+    prompt, which may have been edited since."""
+    with client.websocket_connect("/api/ws") as ws:
+        client.post("/api/generate", json={
+            "prompt": "Photo of a turtle", "width": 64, "height": 64,
+            "steps": 2, "seed": 1,
+        })
+        _wait_for(client, ws, "done")
+    r = client.post("/api/save", json={"prompt": "completely different"})
+    assert r.json()["path"] == "1-photo-of-a-turtle.png"
+    assert (tmp_path / "output" / "1-photo-of-a-turtle.png").is_file()
+
+
 def test_generate_batch_seeds_and_completion_order(client, tmp_path):
     with client.websocket_connect("/api/ws") as ws:
         r = client.post("/api/generate", json={
