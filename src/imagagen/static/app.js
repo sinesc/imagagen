@@ -493,7 +493,14 @@ function refreshCurrentThumbPixels() {
     const i = state.thumbs.indexOf(t);
     const img = i >= 0 ? $("thumbs").querySelectorAll(".thumb-item img")[i] : null;
     if (img) img.src = url;
-    if (thumbPreviewUrl === prev) thumbPreviewShow(url);
+    // the hover preview shows THIS thumbnail: swap its image IN PLACE --
+    // never through thumbPreviewShow, which would re-OPEN the overlay: a
+    // canvas edit means the mouse is on the canvas, and the opaque overlay
+    // would then hide the live stroke preview and the brush-ring cursor
+    if (thumbPreviewUrl === prev) {
+      $("thumb-preview-img").src = url;
+      thumbPreviewUrl = url;
+    }
     if (prev.startsWith("blob:")) URL.revokeObjectURL(prev);
   }, "image/png");
 }

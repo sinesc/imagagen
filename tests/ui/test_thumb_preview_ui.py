@@ -10,7 +10,14 @@ Two layouts:
    whole image is scaled into the box with the padding the zoom-to-fit button
    leaves around the canvas image (viewFit's 0.98 factor), centred."""
 
-from conftest import canvas_px, set_canvas, set_input, stroke, wait_until
+from conftest import (
+    canvas_px,
+    screen_pos,
+    set_canvas,
+    set_input,
+    stroke,
+    wait_until,
+)
 
 BG = (20, 30, 40)
 
@@ -285,3 +292,46 @@ def test_thumb_and_preview_track_local_edits(page, server):
     # untouched: another entity's thumbnail keeps its server URL
     assert not page.eval_on_selector(
         "#thumbs img >> nth=1", "el => el.src").startswith("blob:")
+
+
+def test_stroke_commit_never_reopens_the_hover_preview(page, server):
+    """The regression: the local-edit thumbnail refresh re-showed the hover
+    preview whenever its URL matched -- even long after the mouse had left
+    the thumbnail (thumbPreviewHide never clears thumbPreviewUrl). The
+    opaque overlay then sat over the canvas and HID the brush-ring cursor
+    and the live stroke preview (commits still landed behind it, and the
+    overlay's refreshed img made the final stroke look applied). A stroke
+    commit must never open the overlay, and the live preview must stay
+    visible mid-stroke."""
+    base, _ = server
+    _open(page, base)
+    _show(page, base, 200, 150)
+    page.click("#btn-generate")
+    page.wait_for_function("state.thumbs.length >= 2 && currentEntityId !== null")
+
+    # hover the current entity's thumbnail, then leave: the preview hides
+    _hover(page, base, 0)
+    page.hover("#prompt")
+    assert wait_until(lambda: page.evaluate(
+        "document.getElementById('thumb-preview').hidden"))
+
+    def hidden():
+        return page.evaluate("document.getElementById('thumb-preview').hidden")
+
+    def display_px(x, y):
+        return page.evaluate(
+            """([x,y]) => { const cv = document.getElementById('canvas');
+                const g = cv.getContext('2d', {willReadFrequently: true});
+                const d = g.getImageData(Math.round((view.ox + x*view.scale)*view.dpr),
+                                         Math.round((view.oy + y*view.scale)*view.dpr), 1, 1).data;
+                return [d[0], d[1], d[2]]; }""", [x, y])
+
+    set_input(page, "#brush-color", "#ff0000")
+    for x in (40, 100):  # two strokes: each commit used to reopen the overlay
+        page.mouse.move(*screen_pos(page, x, 40))
+        page.mouse.down()
+        page.mouse.move(*screen_pos(page, x + 30, 40), steps=5)
+        mid = display_px(x + 15, 40)  # live preview must be visible mid-stroke
+        page.mouse.up()
+        assert mid[0] > 200 and mid[1] < 60, f"live preview missing at stroke {x}"
+        assert wait_until(hidden), f"overlay reopened after stroke commit at {x}"
