@@ -446,6 +446,55 @@ def test_client_undo_redo_mask(page, server):
     assert wait_until(lambda: mask_arr(base)[40, 50] == 255)
 
 
+def test_edit_during_in_flight_sync_lands_before_generate(page, server):
+    # Regression: forceSync() used to hand back an ALREADY in-flight sync,
+    # but that sync captured its blobs BEFORE a later stroke -- so an
+    # awaited forceSync() (the Generate click) sailed through with the
+    # server still holding a stale copy and the last UI/mask edit was
+    # ignored by the generation.
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150
+    page.select_option("#mode", "inpaint_masked")
+    page.keyboard.press("m")
+    set_input(page, "#brush-size", "0")  # 10 px -> radius 5
+    dot(page, 30, 40)  # the helper forceSyncs: the server has stroke 1
+    assert wait_until(
+        lambda: mask_arr(base) is not None and mask_arr(base)[40, 30] == 255)
+
+    # slow down the browser's sync POST to open the race window (this is
+    # what an idle-timer sync firing 2 s after the last edit looks like:
+    # a large canvas upload in flight while the user keeps working)
+    page.evaluate(
+        """() => {
+            const orig = window.fetch;
+            window.fetch = (url, opts) =>
+                String(url).includes("/api/canvas/sync")
+                    ? new Promise((res) =>
+                          setTimeout(() => orig(url, opts).then(res), 600))
+                    : orig(url, opts);
+        }""")
+
+    # sync #1 starts and captures its blobs WITHOUT stroke 2 ...
+    page.evaluate("(() => { markDirty(); void forceSync(); })()")
+    # ...
+    # stroke 2 lands WHILE that sync is in flight (raw pointers: the
+    # stroke() helper's trailing forceSync would serialize us out of the
+    # race)
+    page.mouse.move(*screen_pos(page, 80, 40))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 90, 40), steps=2)
+    page.mouse.up()
+    # an awaited forceSync() must only resolve once the SERVER matches us
+    page.evaluate("forceSync()")
+    # NO wait_until: pre-fix the old sync's success is all forceSync
+    # awaited, so at this instant the server mask still lacks stroke 2
+    # (the retry sync had not even started, let alone finished)
+    assert mask_arr(base)[40, 85] == 255, \
+        "edit made during an in-flight sync never reached the server"
+    assert page.evaluate("canvasDirty") is False
+
+
 # ---------------- zoom / pan ----------------
 
 

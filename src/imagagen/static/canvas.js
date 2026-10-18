@@ -400,33 +400,56 @@ async function viewRefresh() {
 const SYNC_IDLE_MS = 2000;
 let canvasDirty = false; // local state has diverged from the server's
 let syncTimer = null; // the pending idle sync
-let syncPromise = null; // at most one sync outstanding
+let syncPromise = null; // at most one sync outstanding; resolves to r.ok
+let editSeq = 0; // bumped by markDirty; a sync proves freshness only if
+                 // no edit landed after its blobs were captured
 
 async function forceSync() {
-  if (!view.has || !canvasDirty || syncPromise) return syncPromise;
-  if (syncTimer) {
-    clearTimeout(syncTimer);
-    syncTimer = null;
-  }
-  syncPromise = (async () => {
-    try {
-      const fd = new FormData();
-      fd.append("image", await blobP(view.base), "canvas.png");
-      fd.append("mask", await blobP(view.maskValues), "mask.png");
-      const r = await fetch("/api/canvas/sync", { method: "POST", body: fd });
-      if (r.ok) canvasDirty = false;
-      // failure (an entity switch changed the size underneath us, the
-      // server is down): stay dirty and retry on the next idle tick;
-      // viewRefresh() clears the flag when fresh server state lands
-      if (canvasDirty) syncTimer = setTimeout(forceSync, SYNC_IDLE_MS);
-    } finally {
-      syncPromise = null;
+  // The caller needs the SERVER to hold OUR CURRENT state. A sync that
+  // STARTED before a later edit captured its blobs at start time, so
+  // awaiting an already in-flight sync is NOT proof of freshness: edits
+  // that land during it must still be pushed before the caller reads the
+  // server's copy (e.g. a Generate click right after a mask stroke). Keep
+  // syncing while edits land; on a FAILED sync stop here (the idle timer
+  // retries) so we never hammer a dead endpoint.
+  for (;;) {
+    if (!view.has || !canvasDirty) return;
+    if (syncPromise) {
+      if (!(await syncPromise)) break; // failed: idle timer will retry
+      continue; // it succeeded but a newer edit re-dirtied us: resync
     }
-  })();
-  return syncPromise;
+    if (syncTimer) {
+      clearTimeout(syncTimer);
+      syncTimer = null;
+    }
+    const startSeq = editSeq; // edits AFTER this point keep us dirty
+    syncPromise = (async () => {
+      try {
+        const fd = new FormData();
+        fd.append("image", await blobP(view.base), "canvas.png");
+        fd.append("mask", await blobP(view.maskValues), "mask.png");
+        const r = await fetch("/api/canvas/sync", { method: "POST", body: fd });
+        // only fully-current uploads clear the flag (an edit landing
+        // mid-sync re-dirties for forceSync's loop / the idle retry)
+        if (r.ok && editSeq === startSeq) canvasDirty = false;
+        // failure (an entity switch changed the size underneath us, the
+        // server is down): stay dirty and retry on the next idle tick;
+        // viewRefresh() clears the flag when fresh server state lands
+        if (canvasDirty) {
+          if (syncTimer) clearTimeout(syncTimer);
+          syncTimer = setTimeout(forceSync, SYNC_IDLE_MS);
+        }
+        return r.ok;
+      } finally {
+        syncPromise = null;
+      }
+    })();
+    if (!(await syncPromise)) break;
+  }
 }
 
 function markDirty() {
+  editSeq++;
   canvasDirty = true;
   if (syncTimer) clearTimeout(syncTimer);
   syncTimer = setTimeout(forceSync, SYNC_IDLE_MS);
