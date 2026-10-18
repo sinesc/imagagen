@@ -105,7 +105,10 @@ def test_crop_drag_previews_then_crops(page, server):
     assert wait_until(lambda: page.locator("#thumbs img").count() == 2)
     imgs = page.locator("#thumbs img")
     assert "selected" not in (imgs.nth(0).get_attribute("class") or "")
-    assert imgs.nth(0).get_attribute("title") == "crop (click to restore)"
+    # the title carries the dimensions once the image decoded: poll it, the
+    # dimension-free title is a transient pre-decode state
+    assert wait_until(lambda: imgs.nth(0).get_attribute("title")
+                      == "crop 200\u00d7150 (click to restore)")
     assert "selected" in (imgs.nth(1).get_attribute("class") or "")
 
     # clicking the pre-crop thumbnail restores the full image
