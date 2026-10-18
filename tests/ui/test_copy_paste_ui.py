@@ -604,3 +604,114 @@ def test_selection_flip_buttons(page, server):
     page.evaluate("forceSync()")
     assert canvas_px(base, 10, 10) == (255, 0, 0)
     assert canvas_px(base, 49, 49) == (255, 255, 255)
+
+
+def test_selection_history_undo_redo_until_merge(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    _copy(page, base)
+    _paste(page, 150, 100)  # local (0,0) is world (130,80)
+
+    def hist():
+        return page.evaluate("[view.sel.hist.undo.length, view.sel.hist.redo.length]")
+
+    def sel_rgb(lx, ly):
+        return page.evaluate(
+            "([x, y]) => { const d = view.sel.img.getContext('2d')"
+            ".getImageData(x, y, 1, 1).data; return [d[0], d[1], d[2]]; }",
+            [lx, ly],
+        )
+
+    def centre():
+        return page.evaluate("[Math.round(view.sel.cx), Math.round(view.sel.cy)]")
+
+    def undo_disabled():
+        return page.evaluate("document.getElementById('btn-undo').disabled")
+
+    # the undo pair follows the OPEN selection: nothing edited yet, nothing
+    # to undo (the canvas draw stack underneath is deliberately out of reach)
+    assert "Undo selection" in page.text_content("#btn-undo")
+    assert undo_disabled()
+    assert hist() == [0, 0]
+
+    # a body drag is one step; undo moves the selection back
+    page.mouse.move(*screen_pos(page, 150, 100))  # the centre (anchor gap)
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 144, 94), steps=3)
+    page.mouse.up()
+    assert centre() == [144, 94]
+    assert hist() == [1, 0]
+    assert not undo_disabled()
+    page.keyboard.press("Control+z")
+    assert wait_until(lambda: centre() == [150, 100])
+    assert hist() == [0, 1]
+    assert undo_disabled()
+    assert page.text_content("#btn-undo") == "↩ Undo selection"
+
+    # a brush stroke on the selection lands on the SAME history (the redo
+    # branch of the undone move dies with it) and the canvas stays untouched
+    page.keyboard.press("d")
+    page.evaluate("Tools.state.brush.color = '#ff0000'; Tools.state.brush.size = 20")
+    stroke(page, [[140, 90]])  # local (10,10)
+    assert sel_rgb(10, 10) == [255, 0, 0]
+    assert hist() == [1, 0]
+
+    # a selection crop is the second step (world rect 140..160, 85..115;
+    # the red blob moves to local (0..10, 0..15) around new local (5,10))
+    page.keyboard.press("p")
+    page.mouse.move(*screen_pos(page, 140, 85))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 160, 115), steps=5)
+    page.mouse.up()
+    assert _sel_state(page) == {"sw": 20, "sh": 30, "angle": 0}
+    assert sel_rgb(5, 10) == [255, 0, 0]
+    assert hist() == [2, 0]
+
+    # a flip is the third
+    page.click("#sel-flip-h")
+    assert hist() == [3, 0]
+    assert sel_rgb(14, 10) == [255, 0, 0]  # mirrored
+
+    # undo / redo walk back and forth through all three kinds of edit
+    page.keyboard.press("Control+z")  # un-flip
+    assert wait_until(lambda: hist() == [2, 1])
+    assert sel_rgb(5, 10) == [255, 0, 0]
+    page.keyboard.press("Control+y")  # re-flip
+    assert wait_until(lambda: hist() == [3, 0])
+    assert sel_rgb(14, 10) == [255, 0, 0]
+    page.keyboard.press("Control+z")  # undo flip...
+    page.keyboard.press("Control+z")  # ...then the crop: 40x40 with the stroke
+    assert wait_until(lambda: hist() == [1, 2])
+    assert _sel_state(page) == {"sw": 40, "sh": 40, "angle": 0}
+    assert sel_rgb(10, 10) == [255, 0, 0]
+    page.keyboard.press("Control+z")  # undo the stroke: pristine patch again
+    assert wait_until(lambda: hist() == [0, 3])
+    assert sel_rgb(10, 10) == list(PATCH)
+    assert undo_disabled()
+
+    # redo everything back to the cropped, flipped, painted state
+    page.keyboard.press("Control+y")
+    page.keyboard.press("Control+y")
+    page.keyboard.press("Control+y")
+    assert wait_until(lambda: hist() == [3, 0])
+    assert _sel_state(page) == {"sw": 20, "sh": 30, "angle": 0}
+    assert sel_rgb(14, 10) == [255, 0, 0]
+
+    # the whole ride left the server canvas untouched: all of it is ONE
+    # draw-undo step once applied
+    page.evaluate("forceSync()")
+    assert canvas_px(base, 154, 95) == BG
+    page.click("#sel-ok")
+    assert wait_until(lambda: page.evaluate("view.sel") is None)
+    page.evaluate("forceSync()")
+    assert wait_until(lambda: canvas_px(base, 154, 95) == (255, 0, 0))
+    assert canvas_px(base, 144, 95) == PATCH
+    assert page.evaluate("document.getElementById('btn-undo').disabled") is False
+    assert "Undo draw" in page.text_content("#btn-undo")
+
+    # one Ctrl+Z undoes the ENTIRE paste, internal history and all
+    page.keyboard.press("Control+z")
+    assert wait_until(lambda: canvas_px(base, 154, 95) == BG)
+    assert canvas_px(base, 144, 95) == BG
+    assert canvas_px(base, 20, 20) == PATCH  # the copied source is intact

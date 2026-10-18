@@ -351,6 +351,7 @@ async function viewRefresh() {
     view.w = view.h = 0;
     clearBrushStamps();
     viewRedraw();
+    syncUndoButtons(); // app.js: any open selection's history died above
     syncGenerateEnabled(); // app.js: no image -> empty mask
     return;
   }
@@ -385,6 +386,7 @@ async function viewRefresh() {
   }
   clearBrushStamps();
   viewRedraw();
+  syncUndoButtons(); // app.js: stacks (and a dropped selection) reset
 }
 
 // ---------------- server sync ----------------
@@ -485,7 +487,8 @@ function stashMaskUndo(snap) {
   pendingMaskUndo = snap;
 }
 
-async function undoStep(target) { // "draw" | "mask"
+async function undoStep(target) { // "draw" | "mask" | "sel"
+  if (target === "sel") return selUndoStep();
   const undo = target === "mask" ? undoMask : undoDraw;
   const redo = target === "mask" ? redoMask : redoDraw;
   const prev = await undo.pop(); // stack entries may be snapshot promises
@@ -499,7 +502,8 @@ async function undoStep(target) { // "draw" | "mask"
   viewRedraw();
 }
 
-async function redoStep(target) { // "draw" | "mask"
+async function redoStep(target) { // "draw" | "mask" | "sel"
+  if (target === "sel") return selRedoStep();
   const undo = target === "mask" ? undoMask : undoDraw;
   const redo = target === "mask" ? redoMask : redoDraw;
   const nxt = await redo.pop(); // stack entries may be snapshot promises
@@ -1623,6 +1627,7 @@ function startSelDrag(p) {
   if (d.kind === "rot") d.base = Math.atan2(best.y, best.x); // corner's own direction
   if (d.kind === "edge") d.edge = best.edge;
   if (d.kind === "scale") d.corner = best.corner;
+  d.snap = selSnapshot(s); // pre-drag state for the selection history
   view.selDrag = d;
   return true;
 }
@@ -1635,8 +1640,28 @@ function startSelMove(p) {
     kind: "move",
     F: { cx: s.cx, cy: s.cy, angle: s.angle, sw: s.sw, sh: s.sh },
     p0: [p[0], p[1]],
+    snap: selSnapshot(s), // pre-drag state for the selection history
   };
   return true;
+}
+
+// a handle / body drag ends: if the geometry actually moved, the pre-drag
+// state lands on the selection history (grabbing a handle without moving it
+// stays a no-op). Geometric edits ARE part of the history: a snapshot stores
+// geometry too, so an undone stroke restores the geometry the stroke saw.
+function endSelDrag() {
+  const d = view.selDrag, s = view.sel;
+  view.selDrag = null;
+  if (s && d.snap) {
+    const g = d.snap;
+    if (
+      s.sw !== g.sw || s.sh !== g.sh ||
+      s.cx !== g.cx || s.cy !== g.cy || s.angle !== g.angle
+    ) {
+      addSelUndo(s, g);
+    }
+  }
+  viewRedraw();
 }
 
 const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -1774,8 +1799,12 @@ function pasteAt(p) {
   view.stroke = null;
   view.selDrag = null;
   view.crop = null;
-  view.sel = { img: view.clip.img, sw: view.clip.w, sh: view.clip.h, cx: p[0], cy: p[1], angle: 0 };
+  view.sel = {
+    img: view.clip.img, sw: view.clip.w, sh: view.clip.h, cx: p[0], cy: p[1], angle: 0,
+    hist: { undo: [], redo: [] }, // per-selection undo/redo (dropped with it)
+  };
   viewRedraw();
+  syncUndoButtons(); // app.js: the pair targets the (empty) selection history
   setStatus("floating selection \u2014 drag its handles, Enter applies, Esc discards");
 }
 
@@ -1792,6 +1821,78 @@ function commitCopy(r) {
   view.clip = { img: c, w, h };
   syncToolbar(); // app.js: the paste button becomes enabled
   setStatus(`copied ${w}\u00d7${h} \u2014 paste tool (E), click to place it`);
+}
+
+// ---------------- selection history (floating-selection undo / redo) ----
+//
+// Edits to the floating selection (brush / clone / smudge strokes, selection
+// crops, flips and handle / body drags) get their own undo / redo stack that
+// lives ON the sel object, so it needs no cleanup anywhere: Apply has already
+// put the whole paste on the draw stack as ONE step, Cancel throws it all
+// away, and viewRefresh drops the selection with the old image. Snapshots are
+// cheap (the selection's own canvas, not the whole image), depth like the
+// draw stack. The sel image is always REPLACED wholesale, never drawn into in
+// place (strokes run on the materialized copy), but snapshots copy it anyway
+// so the history stays correct even if that ever changes.
+const UNDO_SEL = 50;
+
+function selSnapshot(s) {
+  const c = document.createElement("canvas");
+  c.width = s.img.width;
+  c.height = s.img.height;
+  c.getContext("2d").drawImage(s.img, 0, 0);
+  return { img: c, sw: s.sw, sh: s.sh, cx: s.cx, cy: s.cy, angle: s.angle };
+}
+
+// push a PRE-edit snapshot: it clears the redo branch (a new edit truncates
+// the future) and refreshes the button pair, which follows the selection
+// while one is active (app.js currentUndoTarget routes to "sel")
+function addSelUndo(s, snap) {
+  s.hist.undo.push(snap);
+  if (s.hist.undo.length > UNDO_SEL) s.hist.undo.shift();
+  s.hist.redo.length = 0;
+  syncUndoButtons(); // app.js
+}
+
+function pushSelUndo(s) {
+  addSelUndo(s, selSnapshot(s));
+}
+
+function selRestore(s, h) {
+  s.img = h.img;
+  s.sw = h.sw; s.sh = h.sh;
+  s.cx = h.cx; s.cy = h.cy; s.angle = h.angle;
+}
+
+function selUndoStep() {
+  const s = view.sel;
+  const h = s && s.hist.undo.pop();
+  if (!h) {
+    setStatus("nothing to undo in the floating selection");
+    return;
+  }
+  s.hist.redo.push(selSnapshot(s));
+  selRestore(s, h);
+  setStatus("undid a selection change");
+  viewRedraw(); // repositions #sel-actions via syncSelActions
+  syncUndoButtons();
+}
+
+function selRedoStep() {
+  const s = view.sel;
+  const h = s && s.hist.redo.pop();
+  if (!h) {
+    setStatus("nothing to redo in the floating selection");
+    return;
+  }
+  // like redoStep: push the current state back onto undo WITHOUT clearing
+  // redo (the rest of the redo chain stays reachable)
+  s.hist.undo.push(selSnapshot(s));
+  if (s.hist.undo.length > UNDO_SEL) s.hist.undo.shift();
+  selRestore(s, h);
+  setStatus("redid a selection change");
+  viewRedraw();
+  syncUndoButtons();
 }
 
 // crop tool with an active selection: crop the SELECTION to the dragged
@@ -1811,6 +1912,7 @@ function cropSelection(r) {
     setStatus("the crop must keep at least 2\u00d72 px of the selection");
     return;
   }
+  pushSelUndo(s); // one history step (the rejected crop changes nothing)
   const m = selMaterialize(s);
   const c = document.createElement("canvas");
   c.width = w;
@@ -1828,10 +1930,11 @@ function cropSelection(r) {
 
 // Flip the floating selection in place (horizontal: left <-> right, vertical:
 // top <-> bottom). It edits the selection's own pixels only — the committed
-// image is untouched until apply, so there is nothing to undo here.
+// image is untouched until apply; the step lands on the selection history.
 function flipSel(horiz) {
   const s = view.sel;
   if (!s) return;
+  pushSelUndo(s);
   const c = document.createElement("canvas");
   c.width = s.sw;
   c.height = s.sh;
@@ -1868,8 +1971,8 @@ async function commitSelection() {
   ctx.rotate(s.angle);
   ctx.drawImage(m, -m.width / 2, -m.height / 2);
   ctx.restore();
-  view.sel = null;
-  view.selDrag = null;
+  view.sel = null; // the selection history is dropped with it: the paste is
+  view.selDrag = null; // ONE draw-undo step, its internal edits are merged
   pushUndo("draw", snap);
   markDirty();
   syncUndoButtons(); // app.js
@@ -1883,11 +1986,12 @@ async function commitSelection() {
 // canvas whose next click would drop a new copy
 function cancelSelection() {
   if (!view.sel) return;
-  view.sel = null;
+  view.sel = null; // its history goes with it (the base never changed)
   view.selDrag = null;
   view.stroke = null;
   if (Tools.current === "paste") switchTool("copy"); // app.js
   viewRedraw();
+  syncUndoButtons(); // back to the canvas stacks
   setStatus("discarded the floating selection");
 }
 
@@ -2049,6 +2153,9 @@ function setupCanvasInput() {
     const pt = onSel ? selLocal(p) : p;
     const tw = onSel ? Math.round(view.sel.sw) : view.w;
     const th = onSel ? Math.round(view.sel.sh) : view.h;
+    // pre-stroke selection state (image AND geometry): taken at pointerdown
+    // like the canvas snapshots, pushed on the selection history at commit
+    const snapSel = onSel ? selSnapshot(view.sel) : null;
     const img = onSel ? selMaterialize(view.sel) : view.base;
     if (tool === "clone") {
       if (e.ctrlKey) {
@@ -2083,8 +2190,9 @@ function setupCanvasInput() {
         sel: onSel,
         // pre-stroke snapshot for the draw undo stack; toBlob captures at
         // call time, so the encode overlaps the drag. A stroke on a floating
-        // selection is no canvas edit, so it gets no history step
+        // selection is no canvas edit: it gets a selection-history step
         snapP: onSel ? null : snapCanvas(view.base),
+        snapSel,
       };
       c.setPointerCapture(e.pointerId);
       viewRedraw();
@@ -2106,6 +2214,7 @@ function setupCanvasInput() {
         th,
         sel: onSel,
         snapP: onSel ? null : snapCanvas(view.base),
+        snapSel,
       };
       c.setPointerCapture(e.pointerId);
       viewRedraw();
@@ -2126,6 +2235,7 @@ function setupCanvasInput() {
       // pre-stroke snapshot for the right undo stack (draw vs mask)
       snapP: tool === "mask" || onSel ? null : snapCanvas(view.base),
       snapMaskP: tool === "mask" ? snapCanvas(view.maskValues) : null,
+      snapSel,
     };
     c.setPointerCapture(e.pointerId);
     viewRedraw();
@@ -2200,7 +2310,9 @@ function setupCanvasInput() {
     clearBrushStamps(); // the preview is committed; its stamp cache is done
     if (s.sel) {
       // the edited selection image IS the committed result: no canvas edit,
-      // so no history step and no sync (view.base never changed)
+      // so no draw step and no sync (view.base never changed), but the
+      // pre-stroke state lands on the selection's own history
+      if (s.snapSel) addSelUndo(view.sel, s.snapSel);
       view.sel.img = s.img;
       viewRedraw();
       return;
@@ -2215,8 +2327,7 @@ function setupCanvasInput() {
   };
   c.addEventListener("pointerup", (e) => {
     if (view.selDrag) {
-      view.selDrag = null; // the transform is live: nothing to resample
-      viewRedraw();
+      endSelDrag(); // the transform is live: nothing to resample
       return;
     }
     if (view.crop) { commitCrop(); return; }
@@ -2224,8 +2335,7 @@ function setupCanvasInput() {
   });
   c.addEventListener("pointercancel", (e) => {
     if (view.selDrag) {
-      view.selDrag = null;
-      viewRedraw();
+      endSelDrag(); // the drag moved the selection: keep it, one step back
       return;
     }
     if (view.crop) { abortCrop(); return; }

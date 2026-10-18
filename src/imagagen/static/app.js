@@ -1722,14 +1722,21 @@ function switchTool(t) {
 // ---------------- undo / redo (per-image draw + per-image mask) ---------
 // One toolbar undo/redo pair follows the active tool: "mask" drives the
 // client's mask stack, any other tool drives the draw stack (the client
-// owns the stacks now; see canvas.js).
+// owns the stacks now; see canvas.js). While a FLOATING SELECTION is open
+// the pair targets its per-selection history instead (its own edits only,
+// until Apply merges them into one draw step or Cancel drops them all).
 function syncUndoButtons() {
   const mask = Tools.current === "mask";
-  const t = mask ? "mask" : "draw";
+  const sel = !mask && view.sel;
+  const t = sel ? "selection" : mask ? "mask" : "draw";
   $("btn-undo").textContent = `↩ Undo ${t}`;
   $("btn-redo").textContent = `↪ Redo ${t}`;
-  $("btn-undo").disabled = (mask ? undoMask : undoDraw).length === 0;
-  $("btn-redo").disabled = (mask ? redoMask : redoDraw).length === 0;
+  $("btn-undo").disabled = sel
+    ? view.sel.hist.undo.length === 0
+    : (mask ? undoMask : undoDraw).length === 0;
+  $("btn-redo").disabled = sel
+    ? view.sel.hist.redo.length === 0
+    : (mask ? redoMask : redoDraw).length === 0;
 }
 
 async function maskOp(op) {
@@ -2597,7 +2604,10 @@ window.addEventListener("beforeunload", () => {
     });
 });
 function currentUndoTarget() {
-  return Tools.current === "mask" ? "mask" : "draw";
+  if (Tools.current === "mask") return "mask";
+  // a floating selection owns the draw stack's target: its edits live on
+  // its own history (canvas.js), the canvas underneath stays untouched
+  return view.sel ? "sel" : "draw";
 }
 $("btn-undo").onclick = async () => {
   const t = currentUndoTarget();
