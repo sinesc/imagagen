@@ -2414,12 +2414,17 @@ function applyUiState(st) {
   // are model configuration settings, not persisted in the ui-state
   // sidebar width set by dragging its right border
   if (typeof st.sidebar_width === "number") $("controls").style.width = `${st.sidebar_width}px`;
-  // canvas tools: current tool + per-tool remembered settings
+  // canvas tools: current tool + per-tool remembered settings. Nulls are
+  // skipped like the sidebar fields above: the server's ToolSettings model
+  // serves color:null until a colour was ever POSTed, and a null would
+  // clobber the JS default (#ffffff) -- strokes would then paint with the
+  // canvas default fill (black) while the swatch shows white
   if (st.tools) {
     for (const [t, saved] of Object.entries(st.tools)) {
       if (Tools.state[t] && saved && typeof saved === "object") {
         for (const [k, v] of Object.entries(saved))
-          if (k in Tools.state[t]) Tools.state[t][k] = v;
+          if (v !== null && v !== undefined && k in Tools.state[t])
+            Tools.state[t][k] = v;
       }
     }
     if (TOOLS.includes(st.tools.current)) Tools.current = st.tools.current;

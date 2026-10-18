@@ -1315,7 +1315,7 @@ function drawStrokePreview(ctx, s) {
     const lctx = layerCtx(stampLayer, s.tw, s.th);
     lctx.globalCompositeOperation = "source-over";
     lctx.globalAlpha = 1;
-    lctx.fillStyle = st.color;
+    lctx.fillStyle = st.color || "#ffffff";
     lctx.fillRect(0, 0, s.tw, s.th);
     // keep only the stroke's coverage (alpha = max shape over stamps)
     lctx.globalCompositeOperation = "destination-in";
@@ -1329,7 +1329,7 @@ function drawStrokePreview(ctx, s) {
     return;
   }
   // fallback: the old stacked discs (brush image not loaded yet)
-  ctx.fillStyle = st.color;
+  ctx.fillStyle = st.color || "#ffffff";
   if (s.erase) ctx.globalCompositeOperation = "destination-out";
   for (const [x, y] of pts) {
     ctx.beginPath();

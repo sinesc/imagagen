@@ -73,6 +73,20 @@ def test_paint_with_brush_color(page, server):
     assert canvas_px(base, 10, 10) == BG
 
 
+def test_fresh_start_default_brush_color_is_white(page, server):
+    # regression: a fresh server's ui-state serves tools.brush.color = null;
+    # restoring it used to clobber the JS default ("#ffffff") and strokes
+    # painted black (invalid fillStyle is ignored, canvas default is black)
+    # while the swatch showed white
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    assert page.evaluate("Tools.state.brush.color") == "#ffffff"
+    stroke(page, [(40, 75), (100, 75), (160, 75)])
+    assert wait_until(lambda: canvas_px(base, 100, 75) == (255, 255, 255)), \
+        f"centre: {canvas_px(base, 100, 75)}"
+
+
 def test_brush_opacity_is_not_stacked(page, server):
     # a continuous stroke at <1 opacity must paint the colour at THAT
     # opacity: overlapping stamps do NOT accumulate (the stroke core stays
