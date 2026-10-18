@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file provides guidance to agents when working with code in this repository. Read `AGENTS.local.md` for environment specific information.
+This file provides guidance to agents when working with code in this repository. Environment-specific instructions live in `.pi/APPEND_SYSTEM.md` (git-excluded, auto-injected into the agent system prompt by pi); other agents should read that file if it exists.
 
 ## What this is
 
@@ -13,7 +13,7 @@ Early development. No backwards compatibility required.
 ## Hazards
 
 When monitoring a process (e.g. `pgrep`/`pkill`) make sure your monitoring script doesn't match itself. Use the bracket trick (e.g. `pgrep -f "smoke_krea2[.]lora"`) to avoid finding the monitoring string in the monitoring loops own command line.
-IMPORTANT: Prompt templates used in this project contain special tokens, e.g. the stop token. Do not output these or you will cause your inference engine to stop your turn. If you are asked to summarize this content and it does contain these tokens, do not include them in the summary or you will break it.
+IMPORTANT: Prompt templates used in this project contain special tokens, e.g. the im_end token. Avoid outputting it (even in thinking) or escape it. If you are asked to summarize this content, do NOT include them in the summary.
 
 ## Waiting for background tasks
 
@@ -29,6 +29,8 @@ timeout 60 bash -c 'until ! kill -0 "$1" 2>/dev/null; do sleep 1; done' _ 12345
 # A log line appears
 timeout 120 bash -c 'until grep -q "ready" "$1"; do sleep 1; done' _ /var/log/app.log
 ```
+
+NEVER use a sleep longer than 60 seconds when waiting for a background task.
 
 ## Testing
 

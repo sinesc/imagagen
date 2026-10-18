@@ -9,8 +9,6 @@ __pycache__/
 # reference code
 dev/implementations/
 
-AGENTS.local.md
-
 # output folder (no gitkeep to allow symlinking some other folder)
 output
 
