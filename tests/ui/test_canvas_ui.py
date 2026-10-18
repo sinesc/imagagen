@@ -46,6 +46,13 @@ def _show(page, base, w=200, h=150):
     page.wait_for_function("document.getElementById('canvas').hidden === false")
 
 
+def _thumb_title(thumb, expected: str):
+    """Poll a thumbnail's title: renderThumbs() rebuilds it WITH the image
+    dimensions once the file has decoded, so the dimension-free title is
+    only a transient (pre-decode) state."""
+    return wait_until(lambda: thumb.get_attribute("title") == expected)
+
+
 def _centre(page) -> tuple[float, float]:
     return page.evaluate(
         """() => {
@@ -1332,7 +1339,7 @@ def test_generate_source_thumbnail_retains_canvas(page, server):
     page.wait_for_function("state.thumbs.length >= 2")
     first = page.locator("#thumbs img").first
     assert "source" in (first.get_attribute("class") or "")
-    assert first.get_attribute("title") == "source image (click to restore)"
+    assert _thumb_title(first, "source image 200\u00d7150 (click to restore)")
     # the canvas is showing the source, so IT is the selected thumbnail
     assert "selected" in (first.get_attribute("class") or "")
     # ...and the canvas was NOT auto-replaced
@@ -1369,7 +1376,7 @@ def test_inpaint_source_thumbnail(page, server):
     first = page.locator("#thumbs img").first
     assert "source" in (first.get_attribute("class") or "")
     assert "selected" in (first.get_attribute("class") or "")
-    assert first.get_attribute("title") == "source image (click to restore)"
+    assert _thumb_title(first, "source image 200\u00d7150 (click to restore)")
     assert canvas_px(base, 100, 75) == BG
 
     # selecting a result regenerates the masked centre... clicking the
@@ -1528,7 +1535,7 @@ def test_drop_png_on_empty_canvas_creates_thumbnail(page, server):
     assert wait_until(lambda: _canvas_size(base) == (120, 90))
     assert wait_until(lambda: page.locator("#thumbs img").count() == 1)
     thumb = page.locator("#thumbs img").nth(0)
-    assert thumb.get_attribute("title") == "uploaded image (click to restore)"
+    assert _thumb_title(thumb, "uploaded image 120\u00d790 (click to restore)")
     assert "selected" in (thumb.get_attribute("class") or "")
 
     # a generation takes the uploaded image over as its (green-bordered)
@@ -1536,8 +1543,8 @@ def test_drop_png_on_empty_canvas_creates_thumbnail(page, server):
     # clears every other unpinned thumbnail on generate -- and adds a result
     page.click("#btn-generate")
     page.wait_for_function("state.thumbs.length >= 2")
-    assert page.locator("#thumbs img").nth(0).get_attribute("title") \
-        == "source image (seed 7) (click to restore)"
+    assert _thumb_title(page.locator("#thumbs img").nth(0),
+                        "source image 120\u00d790 (seed 7) (click to restore)")
     assert canvas_px(base, 1, 1) == BG
 
     page.locator("#thumbs img").nth(1).click()  # the result onto the canvas
@@ -1616,7 +1623,7 @@ def test_second_drop_replaces_the_upload_thumbnail(page, server):
     assert "selected" in (thumb.get_attribute("class") or "")
 
     # the (single) thumbnail now shows the SECOND image and restores it
-    assert thumb.get_attribute("title") == "uploaded image (click to restore)"
+    assert _thumb_title(thumb, "uploaded image 120\u00d790 (click to restore)")
     page.locator("#thumbs img").nth(0).click()
     assert wait_until(lambda: canvas_px(base, 1, 1) == (200, 210, 220))
 
@@ -1631,8 +1638,8 @@ def test_drop_png_on_thumbs_strip_adds_pinned_thumbnail(page, server):
     _drop_png(page, "#thumbs", _meta_png(120, 90, rgb=BG), "pin.png")
     assert wait_until(lambda: page.locator("#thumbs img").count() == 1)
     assert page.evaluate("state.thumbs.every(t => t.pinned)")
-    assert page.locator("#thumbs img").nth(0).get_attribute("title") \
-        == "uploaded image (click to restore)"
+    assert _thumb_title(page.locator("#thumbs img").nth(0),
+                        "uploaded image 120\u00d790 (click to restore)")
     assert not page.locator("#thumbs img").nth(0).evaluate(
         "el => el.classList.contains('selected')")
     assert _canvas_size(base) is None  # the canvas is untouched
