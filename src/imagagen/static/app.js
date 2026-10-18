@@ -465,6 +465,39 @@ function openLoraManage() {
 }
 
 // ---------------- thumbnails ----------------
+// The entity currently displayed on the canvas (null = empty canvas), kept
+// in sync at every point the displayed entity changes (boot, thumbnail
+// select, upload/crop, the canvas_set auto-set). canvas.js's markDirty uses
+// it to refresh the matching thumbnail from the local view (the client owns
+// the pixels until they are synced).
+let currentEntityId = null;
+
+// Re-point the current entity's thumbnail at the local pixels: strokes
+// commit client-side, so the server-served thumbnail/preview URLs (never
+// reloaded, and memory-cached by the browser once decoded) would keep
+// showing the pre-edit image. The hover preview reads t.url too, so it
+// inherits the swap. Blob URLs are revoked as soon as they are superseded.
+let thumbSnapshotSeq = 0; // toBlob callbacks may race: only the last lands
+function refreshCurrentThumbPixels() {
+  if (!view.has || !currentEntityId) return;
+  const t = state.thumbs.find((x) => x.image_id === currentEntityId);
+  if (!t) return;
+  const id = currentEntityId;
+  const seq = ++thumbSnapshotSeq;
+  view.base.toBlob((b) => {
+    // a newer edit already queued its snapshot, or the canvas moved on
+    if (!b || seq !== thumbSnapshotSeq || currentEntityId !== id) return;
+    const prev = t.url;
+    const url = URL.createObjectURL(b);
+    t.url = url;
+    const i = state.thumbs.indexOf(t);
+    const img = i >= 0 ? $("thumbs").querySelectorAll(".thumb-item img")[i] : null;
+    if (img) img.src = url;
+    if (thumbPreviewUrl === prev) thumbPreviewShow(url);
+    if (prev.startsWith("blob:")) URL.revokeObjectURL(prev);
+  }, "image/png");
+}
+
 // put a thumbnail's image onto the canvas. Results come from the job;
 // the source image (green border, canvas snapshot at submit time --
 // inpaint always, generate when the canvas was non-empty) is not a job
@@ -472,8 +505,13 @@ function openLoraManage() {
 // Both kinds of thumbnail (results and the green-bordered source snapshot)
 // are live canvas image entities now, so selecting one is always a select
 // by id; the response carries the four undo/redo flags.
+// forceSync FIRST: pending local edits must land on the entity we switch
+// away from, or they are lost (and its thumbnail would show the stale
+// server copy).
 async function restoreThumb(t) {
+  await forceSync();
   await api("/api/canvas/select", { id: t.image_id });
+  currentEntityId = t.image_id;
 }
 
 // hover preview: the thumbnail's full image laid over the canvas box. A
@@ -849,6 +887,7 @@ function restoreQueueThumbs(q) {
   }
   // highlight the entity currently on the canvas, if it is a thumbnail
   if (q && q.current) {
+    currentEntityId = q.current;
     const i = state.thumbs.findIndex((t) => t.image_id === q.current);
     if (i >= 0) state.currentThumb = i;
   }
@@ -871,6 +910,7 @@ function addCropThumbs(r) {
   // the crop is a new thumbnail and, unlike generation, immediately selected
   state.thumbs.push({ image_id: r.crop_image_id, url: r.crop_url, crop: true });
   state.currentThumb = state.thumbs.length - 1;
+  currentEntityId = r.crop_image_id;
   renderThumbs();
 }
 
@@ -2120,7 +2160,8 @@ async function importPng(file) {
     const { meta, width, height } = await metaRes.json();
     const up = await fetch("/api/canvas/upload", { method: "POST", body: await file.arrayBuffer() });
     if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
-    await up.json();
+    const { image_id } = await up.json();
+    currentEntityId = image_id; // the upload became the displayed entity
     await applyPngMeta(meta, width, height);
     viewRefresh();
     setStatus(meta ? `imported ${file.name} (metadata applied)` : `loaded ${file.name} onto the canvas (no metadata)`);
@@ -2244,11 +2285,13 @@ function parseMetaLoras(items) {
 // applying metadata is what dropping on the prompt fields is for. The
 // upload becomes a canvas entity, so it also gets a thumbnail (selected,
 // like the crop is): restorable via the strip after a generation puts a
-// result on the canvas, and pinnable like any other thumbnail. Dropping
-// onto an upload thumbnail REPLACES it (the canvas only ever holds one
-// upload entity: the server evicts the superseded one, so its thumbnail
-// would go dead), while any other canvas content (a result, a crop, a
-// source snapshot) keeps its thumbnail and gets a new one appended.
+// result on the canvas, and pinnable like any other thumbnail. The entity
+// is pinned server-side (like a crop), so it survives thumbnail switches
+// until the next generation releases it along with the client's unpinned
+// upload thumbnail. Dropping onto the upload thumbnail of the CANVAS image
+// replaces it (?replace= retires the superseded entity, transferring its
+// user pin); any other canvas content (a result, a crop, a source
+// snapshot) keeps its thumbnail and gets a new one appended.
 function wireCanvasDrop() {
   const holder = $("canvas-holder");
   holder.addEventListener("dragover", (e) => {
@@ -2267,18 +2310,28 @@ function wireCanvasDrop() {
       return;
     }
     try {
-      const up = await fetch("/api/canvas/upload", { method: "POST", body: await file.arrayBuffer() });
+      // the upload thumbnail is REPLACED only when it is the entity the
+      // canvas shows (a strip-dropped pinned upload sitting last in the
+      // strip keeps its thumbnail and gets a new entry appended instead);
+      // ?replace= retires the superseded server entity (pin transfer)
+      const last = state.thumbs[state.thumbs.length - 1];
+      const replace = last?.upload && last.image_id === currentEntityId
+        ? last.image_id : null;
+      const up = await fetch(
+        "/api/canvas/upload" +
+        (replace ? `?replace=${encodeURIComponent(replace)}` : ""),
+        { method: "POST", body: await file.arrayBuffer() });
       if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
       const { image_id } = await up.json();
       const url = `/api/canvas/image.png?id=${encodeURIComponent(image_id)}`;
-      const last = state.thumbs[state.thumbs.length - 1];
-      if (last?.upload) {
+      if (replace) {
         last.image_id = image_id; // re-point it at the new entity
-        last.url = url;
+        last.url = url; // last.pinned carries over (transferred server-side)
       } else {
         state.thumbs.push({ image_id, upload: true, url });
       }
       state.currentThumb = state.thumbs.length - 1; // the canvas shows it
+      currentEntityId = image_id;
       renderThumbs();
       viewRefresh();
       setStatus(`loaded ${file.name} onto the canvas`);
@@ -2559,7 +2612,10 @@ function connectWS() {
       case "source_image":
         // canvas snapshot at submit time (inpaint, or generate on a
         // non-empty canvas), shown before any result arrives; the id lets
-        // it be restored as a live canvas entity
+        // it be restored as a live canvas entity -- and names the entity
+        // the canvas keeps displaying (re-adopt it: the client may not
+        // have seen this id, e.g. a canvas set outside its own flows)
+        if (msg.image_id) currentEntityId = msg.image_id;
         state.thumbs.unshift({ source: true, url: msg.url, image_id: msg.image_id,
                             seed: msg.seed }); // null: no seed in its metadata
         renderThumbs();
@@ -2581,6 +2637,7 @@ function connectWS() {
       case "canvas_set":
         // the canvas auto-set to a fresh result entity: viewRefresh resets
         // the local history stacks with the new state
+        currentEntityId = `job:${msg.job}:${msg.index}`;
         viewRefresh();
         break;
       case "done":

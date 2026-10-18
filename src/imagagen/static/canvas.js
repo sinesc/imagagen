@@ -448,11 +448,14 @@ async function forceSync() {
   }
 }
 
-function markDirty() {
+function markDirty(pixels = false) {
   editSeq++;
   canvasDirty = true;
   if (syncTimer) clearTimeout(syncTimer);
   syncTimer = setTimeout(forceSync, SYNC_IDLE_MS);
+  // base-image edit: app.js keeps the current entity's thumbnail live from
+  // view.base (mask-only edits leave the thumbnail alone)
+  if (pixels) refreshCurrentThumbPixels();
 }
 
 // fresh server state is about to replace the local state (viewRefresh): we
@@ -520,7 +523,7 @@ async function undoStep(target) { // "draw" | "mask" | "sel"
   redo.push(await snapCanvas(c));
   await restoreCanvas(c, prev);
   if (target === "mask") buildMaskOverlay();
-  markDirty();
+  markDirty(target !== "mask");
   syncUndoButtons(); // app.js
   viewRedraw();
 }
@@ -535,7 +538,7 @@ async function redoStep(target) { // "draw" | "mask" | "sel"
   undo.push(await snapCanvas(c));
   await restoreCanvas(c, nxt);
   if (target === "mask") buildMaskOverlay();
-  markDirty();
+  markDirty(target !== "mask");
   syncUndoButtons(); // app.js
   viewRedraw();
 }
@@ -2014,7 +2017,7 @@ async function commitSelection() {
   view.sel = null; // the selection history is dropped with it: the paste is
   view.selDrag = null; // ONE draw-undo step, its internal edits are merged
   pushUndo("draw", snap);
-  markDirty();
+  markDirty(true);
   syncUndoButtons(); // app.js
   if (Tools.current === "paste") switchTool("copy"); // app.js
   viewRedraw();
@@ -2360,8 +2363,9 @@ function setupCanvasInput() {
     // the snapshot promise lands on the stack immediately (its encoding
     // overlaps the drag); undoStep/redoStep await it on pop
     pushUndo(s.tool, s.snapP || s.snapMaskP);
-    markDirty(); // the server's copy is behind; idle sync (or the next
-    // forceSync before a server-side read) pushes the state
+    // the server's copy is behind; idle sync (or the next forceSync before a
+    // server-side read) pushes the state (pixels: brush/clone/smudge edits)
+    markDirty(s.tool !== "mask");
     syncUndoButtons(); // app.js
     viewRedraw();
   };

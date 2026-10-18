@@ -10,7 +10,7 @@ Two layouts:
    whole image is scaled into the box with the padding the zoom-to-fit button
    leaves around the canvas image (viewFit's 0.98 factor), centred."""
 
-from conftest import canvas_px, set_canvas, set_input, wait_until
+from conftest import canvas_px, set_canvas, set_input, stroke, wait_until
 
 BG = (20, 30, 40)
 
@@ -244,3 +244,44 @@ def test_thumb_titles_name_the_dimensions(page, server):
     assert titles()[0].startswith("source image 200\u00d7150")
     assert titles()[0].endswith("(click to restore)")
     assert f"seed {page.evaluate('state.thumbs[1].seed')} 300\u00d7100" in titles()[1]
+
+
+def test_thumb_and_preview_track_local_edits(page, server):
+    """The thumbnail AND hover preview of the entity on the canvas must
+    reflect locally committed strokes: the strip <img> is never re-fetched
+    and the browser memory-caches the entity PNG URL anyway, so app.js
+    swaps in a blob snapshot of the local view base."""
+    base, _ = server
+    _open(page, base)
+    _show(page, base, 200, 150)
+    page.click("#btn-generate")
+    page.wait_for_function("state.thumbs.length >= 2")
+    # the source thumbnail (unshifted by the WS event) IS the entity the
+    # canvas displays
+    assert wait_until(lambda: page.evaluate(
+        "currentEntityId === state.thumbs[0].image_id"))
+
+    set_input(page, "#brush-color", "#ff0000")
+    stroke(page, [(60, 75), (140, 75)])
+
+    # the current entity's thumbnail was re-pointed at a local blob
+    assert wait_until(lambda: page.evaluate(
+        "state.thumbs.find(t => t.image_id === currentEntityId)"
+        "?.url.startsWith('blob:')"))
+    src = page.eval_on_selector("#thumbs img >> nth=0", "el => el.src")
+    assert src.startswith("blob:")
+
+    # the hover preview shows the SAME fresh snapshot, including the stroke
+    _hover(page, base, 0)
+    assert page.eval_on_selector("#thumb-preview-img", "el => el.src") == src
+    px = page.evaluate(
+        """() => { const im = document.getElementById('thumb-preview-img');
+            const c = document.createElement('canvas');
+            c.width = im.naturalWidth; c.height = im.naturalHeight;
+            const g = c.getContext('2d'); g.drawImage(im, 0, 0);
+            return Array.from(g.getImageData(100, 75, 1, 1).data); }""")
+    assert px[0] > 200 and px[1] < 60 and px[2] < 60, f"stroke missing: {px}"
+
+    # untouched: another entity's thumbnail keeps its server URL
+    assert not page.eval_on_selector(
+        "#thumbs img >> nth=1", "el => el.src").startswith("blob:")

@@ -1605,10 +1605,11 @@ def test_unpin_defers_the_removal_to_the_next_generation(page, server):
 
 
 def test_second_drop_replaces_the_upload_thumbnail(page, server):
-    """The canvas only ever holds ONE upload entity: dropping a second PNG
-    replaces the canvas content and RE-POINTS the existing upload thumbnail
-    at the new image (the server evicts the superseded entity, so a second
-    thumbnail would go dead and the old one would stop restoring)."""
+    """The canvas only ever tracks ONE canvas-upload entity: dropping a
+    second PNG onto the canvas replaces its content and RE-POINTS the
+    existing upload thumbnail at the new image (?replace= retires the
+    superseded entity, so a second thumbnail would go dead and the old one
+    would stop restoring)."""
     base, _ = server
     _open(page, base)
 
@@ -1626,6 +1627,65 @@ def test_second_drop_replaces_the_upload_thumbnail(page, server):
     assert _thumb_title(thumb, "uploaded image 120\u00d790 (click to restore)")
     page.locator("#thumbs img").nth(0).click()
     assert wait_until(lambda: canvas_px(base, 1, 1) == (200, 210, 220))
+
+
+def test_upload_thumbnail_restorable_after_switching(page, server):
+    """The regression: an unpinned upload entity used to be evicted by the
+    FIRST switch away (it belonged to no anchor/pin set), so clicking its
+    thumbnail again failed with "unknown canvas image: 'upload:N'". It is
+    now pinned like a crop and survives the switch."""
+    base, _ = server
+    _open(page, base)
+
+    # strip drop: pinned upload thumbnail, canvas untouched (upload:0)
+    _drop_png(page, "#thumbs", _meta_png(120, 90, rgb=(200, 0, 0)), "pin.png")
+    assert wait_until(lambda: page.locator("#thumbs img").count() == 1)
+    # canvas drop: NOT a replace (the strip drop's thumbnail is last but is
+    # not the displayed entity) -- a second upload thumbnail is appended
+    _drop_png(page, "#canvas-holder", _meta_png(100, 80, rgb=BG), "canvas.png")
+    assert wait_until(lambda: page.locator("#thumbs img").count() == 2)
+    canvas_thumb = page.locator("#thumbs img").nth(1)
+    assert "selected" in (canvas_thumb.get_attribute("class") or "")
+
+    # switch to the strip drop and back: the canvas-upload entity must
+    # still be selectable (this is where it used to go dead)
+    page.locator("#thumbs img").nth(0).click()
+    assert wait_until(lambda: _canvas_size(base) == (120, 90))
+    page.locator("#thumbs img").nth(1).click()
+    assert wait_until(lambda: _canvas_size(base) == (100, 80))
+    assert "unknown canvas image" not in (page.text_content("#status-line") or "")
+    assert wait_until(lambda: canvas_px(base, 1, 1) == BG)
+
+
+def test_edits_survive_thumbnail_switch(page, server):
+    """Selecting another thumbnail forceSyncs FIRST: local strokes land on
+    the entity we switch away from (before the fix the entity kept its
+    stale server PNG -- the idle sync only ever pushed whatever the NEW
+    entity's view held)."""
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    page.fill("#prompt", "p")
+    page.click("#btn-generate")
+    assert wait_until(lambda: page.locator("#thumbs img").count() >= 2)
+
+    # stroke the source image (nth 0 is the source thumbnail) WITHOUT the
+    # conftest stroke helper's trailing forceSync: the edit is local-only
+    set_input(page, "#brush-color", "#ff0000")
+    page.mouse.move(*screen_pos(page, 60, 75))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 140, 75), steps=5)
+    page.mouse.up()
+
+    page.locator("#thumbs img").nth(1).click()  # onto a result
+    assert wait_until(lambda: page.evaluate(
+        "currentEntityId === state.thumbs[1].image_id"))
+    page.locator("#thumbs img").nth(0).click()  # back onto the source
+
+    def stroked():
+        r, g, b = canvas_px(base, 100, 75)
+        return r > 150 and g < 100 and b < 100
+    assert wait_until(stroked), f"stroke lost on switch: {canvas_px(base, 100, 75)}"
 
 
 def test_drop_png_on_thumbs_strip_adds_pinned_thumbnail(page, server):

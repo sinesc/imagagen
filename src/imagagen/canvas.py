@@ -214,11 +214,22 @@ class Canvas:
             self._anchored.add(eid)
         return eid
 
-    def import_image(self, data: bytes) -> str:
+    def import_image(
+        self, data: bytes, replace_id: str | None = None,
+    ) -> str:
         """Upload / drag&drop: create an ``upload:{n}`` entity and set it.
 
         The new entity inherits the displayed image's current mask (the
-        upload replaces it); see ``_inherit_mask_locked``."""
+        upload replaces it); see ``_inherit_mask_locked``.
+
+        Like a crop, the upload is pinned (``_pinned``) so it survives
+        thumbnail switches: the UI keeps its thumbnail until the next
+        generation, whose ``release_pins()`` matches the client dropping
+        unpinned upload thumbnails. ``replace_id`` retires the upload entity
+        a re-dropped PNG supersedes (the client re-points that thumbnail):
+        its pins are dropped so eviction removes it, and a user pin moves
+        onto the new entity. An entity still anchored by a live job is left
+        alone (its PNG stays reachable until the job is dropped)."""
         arr = _decode_png(data)
         info = _png_text_chunks(data)
         with self._lock:
@@ -229,6 +240,17 @@ class Canvas:
                 id=eid, png=data, info=info, image=arr,
                 mask=self._inherit_mask_locked(self._current, w, h),
             )
+            if (replace_id and replace_id != eid and replace_id in self._images):
+                # retire the superseded upload: its pins go, so the eviction
+                # below drops it UNLESS a live job still anchors it (then
+                # its PNG stays reachable until that job is dropped, and a
+                # user pin must not move yet either)
+                was_user = replace_id in self._user_pinned
+                self._user_pinned.discard(replace_id)
+                self._pinned.discard(replace_id)
+                if was_user and replace_id not in self._anchored:
+                    self._user_pinned.add(eid)
+            self._pin_locked(eid)
             self._enter_entity_locked(eid)
         return eid
 

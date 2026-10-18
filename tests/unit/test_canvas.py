@@ -373,13 +373,45 @@ def test_entity_png_serves_any_known_entity():
 
 # ---------------- entity eviction ----------------
 
-def test_upload_evicted_when_it_leaves_canvas():
+def test_upload_pinned_until_release_when_it_leaves_canvas():
     c = Canvas()
     a = c.import_image(_png(np.full((24, 32, 3), 100, np.uint8)))
     b = c.import_image(_png(np.full((24, 32, 3), 50, np.uint8)))
-    # a left the canvas and has no job reference -> evicted on import of b
-    assert a not in c._images
+    # a left the canvas but is pinned like a crop: the UI keeps its upload
+    # thumbnail restorable until the next generation releases the pin
+    assert a in c._images and b in c._images and c.current_id() == b
+    c.release_pins()  # what a new generation does when it drops the thumbs
+    assert a not in c._images and b in c._images
+
+
+def test_upload_replace_retires_the_superseded_entity():
+    c = Canvas()
+    a = c.import_image(_png(np.full((24, 32, 3), 100, np.uint8)))
+    b = c.import_image(_png(np.full((24, 32, 3), 50, np.uint8)), replace_id=a)
+    assert a not in c._images  # superseded by the re-drop, pin released
     assert b in c._images and c.current_id() == b
+
+
+def test_upload_replace_transfers_the_user_pin():
+    c = Canvas()
+    a = c.import_image(_png(np.full((24, 32, 3), 100, np.uint8)))
+    c.user_pin(a)
+    b = c.import_image(_png(np.full((24, 32, 3), 50, np.uint8)), replace_id=a)
+    assert a not in c._images
+    assert c.user_pinned() == {b}  # the re-pointed thumbnail stays pinned
+    c.release_pins()  # the user pin must survive the per-generation reset
+    assert b in c._images
+
+
+def test_upload_replace_skips_anchored_entity():
+    c = Canvas()
+    a = c.import_image(_png(np.full((24, 32, 3), 100, np.uint8)))
+    c.anchor({a})  # a live job's source: its PNG must stay reachable
+    b = c.import_image(_png(np.full((24, 32, 3), 50, np.uint8)), replace_id=a)
+    assert a in c._images and b in c._images
+    c.anchor(set())
+    c.evict_stale()  # pin released by the replace, evicted once unanchored
+    assert a not in c._images
 
 
 def test_anchored_entity_survives_leaving_canvas():
@@ -388,9 +420,11 @@ def test_anchored_entity_survives_leaving_canvas():
     c.anchor({a})
     b = c.import_image(_png(np.full((24, 32, 3), 50, np.uint8)))
     assert a in c._images  # still referenced by a (live) job
-    # un-anchoring + evict drops it
+    # an un-anchored upload still needs its crop-style pin released
     c.anchor(set())
     c.evict_stale()
+    assert a in c._images and b in c._images
+    c.release_pins()
     assert a not in c._images and b in c._images
 
 

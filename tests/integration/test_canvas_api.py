@@ -110,6 +110,60 @@ def test_select_switches_and_rejects_unknown(tmp_path):
         assert c.post("/api/canvas/select", json={"id": "nope"}).status_code == 400
 
 
+def test_upload_survives_switching_to_another_entity(tmp_path):
+    """The regression: an uploaded image that is merely UNPINNED must not be
+    evicted by the first switch away (crop-style pin), or its thumbnail goes
+    dead with "unknown canvas image"."""
+    with _client(tmp_path) as c:
+        c.post("/api/canvas/upload", content=_png_bytes(32, 24, 1))  # upload:0
+        c.post("/api/canvas/import-pin", content=_png_bytes(40, 16, 2))  # upload:1
+        assert c.post("/api/canvas/select",
+                      json={"id": "upload:1"}).status_code == 200
+        r = c.post("/api/canvas/select", json={"id": "upload:0"})
+        assert r.status_code == 200, r.json()
+        assert _img(c).shape == (24, 32, 3)
+
+
+def test_upload_replace_retires_superseded_entity(tmp_path):
+    """?replace=<id>: a re-drop that re-points the upload thumbnail retires
+    the superseded entity (pin released), and a user pin transfers over."""
+    with _client(tmp_path) as c:
+        a = c.post("/api/canvas/upload",
+                   content=_png_bytes(32, 24, 1)).json()["image_id"]
+        b = c.post(f"/api/canvas/upload?replace={a}",
+                   content=_png_bytes(32, 24, 2)).json()["image_id"]
+        assert c.get(f"/api/canvas/image.png?id={a}").status_code == 404
+        assert c.get(f"/api/canvas/image.png?id={b}").status_code == 200
+        # user-pinned upload: replacing it keeps the thumbnail pinned
+        c.post("/api/canvas/pin", json={"id": b, "pin": True})
+        d = c.post(f"/api/canvas/upload?replace={b}",
+                   content=_png_bytes(32, 24, 3)).json()["image_id"]
+        assert d in c.get("/api/queue").json()["pinned"]
+        assert c.get(f"/api/canvas/image.png?id={b}").status_code == 404
+
+
+def test_thumb_endpoint_prefers_live_entity(tmp_path):
+    """The job thumbnail endpoint serves the canvas ENTITY when it exists:
+    edits synced to the result entity show up in its (URL-stable) thumbnail."""
+    with _client(tmp_path) as c:
+        _set_canvas(c)
+        g = c.post("/api/generate", json={"prompt": "p", "width": 32,
+                                          "height": 24, "seed": 1,
+                                          "batch_size": 1})
+        job = g.json()["job_id"]
+        deadline = time.time() + 20
+        while c.get(f"/api/thumb/{job}/0.png").status_code != 200:
+            assert time.time() < deadline, "job never finished"
+            time.sleep(0.05)
+        eid = f"job:{job}:0"
+        assert c.post("/api/canvas/select", json={"id": eid}).status_code == 200
+        before = c.get(f"/api/thumb/{job}/0.png").content
+        c.post("/api/canvas/sync", files=_sync_payload(img_value=77))
+        after = c.get(f"/api/thumb/{job}/0.png").content
+        assert after != before
+        assert np.asarray(Image.open(io.BytesIO(after)))[0, 0, 0] == 77
+
+
 def test_mask_png_follows_image_size(tmp_path):
     with _client(tmp_path) as c:
         _set_canvas(c)  # 32x24

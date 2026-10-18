@@ -873,9 +873,15 @@ def create_app(
     def thumb_source(job_id: int) -> Response:
         # the source image (canvas snapshot at submit time; inpaint
         # always, generate on a non-empty canvas); registered before the
-        # {index}.png route so "source" is not parsed as an index
+        # {index}.png route so "source" is not parsed as an index.
+        # The live canvas entity wins when it exists: a source the user
+        # keeps editing has a fresher cold PNG than the submit snapshot.
         job = queue.job(job_id)
-        data = job.source_png if job else None
+        data = None
+        if job is not None and job.source_image_id is not None:
+            data = canvas.entity_png(job.source_image_id)
+        if data is None and job is not None:
+            data = job.source_png
         if data is None:
             return Response(status_code=404)
         return Response(content=data, media_type="image/png")
@@ -883,12 +889,13 @@ def create_app(
     @app.get("/api/thumb/{job_id}/{index}.png")
     def thumb(job_id: int, index: int) -> Response:
         job = queue.job(job_id)
-        data = job.results.get(index) if job else None
-        if data is None:
-            # dropped job: a user-pinned result is still a canvas entity,
-            # so serve its cold PNG (pinned thumbnails keep their original
-            # URLs and stay alive across generations)
-            data = canvas.entity_png(f"job:{job_id}:{index}")
+        # the canvas entity is authoritative when it exists (edits arrive
+        # through /api/canvas/sync and update its cold PNG); the job's own
+        # snapshot only covers entities that never became, or ceased to be,
+        # canvas images
+        data = canvas.entity_png(f"job:{job_id}:{index}")
+        if data is None and job is not None:
+            data = job.results.get(index)
         if data is None:
             return Response(status_code=404)
         return Response(content=data, media_type="image/png")
@@ -1000,8 +1007,11 @@ def create_app(
     @app.post("/api/canvas/upload")
     async def upload_canvas(request: Request) -> dict:
         data = await request.body()
+        # ?replace=<id>: the client re-pointed its upload thumbnail at this
+        # new image, so the superseded upload entity must not linger pinned
+        replace = request.query_params.get("replace")
         try:
-            image_id = canvas.import_image(data)
+            image_id = canvas.import_image(data, replace_id=replace)
         except Exception:
             return JSONResponse({"error": "could not read image"}, status_code=400)
         # the new entity's id lets the UI add a restorable thumbnail
