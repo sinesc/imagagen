@@ -1116,7 +1116,12 @@ async function refreshLoras() {
   const list = $("loras");
   [...list.querySelectorAll(".lora-row")].forEach((row) => {
     const name = row.querySelector(".lora-name").value;
-    if (name && !r.loras.includes(name)) row.remove();
+    // rows for LoRAs the new family does not offer are dropped -- but only
+    // the enabled ones: a DISABLED row is never applied, and disabled
+    // selections (e.g. the "Disabled LoRAs" of an imported PNG, whose file
+    // may not exist here) must survive so the metadata round-trips
+    if (name && !r.loras.includes(name) && !row.classList.contains("off"))
+      row.remove();
   });
 }
 
