@@ -172,12 +172,12 @@ def test_bad_transformer_parking_delay_raises(tmp_path):
 
 
 def test_prefetch_text_encoder_flag(tmp_path):
-    # disabled by default (even with no ini file at all)
-    assert load_config(tmp_path).prefetch_text_encoder is False
-    ini(tmp_path).write_text("[imagagen]\nprefetch-text-encoder = true\n")
+    # ENABLED by default (even with no ini file at all)
     assert load_config(tmp_path).prefetch_text_encoder is True
     ini(tmp_path).write_text("[imagagen]\nprefetch-text-encoder = false\n")
     assert load_config(tmp_path).prefetch_text_encoder is False
+    ini(tmp_path).write_text("[imagagen]\nprefetch-text-encoder = true\n")
+    assert load_config(tmp_path).prefetch_text_encoder is True
 
 
 def test_bad_prefetch_text_encoder_raises(tmp_path):

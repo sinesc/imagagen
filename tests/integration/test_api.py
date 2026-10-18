@@ -460,12 +460,30 @@ def test_generate_records_disabled_loras(client):
 
 # ---------- prompt-change prefetch (imagagen.ini prefetch-text-encoder) --
 
-def test_prefetch_text_encoder_disabled_by_default(client):
-    # ini default: the feature is off, the endpoint says so and does nothing
+def test_prefetch_text_encoder_enabled_by_default(client, tmp_path):
+    # the feature is ON by default: the mock backend is "resident" and
+    # MockBackend.encoding_cached is True (base default) -> cached
     r = client.post("/api/prefetch-text-encoder",
-                    json={"prompt": "a dog", "negative_prompt": "blurry"})
+                    json={"model_id": "mock/mock.safetensors",
+                          "prompt": "a dog"})
     assert r.status_code == 200
-    assert r.json() == {"action": "disabled"}
+    assert r.json() == {"action": "cached"}
+
+
+def test_prefetch_text_encoder_disabled_by_ini(tmp_path):
+    from imagagen.config import load_config
+
+    ini = tmp_path / "user" / "imagagen.ini"
+    ini.parent.mkdir(parents=True, exist_ok=True)
+    ini.write_text("[imagagen]\nprefetch-text-encoder = false\n")
+    backend = MockBackend()
+    app = create_app(config=load_config(tmp_path), backend=backend)
+    with TestClient(app) as c:
+        r = c.post("/api/prefetch-text-encoder",
+                   json={"model_id": "mock/mock.safetensors",
+                         "prompt": "a dog"})
+        assert r.status_code == 200
+        assert r.json() == {"action": "disabled"}
 
 
 def test_prefetch_text_encoder_enabled(tmp_path):

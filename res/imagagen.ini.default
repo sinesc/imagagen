@@ -41,7 +41,7 @@
 #                explicitly (the model stays resident until something
 #                else needs the VRAM, e.g. a text encode swap or a model
 #                switch).
-#   prefetch-text-encoder      false (default) | true
+#   prefetch-text-encoder      true (default) | false
 #                true: when the UI's prompt changes and the final prompt
 #                would MISS the prompt-encoding cache (always true for
 #                wildcard prompts), immediately switch the GPU to its
@@ -72,4 +72,4 @@ ignore-gpus =
 #save-ui-state = true
 #debug = false
 #transformer-parking-delay = 90
-#prefetch-text-encoder = false
+#prefetch-text-encoder = true

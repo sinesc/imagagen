@@ -39,7 +39,7 @@ class Config:
     # its "about to encode" layout (text encoders resident, transformer
     # parked when they cannot co-reside) instead of waiting for the next
     # generation to pay the swap.
-    prefetch_text_encoder: bool = False
+    prefetch_text_encoder: bool = True
     # Development aid: no-store on all responses (see cache middleware in
     # app.py); without it responses are revalidated on every request.
     debug: bool = False
@@ -214,11 +214,11 @@ def _parse_ini(
     """Parse ``<root>/user/imagagen.ini``: GPU selection, VRAM options, debug.
 
     A missing file yields the defaults
-    (auto, none, off, gpu, False, False, True, 0.9, 90.0, False).
+    (auto, none, off, gpu, False, False, True, 0.9, 90.0, True).
     """
     if not path.is_file():
         return (None, frozenset(), "off", "gpu", False, False, True, 0.9,
-                90.0, False)
+                90.0, True)
     cp = configparser.ConfigParser()
     try:
         cp.read(path, encoding="utf-8")
@@ -226,7 +226,7 @@ def _parse_ini(
         raise ValueError(f"cannot parse {path.name}: {e}") from e
     if not cp.has_section("imagagen"):
         return (None, frozenset(), "off", "gpu", False, False, True, 0.9,
-                90.0, False)
+                90.0, True)
     sec = cp["imagagen"]
 
     raw = sec.get("primary-gpu", "auto").strip().lower()
@@ -306,7 +306,7 @@ def _parse_ini(
             f"{parking_delay!r}"
         )
     try:
-        prefetch_te = sec.getboolean("prefetch-text-encoder", False)
+        prefetch_te = sec.getboolean("prefetch-text-encoder", True)
     except ValueError:
         raise ValueError(
             f"{path.name}: prefetch-text-encoder must be true/false, "
