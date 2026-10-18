@@ -221,3 +221,26 @@ def test_thumb_preview_fits_when_dimensions_differ(page, server):
     _hover(page, base, 0)
     assert _state(page)[0] == [200, 150]
     _assert_match(page)
+
+
+def test_thumb_titles_name_the_dimensions(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base, 200, 150)
+
+    # the hover preview is not the only way to see what a thumbnail is: its
+    # title names the dimensions as well as the seed / kind. They only become
+    # known once the file decoded, so the title is rebuilt on load.
+    set_input(page, "#width", 300)
+    set_input(page, "#height", 100)
+    page.click("#btn-generate")
+    page.wait_for_function("state.thumbs.length >= 2")
+
+    def titles():
+        return page.eval_on_selector_all("#thumbs img", "els => els.map(e => e.title)")
+
+    assert wait_until(lambda: "200\u00d7150" in titles()[0]
+                      and "300\u00d7100" in titles()[1])
+    assert titles()[0].startswith("source image 200\u00d7150")
+    assert titles()[0].endswith("(click to restore)")
+    assert f"seed {page.evaluate('state.thumbs[1].seed')} 300\u00d7100" in titles()[1]

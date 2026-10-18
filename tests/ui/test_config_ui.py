@@ -55,19 +55,19 @@ def test_create_and_edit_model_config(page, server):
     # confirm -> the file configuration exists and is selected
     page.locator(".cfg-name").fill("Mock tuned")
     page.click("#dialog-ok")
-    wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+    # creating one drops straight into its edit dialog (wait for the TITLE:
+    # the hidden flag flips false -> true -> false in one go)
+    wait_until(lambda: page.text_content("#dialog-title") == "Model configuration")
+    assert page.locator(".cfg-name").input_value() == "Mock tuned"
+    assert page.locator(".cfg-mode").count() == 2
     wait_until(lambda: any("Mock tuned" in (t or "")
                            for t in page.eval_on_selector_all(
                                "#model option", "els => els.map(e => e.textContent)")))
     assert (root / "user" / "model-configs" / "mock-tuned.json").is_file()
     assert page.evaluate("document.getElementById('model').value") == "mock-tuned"
 
-    # edit dialog: configure the t2i section (CFG override + sampler)
-    page.click("#cfg-edit")
-    wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
-    assert page.locator(".cfg-mode").count() == 2
-    # the mock model is SDXL: no "distilled model" checkbox (Flux only)
-    assert page.locator(".cfg-distilled").count() == 0
+    # the auto-opened edit dialog configures the t2i section (CFG override + sampler)
+    assert page.locator(".cfg-distilled").count() == 0  # mock model is SDXL
     page.locator(".cfg-mode").first.locator(".cfg-cfg").fill("4.25")
     page.locator(".cfg-mode").first.locator(".cfg-steps").fill("12")
     page.locator(".cfg-mode").first.locator(".cfg-sampler").select_option("DPM++ 2M")
@@ -119,6 +119,9 @@ def test_delete_model_config(page, server):
     wait_until(lambda: not page.evaluate("document.getElementById('dialog').hidden"))
     page.locator(".cfg-name").fill("to-delete")
     page.click("#dialog-ok")
+    # the edit dialog opens on the new configuration; close it before deleting
+    wait_until(lambda: page.text_content("#dialog-title") == "Model configuration")
+    page.click("#dialog-cancel")
     wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
     assert (root / "user" / "model-configs" / "to-delete.json").is_file()
 

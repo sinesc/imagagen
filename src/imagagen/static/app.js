@@ -712,14 +712,22 @@ function renderThumbs() {
   state.thumbs.forEach((t, i) => {
     const item = el("div", { class: "thumb-item" });
     const image = document.createElement("img");
+    // The title names the image's dimensions too, but those are only known
+    // once the file has been decoded, so it is (re)built on load.
+    const setTitle = () => {
+      const dims = image.naturalWidth
+        ? ` ${image.naturalWidth}\u00d7${image.naturalHeight}` : "";
+      image.title = t.source
+        ? `source image${dims}${typeof t.seed === "number" ? ` (seed ${t.seed})` : ""} (click to restore)`
+        : t.crop
+          ? `crop${dims} (click to restore)`
+          : t.upload
+            ? `uploaded image${dims} (click to restore)`
+            : `#${i} seed ${t.seed}${dims}`;
+    };
+    image.onload = setTitle;
+    setTitle(); // dimensions unknown yet: seed-only title until the decode lands
     image.src = t.url;
-    image.title = t.source
-      ? `source image${typeof t.seed === "number" ? ` (seed ${t.seed})` : ""} (click to restore)`
-      : t.crop
-        ? "crop (click to restore)"
-        : t.upload
-          ? "uploaded image (click to restore)"
-          : `#${i} seed ${t.seed}`;
     if (t.source) image.classList.add("source");
     if (i === state.currentThumb) image.classList.add("selected");
     image.onmouseenter = () => thumbPreviewShow(t.url);
@@ -1326,6 +1334,11 @@ function createConfig() {
         $("model").value = entry.id;
         await refreshModels(true);
         scheduleSaveUiState(0);
+        // go straight to the new configuration's edit dialog so the copy can
+        // be tuned without opening it manually. Deferred: this dialog is
+        // closed right after onOk returns, which would close the new one too.
+        const created = state.entries.find((e) => e.id === entry.id);
+        if (created) setTimeout(() => openConfigDialog(created), 0);
         return true;
       } catch (e) {
         dialogError(e.message);
@@ -1653,8 +1666,6 @@ function syncToolbar() {
   $("tool-crop").classList.toggle("active", Tools.current === "crop");
   $("tool-copy").classList.toggle("active", Tools.current === "copy");
   $("tool-paste").classList.toggle("active", Tools.current === "paste");
-  // paste has nothing to drop until the copy tool stored an area
-  $("tool-paste").disabled = !view.clip;
   const cropMode = ["crop", "copy", "paste"].includes(Tools.current);
   // The colour swatch always edits the brush tool's remembered colour
   // (mask strokes ignore colour), so it stays live in mask mode too;
@@ -1984,7 +1995,15 @@ function wireToolbar() {
   $("tool-smudge").onclick = () => switchTool("smudge");
   $("tool-crop").onclick = () => switchTool("crop");
   $("tool-copy").onclick = () => switchTool("copy");
-  $("tool-paste").onclick = () => switchTool("paste");
+  // The button stays clickable without a copy so it can say why nothing
+  // happens (the E hotkey still arms the tool unconditionally).
+  $("tool-paste").onclick = () => {
+    if (!view.clip) {
+      setStatus("Copy a region first");
+      return;
+    }
+    switchTool("paste");
+  };
   $("sel-ok").onclick = () => commitSelection();
   $("sel-cancel").onclick = () => cancelSelection();
   $("sel-flip-h").onclick = () => flipSel(true);

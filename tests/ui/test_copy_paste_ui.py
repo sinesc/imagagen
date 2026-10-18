@@ -105,10 +105,15 @@ def test_copy_paste_toolbar_and_hotkeys(page, server):
     for sel in ("#brush-size", "#brush-screen", "#brush-opacity"):
         assert not page.evaluate(f"document.querySelector('{sel}').disabled"), f"{sel} disabled"
 
-    # paste has nothing to drop until an area was copied
-    assert page.evaluate("document.getElementById('tool-paste').disabled")
-    _copy(page, base)
+    # paste has nothing to drop until an area was copied: the button stays
+    # clickable but says so instead of arming the tool
     assert not page.evaluate("document.getElementById('tool-paste').disabled")
+    page.click("#tool-paste")
+    assert page.text_content("#status-line") == "Copy a region first"
+    assert not page.evaluate(_active("tool-paste"))
+    _copy(page, base)
+    page.click("#tool-paste")
+    assert page.evaluate(_active("tool-paste"))
 
 
 def test_copy_stores_the_area_only(page, server):
