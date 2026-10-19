@@ -112,6 +112,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import threading
 import warnings
 from pathlib import Path
@@ -295,6 +296,66 @@ def scale_lora_alphas(sd: dict, alphas: dict | None) -> dict:
             sd[down_key] = w * (float(alpha) / w.shape[0])
             break
     return sd
+
+
+#: kohya-style prefix of UNet keys in an A1111/Kohya LoRA checkpoint
+_LORA_PREFIX_UNET = "lora_unet_"
+#: the SDXL added-conditioning MLP (pooled text embed + size/crop ids) as
+#: A1111/Kohya name it: the modules are ``add_embedding.linear_1`` /
+#: ``add_embedding.linear_2`` in a diffusers UNet (``add_embedding.linear.0``
+#: / ``add_embedding.linear.2`` in the sgm original), flattened to
+#: ``add_embedding_linear_<N>`` in the LoRA key.
+_ADD_COND_RE = re.compile(r"^" + _LORA_PREFIX_UNET + r"add_embedding_linear_(\d)")
+
+
+def normalize_add_cond_lora_keys(sd: dict) -> dict:
+    r"""Rename the SDXL added-conditioning LoRA keys to their sgm names.
+
+    This is where diffusers' kohya conversion goes wrong:
+    ``_convert_unet_lora_key`` flattens ``add_embedding_linear_1`` to
+    ``add.embedding.linear.1`` and its SDXL index-strip heuristic
+    (``re.sub(r"\.\d+(?=\D*$)", "", name, count=1)``) then EATS the layer
+    index, so ``..._linear_0``/``_1``/``_2`` all collapse to the same
+    ``add.embedding.linear`` (the last one wins, i.e. one layer's weights
+    overwrite the other's) and the name matches no diffusers module. peft
+    reports it as "Loading adapter weights from state_dict led to unexpected
+    keys found in the model: add.embedding.linear.lora_A.<adapter>.weight" -
+    the weights are silently DROPPED, so such a LoRA renders differently
+    than in A1111/Forge (measured with VibrantDreamXL1.0, which carries
+    exactly those two layers).
+
+    The sgm name of the same MLP is ``label_emb.0.0`` / ``label_emb.0.2``
+    (the SDXL repo's own naming, which diffusers maps to
+    ``add_embedding.linear_1`` / ``linear_2``), so renaming the RAW keys to
+    that spelling before the conversion runs fixes it. Both namings agree
+    that the highest layer index is the SECOND Linear; ``0`` (sgm) and ``1``
+    (diffusers-based trainers) are the first one.
+
+    Must run on the checkpoint as loaded from disk: once diffusers has
+    converted the keys the layer information is lost.
+    """
+    renames: dict[str, str] = {}
+    source: dict[str, str] = {}
+    for key in sd:
+        m = _ADD_COND_RE.match(key)
+        if m is None:
+            continue
+        layer = "0" if m.group(1) in ("0", "1") else "2"
+        new = f"{_LORA_PREFIX_UNET}label_emb_0_{layer}{key[m.end():]}"
+        if new in source or new in sd:
+            # two differently-named layers collide: do not guess, keep the
+            # file as-is so the (loud) failure surfaces instead of a wrong
+            # merge of two layers
+            other = source.get(new, "")
+            log.warning("LoRA has two added-conditioning keys mapping to the "
+                        "same name %r (%r and %r); loading it unchanged", new,
+                        other, key)
+            return sd
+        renames[key] = new
+        source[new] = key
+    if not renames:
+        return sd
+    return {renames.get(k, k): v for k, v in sd.items()}
 
 
 def _quantize_unet_nf4(unet, device) -> int:
@@ -769,13 +830,22 @@ class SdxlBackend(ModelBackend):
         rejected up front with a named diagnosis; diffusers would
         otherwise fail with a cryptic empty-mapping error.
         """
+        from safetensors.torch import load_file
+
         from ..flux_lora import sniff_lora_format
 
         if why := sniff_lora_format(path):
             raise ValueError(
                 f"unsupported SDXL LoRA format in {Path(path).name}: {why}")
+        # The file is read HERE instead of being handed to lora_state_dict as
+        # a path, so the RAW key names can be corrected before diffusers'
+        # kohya conversion runs (normalize_add_cond_lora_keys: that
+        # conversion eats the layer index of the SDXL added-conditioning
+        # MLP, and afterwards the information is gone). lora_state_dict
+        # accepts a state dict and runs the identical conversion on it. All
+        # loras/ files are .safetensors (see _lora_path).
         sd, alphas, _meta = self.pipe.lora_state_dict(
-            str(path),
+            normalize_add_cond_lora_keys(load_file(str(path))),
             unet_config=self.pipe.unet.config,
             return_lora_metadata=True,
         )
@@ -796,6 +866,14 @@ class SdxlBackend(ModelBackend):
             elif fix_te2 and k.startswith("text_encoder_2.text_model."):
                 k = k.replace("text_encoder_2.text_model.", "text_encoder_2.", 1)
             fixed[k] = v
+        # Canary: an unmapped added-conditioning key means diffusers changed
+        # its kohya naming (normalize_add_cond_lora_keys relies on
+        # label_emb.0.N -> add_embedding.linear_N). A loud log line beats
+        # weights quietly vanishing behind peft's "unexpected keys" warning.
+        if unmapped := [k for k in fixed if ".add.embedding." in k]:
+            log.warning("LoRA %s: %d added-conditioning weight(s) match no "
+                        "UNet module and are IGNORED (%s)", Path(path).name,
+                        len(unmapped), ", ".join(unmapped[:3]))
         return fixed
 
     def _apply_loras(self, loras: list[tuple[str, float]]) -> None:
