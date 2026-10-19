@@ -683,12 +683,16 @@ class SdxlBackend(ModelBackend):
         pipe = self.pipe
         with self._lock, _PARAM_INIT_LOCK:
             if next(pipe.text_encoder.parameters()).device != self.device:
-                # the pipeline is only moved between devices here, never
-                # run on the CPU -- same rationale as unload()/load()
-                pipe.text_encoder.to(self.device, silence_dtype_warnings=True)
+                # NO silence_dtype_warnings here (unlike unload()/load()):
+                # that kwarg belongs to diffusers' PipelineMixin/ModelMixin
+                # .to(); text_encoder(_2) are *transformers* models whose
+                # .to() forwards unknown kwargs straight to nn.Module.to(),
+                # which rejects them with a TypeError. The pipeline-level
+                # calls in unload()/load() are safe because PipelineMixin.to
+                # pops the kwarg before recursing into the components.
+                pipe.text_encoder.to(self.device)
                 if getattr(pipe, "text_encoder_2", None) is not None:
-                    pipe.text_encoder_2.to(self.device,
-                                            silence_dtype_warnings=True)
+                    pipe.text_encoder_2.to(self.device)
                 torch.cuda.empty_cache()
 
     def cancel(self) -> None:

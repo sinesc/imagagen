@@ -467,7 +467,9 @@ class ModelRegistry:
         busy is skipped (its generation encodes on its own anyway). The
         per-GPU lock IS taken while preparing, so the moves never race a
         load/unload/generate. Returns a status string:
-        ``not-resident`` | ``cached`` | ``prepared`` | ``busy``.
+        ``not-resident`` | ``cached`` | ``prepared`` | ``busy`` | ``failed``.
+        ``failed`` means every attempt raised (a broken prepare_text_encode,
+        not a busy GPU) -- the tracebacks are in the log.
         """
         with self._meta_lock:
             states = [s for s in self._gpu_states.values()
@@ -478,7 +480,7 @@ class ModelRegistry:
         # instances, so one check decides for all of them
         if not force and states[0].backend.encoding_cached(prompt, negative):
             return "cached"
-        prepared = 0
+        prepared = failed = 0
         for state in states:
             if not state.lock.acquire(blocking=False):
                 continue  # generating on this GPU: its encode runs anyway
@@ -486,17 +488,26 @@ class ModelRegistry:
                 backend = state.backend
                 if backend is None or state.model_id != model_id:
                     continue  # parked/switched between snapshot and lock
+                # whether the transformer has to make room is backend-
+                # specific (SDXL's UNet always co-resides with the CLIP
+                # towers and deliberately stays in VRAM), so the message
+                # must not promise a park
                 log.info(
-                    "prompt prefetch: %s on GPU %d -- loading text encoder, "
-                    "parking transformer (prompt cache miss)",
+                    "prompt prefetch: %s on GPU %d -- moving the text "
+                    "encoders to their encode device (prompt cache miss)",
                     backend.name, state.gpu)
                 backend.prepare_text_encode()
                 prepared += 1
             except Exception:
+                # a broken prepare must not be reported as "busy": the
+                # feature is failing, and silently so without this counter
                 log.exception("prompt prefetch failed on GPU %d", state.gpu)
+                failed += 1
             finally:
                 state.lock.release()
-        return "prepared" if prepared else "busy"
+        if prepared:
+            return "prepared"
+        return "failed" if failed else "busy"
 
     def run(self, model_id: str, gpu: int, request, progress=None):
         """Atomically ensure ``model_id`` is loaded on ``gpu`` and run one

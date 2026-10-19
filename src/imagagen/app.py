@@ -495,7 +495,9 @@ def create_app(
         cannot co-reside -- instead of waiting for the next generation to
         pay the swap. ``action``: ``disabled`` (ini off) | ``cached`` (no
         work needed) | ``prepared`` | ``not-resident`` (lazy loading wins:
-        nothing is woken up for a prompt alone) | ``busy`` | ``no-model``.
+        nothing is woken up for a prompt alone) | ``busy`` | ``failed``
+        (the layout move raised on every resident GPU -- a backend bug, see
+        the server traceback) | ``no-model``.
 
         Wildcard prompts always count as a miss (the per-seed line picks
         cannot be predicted, so the raw text is never encoded here); the
