@@ -63,6 +63,7 @@ from .. import (
     GenerateRequest,
     GenerateResult,
     ModelBackend,
+    device_tensor,
     format_loras,
     report_phase,
     shared_enc_cache,
@@ -410,7 +411,7 @@ class ZImageBackend(ModelBackend):
             from PIL import Image
 
             arr = np.asarray(Image.fromarray(arr).resize(size, Image.LANCZOS))
-        t = torch.from_numpy(np.ascontiguousarray(arr)).to(device)
+        t = device_tensor(arr, device)
         t = t.permute(2, 0, 1).float()[None] / 127.5 - 1.0
         # inference_mode: the VAE's default-grad weights would otherwise
         # build an autograd graph, and the tiny init latent would pin the
@@ -742,9 +743,8 @@ class ZImageBackend(ModelBackend):
             if request.init_mask is not None:
                 # (1,1,H,W) -> bilinear to the latent grid; this shape
                 # broadcasts against the (1,16,lh,lw) solver tensors
-                m = torch.from_numpy(
-                    np.ascontiguousarray(request.init_mask)
-                ).to(device).float().div(255.0)[None, None]
+                m = device_tensor(request.init_mask, device)\
+                    .float().div(255.0)[None, None]
                 m = torch.nn.functional.interpolate(
                     m, size=(lh, lw), mode="bilinear")
                 # Sampling mask = the 50%-level BINARY mask, not the

@@ -12,12 +12,16 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..sag import SelfAttentionGuidance
 from ..soft_inpaint import SoftInpainting
+
+if TYPE_CHECKING:  # torch stays a lazy import in this module (see device_tensor)
+    import torch
 
 # Serializes every operation that CREATES torch parameters across ALL
 # backends (one per GPU, each on its own worker thread): model init
@@ -217,6 +221,25 @@ def format_loras(loras: list[tuple[str, float]] | tuple[tuple[str, float], ...])
     if not loras:
         return "-"
     return ", ".join(f"{name} ({weight:g})" for name, weight in loras)
+
+
+def device_tensor(arr: np.ndarray, device) -> torch.Tensor:
+    """Image/mask numpy array -> torch tensor on *device* (own copy).
+
+    Every backend uses this for the img2img/inpaint init image and mask
+    instead of ``torch.from_numpy(np.ascontiguousarray(arr))``, which warns
+    "The given NumPy array is not writable": Pillow >= 12 exports its pixel
+    buffer READ-ONLY, so anything built by ``np.asarray(Image...)``
+    (generation.resize_image / rotate_canvas / crop-then-resize, i.e. every
+    init image and mask that reaches a backend) is read-only, and
+    ``np.ascontiguousarray`` returns that SAME read-only object when the
+    input is already C-contiguous. ``np.array(..., copy=True)`` forces a
+    writable C-contiguous copy, so the tensor owns writable memory and the
+    warning (and the shared-read-only-memory hazard) is gone.
+    """
+    import torch
+
+    return torch.from_numpy(np.array(arr, copy=True, order="C")).to(device)
 
 
 class ModelBackend(ABC):

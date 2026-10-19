@@ -82,3 +82,57 @@ def test_mock_init_blending():
     assert np.all(r.image[:, :8, 0] == 200)
     # right half should differ from init
     assert not np.all(r.image[:, 8:] == init[:, 8:])
+
+
+# ---- init image/mask -> tensor (Pillow exports read-only buffers) --------
+
+def test_device_tensor_accepts_readonly_pillow_arrays():
+    """No "NumPy array is not writable" warning for img2img/inpaint inputs.
+
+    Every init image/mask reaching a backend comes from
+    ``np.asarray(Image...)`` (generation.resize_image / rotate_canvas), and
+    Pillow >= 12 exports its pixel buffer READ-ONLY. ``np.ascontiguousarray``
+    returns that same read-only object, so the old
+    ``torch.from_numpy(np.ascontiguousarray(arr))`` warned on every job.
+    """
+    import warnings
+
+    import torch
+    from PIL import Image
+
+    from imagagen.backends import device_tensor
+
+    src = np.asarray(Image.fromarray(np.full((4, 4, 3), 7, np.uint8))
+                     .resize((8, 8), Image.LANCZOS))
+    assert not src.flags.writeable  # the Pillow buffer is read-only
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        t = device_tensor(src, torch.device("cpu"))
+    assert not [w for w in caught if "writable" in str(w.message)], \
+        [str(w.message) for w in caught]
+    assert t.shape == (8, 8, 3) and t.dtype == torch.uint8
+    assert t.numpy().flags.writeable
+
+
+def test_device_tensor_always_copies():
+    import torch
+
+    from imagagen.backends import device_tensor
+
+    src = np.full((4, 4), 5, np.uint8)
+    t = device_tensor(src, torch.device("cpu"))
+    src.fill(9)  # must not touch the tensor (it is moved to the GPU anyway)
+    assert int(t[0, 0]) == 5
+
+
+def test_device_tensor_makes_non_contiguous_input_c_contiguous():
+    import torch
+
+    from imagagen.backends import device_tensor
+
+    src = np.arange(24, dtype=np.uint8).reshape(2, 4, 3).transpose(0, 2, 1)
+    assert not src.flags.c_contiguous
+    t = device_tensor(src, torch.device("cpu"))
+    assert t.numpy().flags.c_contiguous
+    assert np.array_equal(t.numpy(), src)
