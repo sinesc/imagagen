@@ -176,6 +176,105 @@ def gib(kib: float) -> str:
     return "-" if kib < 0 else f"{kib / 2**20:.2f}"
 
 
+def smaps_rollup() -> dict[str, float]:
+    """Selected /proc/self/smaps_rollup counters in kiB (Rss, Anonymous,
+    Swap, Locked, Private Dirty) -- separates live heap layout from
+    gc-visible objects."""
+    want = {"Rss", "Anonymous", "Swap", "Locked", "Private_Dirty"}
+    out: dict[str, float] = {}
+    try:
+        with open("/proc/self/smaps_rollup", encoding="ascii") as fh:
+            for line in fh:
+                key = line.split(":", 1)[0]
+                if key in want:
+                    out[key + ":"] = float(
+                        line.split(":", 1)[1].strip().split()[0])
+    except OSError:
+        pass
+    return out
+
+
+_libc_cache: list = []
+
+
+def _libc():
+    if not _libc_cache:
+        try:
+            import ctypes
+
+            _libc_cache.append(ctypes.CDLL("libc.so.6", use_errno=True))
+        except OSError:
+            _libc_cache.append(None)
+    return _libc_cache[0]
+
+
+def malloc_info() -> dict[str, int] | None:
+    """glibc mallinfo2: bytes under the brk heap (arena), mmapped
+    (hblkhd), in use (uordblks) and freed-but-retained (fordblks)."""
+    libc = _libc()
+    if libc is None:
+        return None
+    try:
+        import ctypes
+
+        class _Mallinfo(ctypes.Structure):
+            _fields_ = [
+                ("arena", ctypes.c_size_t), ("ordblks", ctypes.c_size_t),
+                ("smblks", ctypes.c_size_t), ("hblks", ctypes.c_size_t),
+                ("hblkhd", ctypes.c_size_t), ("uordblks", ctypes.c_size_t),
+                ("fordblks", ctypes.c_size_t), ("keepcost", ctypes.c_size_t),
+            ]
+
+        fn = getattr(libc, "mallinfo2", None)
+        if fn is None:  # glibc < 2.33: 32-bit fields, saturates (approx)
+            class _Mallinfo32(ctypes.Structure):  # type: no-redef
+                _fields_ = [
+                    ("arena", ctypes.c_int), ("ordblks", ctypes.c_int),
+                    ("smblks", ctypes.c_int), ("hblks", ctypes.c_int),
+                    ("hblkhd", ctypes.c_int), ("uordblks", ctypes.c_int),
+                    ("fordblks", ctypes.c_int), ("keepcost", ctypes.c_int),
+                ]
+            libc.mallinfo.restype = _Mallinfo32
+            m = libc.mallinfo()
+            return {k: getattr(m, k) for k, _ in _Mallinfo32._fields_}
+        fn.restype = _Mallinfo
+        m = fn()
+        return {k: getattr(m, k) for k, _ in _Mallinfo._fields_}
+    except Exception:
+        return None
+
+
+def malloc_trim(tag: str = "") -> None:
+    """Return free glibc heap pages to the OS (malloc_trim(0)); stamp the
+    result. Safe no-op on non-glibc systems."""
+    libc = _libc()
+    if libc is None:
+        return
+    try:
+        import ctypes
+
+        libc.malloc_trim.restype = ctypes.c_size_t
+        freed = libc.malloc_trim(0)
+        stamp("malloc-trim", tag=tag or None, freed_kib=(freed or 0) // 1024,
+              rss_after_kib=proc_kib().get("VmRSS", -1))
+    except Exception:
+        pass
+
+
+def mallopt_arenas(max_arenas: int) -> None:
+    """Cap glibc malloc arenas (mallopt(M_ARENA_MAX)) -- each worker/timer
+    thread otherwise gets its own arena (8x CPUs on x86-64) and caches
+    multi-GiB freed segments independently."""
+    libc = _libc()
+    if libc is None:
+        return
+    try:
+        M_ARENA_MAX = -8
+        libc.mallopt(M_ARENA_MAX, int(max_arenas))
+    except Exception:
+        pass
+
+
 def cuda_kib() -> dict[int, tuple[float, float, float, int]]:
     """{device: (allocated, reserved, max_allocated, alloc_retries)} in kiB."""
     try:
@@ -550,6 +649,29 @@ def _census_locked(reason: str) -> str:
             f"census   cuda{dev} allocated={alloc / 2**20:.2f}GiB "
             f"reserved={res / 2**20:.2f}GiB peak={mx / 2**20:.2f}GiB "
             f"alloc_retries={retries}"
+        )
+
+    # 3b) kernel view (Rss/Pss/Swap per smaps_rollup) vs glibc malloc view
+    #     (arena/mmap in-use vs FREE-BUT-RETAINED). rss >> gc-visible live
+    #     bytes AND fordblks huge  -> freed memory retained by the C
+    #     allocator (fragmentation / per-thread arenas), not a Python leak;
+    #     malloc-trim then releases it.
+    sm = smaps_rollup()
+    if sm:
+        lines.append(
+            f"census smaps rss={gib(sm.get('Rss:', -1))}GiB "
+            f"anon={gib(sm.get('Anonymous:', -1))}GiB "
+            f"swap={gib(sm.get('Swap:', -1))}GiB "
+            f"locked={gib(sm.get('Locked:', -1))}GiB "
+            f"privdirty={gib(sm.get('Private_Dirty:', -1))}GiB"
+        )
+    mi = malloc_info()
+    if mi is not None:
+        lines.append(
+            f"census malloc arena={mi['arena'] / 2**30:.2f}GiB "
+            f"mmapped={mi['hblkhd'] / 2**30:.2f}GiB "
+            f"inuse={mi['uordblks'] / 2**30:.2f}GiB "
+            f"FREE-BUT-RETAINED={mi['fordblks'] / 2**30:.2f}GiB"
         )
 
     # 4) python-level object counts (growth of tracebacks/frames/arrays is a

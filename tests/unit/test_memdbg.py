@@ -47,7 +47,21 @@ def test_enabled_stamp_and_census(tmp_path):
     memdbg.stamp("evt", a=1, skipped=None)
     report = memdbg.census("test")
     assert "census backends=" in report
+    assert "census malloc" in report  # glibc view (fragmentation probe)
     assert memdbg._counts["evt"] == 1
     log = (tmp_path / "m.log").read_text()
     assert "evt=evt" in log and "a=1" in log and "skipped" not in log
+    memdbg.configure(False)
+
+
+def test_malloc_probes(tmp_path):
+    # glibc-only helpers must be safe and must report the heap split
+    memdbg.configure(True)
+    assert memdbg.smaps_rollup().get("Rss:", 0) > 0
+    mi = memdbg.malloc_info()
+    if mi is not None:  # glibc mallinfo2/mallinfo
+        assert mi["arena"] + mi["hblkhd"] > 0
+    memdbg.malloc_trim("unit")
+    memdbg.mallopt_arenas(4)
+    assert memdbg._counts["malloc-trim"] == 1
     memdbg.configure(False)

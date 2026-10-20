@@ -205,3 +205,12 @@ def test_bad_memory_debug_raises(tmp_path):
     ini(tmp_path).write_text("[imagagen]\nmemory-debug-interval = 1\n")
     with pytest.raises(ValueError, match="memory-debug-interval"):
         load_config(tmp_path)
+
+
+def test_malloc_trim_flag(tmp_path):
+    assert load_config(tmp_path).malloc_trim is False
+    ini(tmp_path).write_text("[imagagen]\nmalloc-trim = true\n")
+    assert load_config(tmp_path).malloc_trim is True
+    ini(tmp_path).write_text("[imagagen]\nmalloc-trim = maybe\n")
+    with pytest.raises(ValueError, match="malloc-trim"):
+        load_config(tmp_path)

@@ -308,6 +308,10 @@ class ModelRegistry:
         import gc
 
         gc.collect()
+        if getattr(self.config, "malloc_trim", False):
+            # park churns a multi-GiB pageable host copy; glibc otherwise
+            # caches the freed segments in the calling thread's arena
+            memdbg.malloc_trim("park")
         try:
             import torch
 
@@ -415,6 +419,11 @@ class ModelRegistry:
         memdbg.track(state.backend, f"backend[{model_id}@gpu{state.gpu}]")
         state.model_id = model_id
         memdbg.stamp("read-checkpoint-end", gpu=state.gpu, model=model_id)
+        if getattr(self.config, "malloc_trim", False):
+            import gc
+
+            gc.collect()
+            memdbg.malloc_trim("load")
         with self._meta_lock:
             self._current_id = model_id
         log.info("model load done: %s on GPU %d (%.1fs)",
