@@ -1953,7 +1953,6 @@ function syncMode() {
   $("mask-padding").disabled = $("mode").value !== "inpaint_masked";
   $("oversample").disabled = gen;
   syncGenerateEnabled();
-  viewRedraw(); // mask overlay is mask-mode-only (visual only), bbox stays
 }
 
 // Inpaint with an empty mask is a server-side no-op (rejected with

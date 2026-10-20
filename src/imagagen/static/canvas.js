@@ -125,12 +125,12 @@ function viewRedraw() {
   // mask -- so skip it while such a stroke is active
   const s0 = view.stroke;
   const maskLayered = !!s0 && (s0.tool === "mask" || s0.tool === "smudge");
-  // The mask overlay is only shown in mask mode (the mask tool) and never in
-  // "Generate" mode: hiding it is purely visual -- view.maskValues is
-  // untouched, so the mask reappears when switching back to the mask tool in
-  // an inpaint mode; an in-flight mask stroke is still previewed so drawing
-  // stays visible. The mask bounding-box outline is NOT hidden: the mask
-  // extent (and its padded inpaint box) stays legible in every tool/mode.
+  // The mask overlay is only shown in mask mode (the mask tool): hiding it
+  // is purely visual -- view.maskValues is untouched, so the mask reappears
+  // when switching back to the mask tool; an in-flight mask stroke is still
+  // previewed so drawing stays visible. The mask bounding-box outline is NOT
+  // hidden: the mask extent (and its padded inpaint box) stays legible in
+  // every tool/mode.
   const maskShown = maskVisible();
   if (view.mask && !maskLayered && maskShown)
     ctx.drawImage(view.mask, 0, 0, view.w, view.h);
@@ -1141,12 +1141,12 @@ function smudgeAccumulate(s, st, pts, raw, r) {
   }
 }
 
-// the mask overlay is only drawn in mask mode (the mask tool) and never in
-// "Generate" mode: purely visual -- view.maskValues is untouched, so the
-// mask reappears when switching back to the mask tool in an inpaint mode.
-// The mask bounding-box outline is NOT gated on this (see drawMaskOutline).
+// the mask overlay is only drawn in mask mode (the mask tool): purely
+// visual -- view.maskValues is untouched, so the mask reappears when
+// switching back to the mask tool. The mask bounding-box outline is NOT
+// gated on this (see drawMaskOutline).
 function maskVisible() {
-  return Tools.current === "mask" && $("mode").value !== "generate";
+  return Tools.current === "mask";
 }
 
 function drawStrokePreview(ctx, s) {
@@ -2180,13 +2180,6 @@ function setupCanvasInput() {
     if (tool === "brush" && e.ctrlKey) {
       // colour-picker mode: set the brush colour from the clicked pixel
       pickBrushColor(p);
-      return;
-    }
-    if (tool === "mask" && $("mode").value === "generate") {
-      // the mask is unused (and hidden) in "generate" mode: refuse the
-      // stroke BEFORE arming it, so no mask preview overlay appears while
-      // the button is held
-      setStatus("Must be in inpaint/outpaint mode", true);
       return;
     }
     // with a floating selection active, the draw / clone / smudge strokes

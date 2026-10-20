@@ -86,8 +86,7 @@ def test_segment_mask_flow(seg_env, page):
 
     # the mask write is one undo step. Undo follows the active tool, so
     # switch to the mask tool first (the default is the brush tool, whose
-    # draw stack is empty; the mask tool needs an inpaint mode).
-    page.select_option("#mode", "inpaint_masked")
+    # draw stack is empty).
     page.keyboard.press("m")
     page.click("#btn-undo")
     assert wait_until(
