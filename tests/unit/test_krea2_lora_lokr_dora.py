@@ -55,7 +55,12 @@ def _int8_module(in_f: int, out_f: int, group: int | None, seed: int):
         "weight": nn.Parameter(stored, requires_grad=False),
         "weight_scale": nn.Parameter(scale, requires_grad=False),
     })
-    plain_q = w8.float() * scale  # the de-rotated quantized weight
+    # the PLAIN weight implied by the stored bytes: de-rotating the stored
+    # int8 (H^2 = I) is exactly what the backend does for its DoRA norms.
+    # NOT w8 * scale: _rotate(w8) is not integral, so the int8 cast below
+    # truncates, and w8 would leave the fixture inconsistent with `stored`
+    # (that inconsistency, not bf16 math, made the DoRA checks flaky).
+    plain_q = (_rotate(stored.float(), group) if group else stored.float()) * scale
     return m, plain_q
 
 
