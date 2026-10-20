@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import memdbg
 from .backends import format_loras
 from .metadata import forge_lora_hash
 
@@ -283,17 +284,27 @@ class ModelRegistry:
         if state.parked is not None:
             log.info("model park: dropping %s parked on GPU %d",
                      state.parked_id, state.gpu)
+            # MEMDBG: a whole checkpoint copy (~7 GiB for SDXL fp16) is about
+            # to become unreachable. If no "evt=freed" line follows, the
+            # dropped copy is still referenced by something -> RAM leak.
+            memdbg.stamp("park-drop", gpu=state.gpu, model=state.parked_id,
+                         obj=id(state.parked))
             state.parked = None
             state.parked_id = None
         if state.backend is not None and not state.backend.can_park:
             return  # this model type cannot leave VRAM; leave it resident
         if state.backend is not None:
             log.info("model park: %s on GPU %d -> RAM", state.backend.name, state.gpu)
+            started = time.monotonic()
+            memdbg.stamp("park-begin", gpu=state.gpu, model=state.model_id,
+                         obj=id(state.backend))
             state.backend.unload()
             state.parked = state.backend
             state.parked_id = state.model_id
             state.backend = None
             state.model_id = None
+            memdbg.stamp("park-end", gpu=state.gpu, model=state.parked_id,
+                         secs=round(time.monotonic() - started, 1))
         import gc
 
         gc.collect()
@@ -315,9 +326,11 @@ class ModelRegistry:
         """
         with self._meta_lock:
             states = list(self._gpu_states.values())
+        memdbg.stamp("unload_all", gpus=",".join(str(s.gpu) for s in states))
         for state in states:
             with state.lock:
                 self._park_state_locked(state)
+        memdbg.stamp("unload_all-end")
 
     def _new_backend(self, info: ModelInfo, device):
         """Instantiate the backend for ``info.family``.
@@ -372,6 +385,9 @@ class ModelRegistry:
             state.model_id = model_id
             log.info("model load start: %s on GPU %d (parked restore, LoRAs: %s)",
                      info.name, state.gpu, format_loras(loras or []))
+            memdbg.stamp("restore-begin", gpu=state.gpu, model=model_id,
+                         obj=id(restoring),
+                         also_parked=state.parked_id)
             started = time.monotonic()
             self.emit({"type": "status",
                        "message": f"loading {info.name} on GPU {state.gpu} …"})
@@ -380,6 +396,8 @@ class ModelRegistry:
                 self._current_id = model_id
             log.info("model load done: %s on GPU %d (%.1fs)",
                      info.name, state.gpu, time.monotonic() - started)
+            memdbg.stamp("restore-end", gpu=state.gpu, model=model_id,
+                         secs=round(time.monotonic() - started, 1))
             self.emit({"type": "status",
                        "message": f"loaded {info.name} on GPU {state.gpu}"})
             return state.backend
@@ -392,8 +410,11 @@ class ModelRegistry:
         started = time.monotonic()
         self.emit({"type": "status",
                    "message": f"loading {info.name} on GPU {state.gpu} …"})
+        memdbg.stamp("read-checkpoint-begin", gpu=state.gpu, model=model_id)
         state.backend = self._new_backend(info, torch.device(f"cuda:{state.gpu}"))
+        memdbg.track(state.backend, f"backend[{model_id}@gpu{state.gpu}]")
         state.model_id = model_id
+        memdbg.stamp("read-checkpoint-end", gpu=state.gpu, model=model_id)
         with self._meta_lock:
             self._current_id = model_id
         log.info("model load done: %s on GPU %d (%.1fs)",
@@ -475,10 +496,14 @@ class ModelRegistry:
             states = [s for s in self._gpu_states.values()
                       if s.backend is not None and s.model_id == model_id]
         if not states:
+            memdbg.stamp("prefetch", model=model_id, action="not-resident",
+                         prompt=len(prompt), force=force)
             return "not-resident"
         # the prompt-encoding cache is shared across the model's per-GPU
         # instances, so one check decides for all of them
         if not force and states[0].backend.encoding_cached(prompt, negative):
+            memdbg.stamp("prefetch", model=model_id, action="cached",
+                         prompt=len(prompt), force=force)
             return "cached"
         prepared = failed = 0
         for state in states:
@@ -496,18 +521,25 @@ class ModelRegistry:
                     "prompt prefetch: %s on GPU %d -- moving the text "
                     "encoders to their encode device (prompt cache miss)",
                     backend.name, state.gpu)
+                started = time.monotonic()
                 backend.prepare_text_encode()
                 prepared += 1
+                memdbg.stamp("prefetch-end", gpu=state.gpu, model=model_id,
+                             secs=round(time.monotonic() - started, 2))
             except Exception:
                 # a broken prepare must not be reported as "busy": the
                 # feature is failing, and silently so without this counter
                 log.exception("prompt prefetch failed on GPU %d", state.gpu)
+                memdbg.stamp("prefetch-failed", gpu=state.gpu, model=model_id)
                 failed += 1
             finally:
                 state.lock.release()
-        if prepared:
-            return "prepared"
-        return "failed" if failed else "busy"
+        action = ("prepared" if prepared else
+                  "failed" if failed else "busy")
+        memdbg.stamp("prefetch", model=model_id, action=action,
+                     prompt=len(prompt), force=force,
+                     gpus=",".join(str(s.gpu) for s in states))
+        return action
 
     def run(self, model_id: str, gpu: int, request, progress=None):
         """Atomically ensure ``model_id`` is loaded on ``gpu`` and run one

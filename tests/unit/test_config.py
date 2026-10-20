@@ -184,3 +184,24 @@ def test_bad_prefetch_text_encoder_raises(tmp_path):
     ini(tmp_path).write_text("[imagagen]\nprefetch-text-encoder = maybe\n")
     with pytest.raises(ValueError, match="prefetch-text-encoder"):
         load_config(tmp_path)
+
+
+def test_memory_debug_flags(tmp_path):
+    # memory-leak tracing is OFF by default
+    c = load_config(tmp_path)
+    assert c.memory_debug is False
+    assert c.memory_debug_interval == 30.0
+    ini(tmp_path).write_text(
+        "[imagagen]\nmemory-debug = true\nmemory-debug-interval = 10\n")
+    c = load_config(tmp_path)
+    assert c.memory_debug is True
+    assert c.memory_debug_interval == 10.0
+
+
+def test_bad_memory_debug_raises(tmp_path):
+    ini(tmp_path).write_text("[imagagen]\nmemory-debug = maybe\n")
+    with pytest.raises(ValueError, match="memory-debug"):
+        load_config(tmp_path)
+    ini(tmp_path).write_text("[imagagen]\nmemory-debug-interval = 1\n")
+    with pytest.raises(ValueError, match="memory-debug-interval"):
+        load_config(tmp_path)

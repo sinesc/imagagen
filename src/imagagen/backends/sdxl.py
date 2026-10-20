@@ -119,7 +119,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import kdiff
+from .. import kdiff, memdbg
 from ..reference import apply_reference, caption_reference, selected_caption_titles
 from ..sag import SagRecorder, compute_sag_mask, create_blur_map, install_sag_hooks
 from ..soft_inpaint import adaptive_change_alpha, latent_blend
@@ -691,6 +691,9 @@ class SdxlBackend(ModelBackend):
         missing = [k for k in keys if self._enc_cache.get(k) is None]
         if not missing:
             return
+        memdbg.stamp("encode-session", pairs=len(keys), missing=len(missing),
+                     cache=f"{len(self._enc_cache)}/{self._enc_cache.max}",
+                     te_dev=te_dev)
         if reserve is not None:
             self._enc_cache.bump(reserve)
         with torch.inference_mode():

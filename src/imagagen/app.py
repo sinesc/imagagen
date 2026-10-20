@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from . import metadata, wildcards
+from . import memdbg, metadata, wildcards
 from .backends import (
     PHASE_REFERENCE,
     PHASE_REFERENCE_DONE,
@@ -296,6 +296,13 @@ def create_app(
 ) -> FastAPI:
     config = config or load_config()
     ensure_dirs(config)
+    # memory-leak tracing (imagagen.ini memory-debug): stamps every big
+    # model move with the process RSS and mirrors everything to
+    # user/memdbg.log; a no-op when disabled (see .memdbg for details)
+    memdbg.configure(config.memory_debug,
+                     interval=config.memory_debug_interval,
+                     log_path=(config.user_dir / "memdbg.log"
+                               if config.memory_debug else None))
 
     hub = EventHub()
     canvas = Canvas(brushes_dir=config.brushes_dir,
@@ -331,6 +338,7 @@ def create_app(
     app.state.style_store = StyleStore(config.styles_csv_path)
     app.state.segmentation = segmentation
     app.state.last_config_id: str | None = None
+    memdbg.start(registry=registry, queue=queue)
     # unique per server start: the client uses it to invalidate its
     # finished-job bookkeeping after a restart (job ids restart at 1)
     app.state.server_id = uuid.uuid4().hex
@@ -369,6 +377,20 @@ def create_app(
             "primary": primary,
             "pool": pool,
         }
+
+    @app.get("/api/memdbg")
+    def memdbg_report() -> Response:  # sync: threadpool (it walks the heap)
+        """On-demand memory census (imagagen.ini memory-debug = true).
+
+        Returns a plain-text report: RSS/swap, every live model copy and
+        which device its weights are on, the biggest UNATTRIBUTED CPU
+        tensors and who references them, CUDA allocator state and the
+        registry/queue/cache bookkeeping. Call it at the moment the system
+        monitor shows RAM filling up. Disabled (default) -> a one-line
+        notice; nothing is tracked then.
+        """
+        text = memdbg.census("api")
+        return Response(content=text + "\n", media_type="text/plain")
 
     @app.get("/api/ui-config")
     def ui_config() -> dict:
@@ -504,9 +526,11 @@ def create_app(
         layout preparation still applies.
         """
         if not config.prefetch_text_encoder:
+            memdbg.stamp("prefetch-api", action="ini-disabled")
             return {"action": "disabled"}
         cfg_id = body.get("model_id") or app.state.last_config_id
         if not cfg_id:
+            memdbg.stamp("prefetch-api", action="no-model-id")
             return {"action": "no-model"}
         try:
             entry = app.state.config_store.resolve(cfg_id)

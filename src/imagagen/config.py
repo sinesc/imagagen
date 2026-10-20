@@ -40,6 +40,12 @@ class Config:
     # parked when they cannot co-reside) instead of waiting for the next
     # generation to pay the swap.
     prefetch_text_encoder: bool = True
+    # Memory-leak debugging (see imagagen.memdbg): true stamps every
+    # multi-GiB model move (park/load/prefetch) with the process RSS, runs a
+    # periodic object census and mirrors it all into user/memdbg.log.
+    memory_debug: bool = False
+    # Seconds between the sampler's cheap RSS lines (memory-debug only).
+    memory_debug_interval: float = 30.0
     # Development aid: no-store on all responses (see cache middleware in
     # app.py); without it responses are revalidated on every request.
     debug: bool = False
@@ -144,6 +150,8 @@ def load_config(root: Path | str | None = None) -> Config:
         mask_overlay_opacity,
         transformer_parking_delay,
         prefetch_text_encoder,
+        memory_debug,
+        memory_debug_interval,
     ) = _parse_ini(root / "user" / "imagagen.ini")
     config = Config(
         root=root,
@@ -157,6 +165,8 @@ def load_config(root: Path | str | None = None) -> Config:
         mask_overlay_opacity=mask_overlay_opacity,
         transformer_parking_delay=transformer_parking_delay,
         prefetch_text_encoder=prefetch_text_encoder,
+        memory_debug=memory_debug,
+        memory_debug_interval=memory_debug_interval,
     )
     # Must happen before huggingface_hub is imported (it reads these at
     # import time): cache hub files in the project, keep the console quiet.
@@ -210,15 +220,15 @@ def load_config(root: Path | str | None = None) -> Config:
 def _parse_ini(
     path: Path,
 ) -> tuple[int | None, frozenset[int], str, str, bool, bool, bool, float,
-           float, bool]:
+           float, bool, bool, float]:
     """Parse ``<root>/user/imagagen.ini``: GPU selection, VRAM options, debug.
 
     A missing file yields the defaults
-    (auto, none, off, gpu, False, False, True, 0.9, 90.0, True).
+    (auto, none, off, gpu, False, False, True, 0.9, 90.0, True, False, 30.0).
     """
     if not path.is_file():
         return (None, frozenset(), "off", "gpu", False, False, True, 0.9,
-                90.0, True)
+                90.0, True, False, 30.0)
     cp = configparser.ConfigParser()
     try:
         cp.read(path, encoding="utf-8")
@@ -226,7 +236,7 @@ def _parse_ini(
         raise ValueError(f"cannot parse {path.name}: {e}") from e
     if not cp.has_section("imagagen"):
         return (None, frozenset(), "off", "gpu", False, False, True, 0.9,
-                90.0, True)
+                90.0, True, False, 30.0)
     sec = cp["imagagen"]
 
     raw = sec.get("primary-gpu", "auto").strip().lower()
@@ -312,6 +322,26 @@ def _parse_ini(
             f"{path.name}: prefetch-text-encoder must be true/false, "
             f"got {sec.get('prefetch-text-encoder')!r}"
         ) from None
+    try:
+        memory_debug = sec.getboolean("memory-debug", False)
+    except ValueError:
+        raise ValueError(
+            f"{path.name}: memory-debug must be true/false, "
+            f"got {sec.get('memory-debug')!r}"
+        ) from None
+    try:
+        memory_debug_interval = float(
+            sec.get("memory-debug-interval", "30"))
+    except ValueError:
+        raise ValueError(
+            f"{path.name}: memory-debug-interval must be a number of seconds, "
+            f"got {sec.get('memory-debug-interval')!r}"
+        ) from None
+    if memory_debug_interval < 2.0:
+        raise ValueError(
+            f"{path.name}: memory-debug-interval must be at least 2 seconds, "
+            f"got {memory_debug_interval!r}"
+        )
     return (
         primary,
         frozenset(ignored),
@@ -323,6 +353,8 @@ def _parse_ini(
         mask_overlay_opacity,
         parking_delay,
         prefetch_te,
+        memory_debug,
+        memory_debug_interval,
     )
 
 

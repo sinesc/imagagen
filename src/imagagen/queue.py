@@ -34,7 +34,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import wildcards
+from . import memdbg, wildcards
 from .backends import (
     PHASE_DENOISING,
     PHASE_ENCODING,
@@ -325,6 +325,13 @@ class GenerationQueue:
             self._next_job_id += 1
             live = self._live_image_ids_locked()
         self.canvas.anchor(live)
+        memdbg.stamp("submit", job=job.id, batch=batch_size,
+                     model=model_id, plan=plan is not None,
+                     wildcards=resolved is not None)
+        if plan is not None:
+            # InpaintPlan holds full canvas frames (numpy); if a plan outlives
+            # its job, those frames leak -> watch for a missing freed line
+            memdbg.track(plan, f"InpaintPlan[job{job.id}]")
         # A new generation resets the crop-thumbnail session: the client
         # clears its crop thumbnails when it generates, so pinned crop
         # entities are no longer reachable and can be evicted.
@@ -441,6 +448,7 @@ class GenerationQueue:
             except Exception:
                 log.exception("generation worker gpu=%d crashed", gpu)
             finally:
+                memdbg.stamp("task-end", job=task.job_id, gpu=gpu)
                 with self._cond:
                     self._gpu_running.pop(gpu, None)
                     self._dispatch()
@@ -512,6 +520,11 @@ class GenerationQueue:
         d.update(seed=task.seed, model_id=job.model_id,
                  model_name=info.name if info is not None else job.model_id)
         req = GenerateRequest.model_validate(d)
+        memdbg.stamp("task-begin", job=task.job_id, gpu=gpu,
+                     size=f"{req.width}x{req.height}",
+                     init=req.init_image is not None,
+                     mask=req.init_mask is not None, batch=job.batch_size,
+                     plan=job.plan.mode if job.plan else None)
 
         # Wildcards: the per-seed prompt picks were resolved at submit time
         # (Job.resolved) -- identical to per-task resolution (a fresh RNG
@@ -738,6 +751,14 @@ class GenerationQueue:
                     "%.1fs)",
                     job.id, len(job.results), job.batch_size, runtime,
                 )
+                blob = sum(len(v) for v in job.results.values()
+                           if isinstance(v, (bytes, bytearray)))
+                if job.source_png:
+                    blob += len(job.source_png)
+                memdbg.stamp("job-done", job=job.id,
+                             results=len(job.results),
+                             png_kb=blob // 1024,
+                             secs=round(runtime, 1))
                 self.emit({"type": "done", "job": job.id,
                            "message": f"Completed {len(job.results)} images "
                                       f"in {runtime:.1f}s"})
@@ -777,6 +798,12 @@ class GenerationQueue:
         with self._cond:
             idle = self._is_idle_locked()
             if self._park_timer is not None:
+                # re-armed: the pending one-shot is replaced below (when
+                # still idle) or becomes moot (new work started); MEMDBG
+                # counts how often the deferred park gets postponed --
+                # with prefetch firing on every prompt edit, a NEVER
+                # firing park would mean parked-forever copies piling up
+                memdbg.stamp("park-timer", action="cancel", armed_for=f"{self._parking_delay:.0f}s")
                 self._park_timer.cancel()
                 self._park_timer = None
             if idle:
@@ -788,10 +815,12 @@ class GenerationQueue:
                     timer.daemon = True
                     self._park_timer = timer
                     timer.start()
+                    memdbg.stamp("park-timer", action="arm", delay=f"{delay:.0f}s")
                 elif delay >= 0:
                     park_now = True
         if park_now:
             log.info("queue idle: parking all models to RAM")
+            memdbg.stamp("park-timer", action="immediate")
             self._unload_all_guarded()
 
     def _park_idle_fired(self) -> None:
@@ -800,6 +829,7 @@ class GenerationQueue:
         with self._cond:
             self._park_timer = None
             idle = self._is_idle_locked()
+        memdbg.stamp("park-timer", action="fire", idle=idle)
         if not idle:
             # the workers' _maybe_unload_idle re-arms the timer once this
             # work is done

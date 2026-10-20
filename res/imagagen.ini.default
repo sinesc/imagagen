@@ -63,6 +63,18 @@
 #                on each request (no-cache), which is normally enough --
 #                but if the browser ever serves a stale app.js, flip this
 #                on while developing and it is guaranteed fresh.
+#   memory-debug        false (default) | true
+#                Memory-leak tracing (see src/imagagen/memdbg.py). Every
+#                multi-GiB model move -- park, restore, checkpoint load,
+#                prompt prefetch, the parking timer, job lifecycle -- is
+#                logged with the process RSS/swap, a sampler thread prints
+#                RSS every memory-debug-interval seconds, and a full object
+#                census (who owns how many bytes, per backend copy) runs
+#                periodically, whenever RSS jumps, and on demand via
+#                GET /api/memdbg. Everything is mirrored to user/memdbg.log.
+#                Costs a few seconds of CPU per census; keep it off normally.
+#   memory-debug-interval  30 (default, seconds)
+#                Spacing of the sampler lines when memory-debug is on.
 [imagagen]
 primary-gpu = auto
 ignore-gpus =
@@ -73,3 +85,5 @@ ignore-gpus =
 #debug = false
 #transformer-parking-delay = 90
 #prefetch-text-encoder = true
+#memory-debug = false
+#memory-debug-interval = 30
