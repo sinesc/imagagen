@@ -129,6 +129,29 @@ def test_segment_dialog_values_are_persisted(seg_env, page):
     assert page.input_value("#dialog input.seg-feather") == "12"
 
 
+def test_segment_hotkey_opens_dialog_and_enter_submits(seg_env, page):
+    """T opens the segment dialog; ENTER in it fires Generate."""
+    base, _ = seg_env
+    page.goto(base)
+    page.wait_for_selector("#toolbar")
+    # the boot fetch of /api/segmentation/models is async; pressing T before
+    # it lands would open the "no models found" fallback dialog
+    assert wait_until(lambda: page.evaluate("state.segModels.length") > 0, timeout=30)
+    page.keyboard.press("t")
+    page.wait_for_selector("#dialog:not([hidden])")
+    assert page.locator("#dialog .seg-class input").count() == 5
+
+    # Enter submits (all classes are on by default); the dialog closes on
+    # success and the mask is written
+    page.keyboard.press("Enter")
+    assert wait_until(
+        lambda: page.locator("#dialog").evaluate("el => el.hidden"), timeout=30
+    ), "Enter should submit the dialog"
+    assert wait_until(
+        lambda: (m := mask_arr(base)) is not None and m.max() > 0, timeout=30
+    ), "mask was not written"
+
+
 def _index_of(boxes, label) -> int:
     for i in range(boxes.count()):
         if label in boxes.nth(i).evaluate("el => el.parentElement.textContent"):

@@ -124,6 +124,7 @@ def test_hotkey_buttons_show_their_character_underlined(page, server):
         ("#mask-dilate", "expand"),
         ("#mask-erode", "shrink"),
         ("#mask-clear", "clear"),
+        ("#seg-run", "segment"),
         ("#zoom-fit", "fit"),
     ]:
         btn = page.locator(sel)

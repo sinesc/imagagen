@@ -1895,6 +1895,13 @@ function openSegDialog() {
       el("label", {}, "Threshold", threshold),
       el("label", {}, "Feather (px)", feather)),
   );
+  // ENTER submits the dialog (it has no free-text fields, so Enter never
+  // conflicts with typing) -- the dialog is fully keyboard-driven after T:
+  // pick model / classes / values, Enter generates
+  const enterSubmits = (e) => {
+    if (e.key === "Enter" && !$("dialog").hidden) $("dialog-ok").click();
+  };
+  document.addEventListener("keydown", enterSubmits);
   openDialog("Generate person mask", body, async () => {
     const classes = rows.filter((r) => r.querySelector("input").checked)
       .map((r) => r.textContent.trim());
@@ -1928,7 +1935,7 @@ function openSegDialog() {
       setStatus(`segmentation failed: ${e.message}`, true);
       return false; // keep the dialog open so the class set can be fixed
     }
-  }, "Generate");
+  }, "Generate", () => document.removeEventListener("keydown", enterSubmits));
 }
 
 function zoomCenter(f) {
@@ -2775,7 +2782,8 @@ document.addEventListener("keydown", (e) => {
 }, true);
 
 // D / S / C / M / P / Y / E switch tools (draw, smudge, clone, mask, crop,
-// copy, paste), N / K / R act on the mask, F fits the image, CTRL+S saves,
+// copy, paste), N / K / R act on the mask, T opens the segment dialog, F
+// fits the image, CTRL+S saves,
 // CTRL+G generates and CTRL+Z / CTRL+Y undo / redo; ENTER applies a floating
 // selection and ESC aborts an in-flight rectangle or discards the selection
 // (all when not typing in a field; ESC on a focused field only clears that
@@ -2819,6 +2827,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "n" || e.key === "N") $("mask-dilate").onclick();
   else if (e.key === "k" || e.key === "K") $("mask-erode").onclick();
   else if (e.key === "r" || e.key === "R") $("mask-clear").onclick();
+  else if ((e.key === "t" || e.key === "T") && $("dialog").hidden) $("seg-run").onclick(); // guarded: while a dialog is open T must not re-open / reset it
   else if (e.key === "f" || e.key === "F") viewFit();
   // Esc aborts an in-flight rectangle first, else discards the floating
   // selection; Enter applies it (both only while no dialog is open)
