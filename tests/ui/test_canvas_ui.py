@@ -1591,6 +1591,44 @@ def test_unpin_defers_the_removal_to_the_next_generation(page, server):
     assert page.evaluate("state.thumbs.some(t => t.source && !t.pinned)")
 
 
+def test_drop_png_on_prompt_creates_thumbnail(page, server):
+    """Dropping a PNG on the PROMPT while the canvas is empty behaves like a
+    canvas drop for the image itself: it becomes a canvas entity AND gets a
+    (selected) thumbnail, in addition to having its metadata applied. A
+    second prompt drop replaces that single upload thumbnail instead of
+    piling up dead ones, and it stays restorable after a generation."""
+    base, _ = server
+    _open(page, base)
+    assert page.locator("#thumbs img").count() == 0
+
+    _drop_png(page, "#prompt", _meta_png(120, 90, rgb=BG), "first.png")
+    assert wait_until(lambda: _canvas_size(base) == (120, 90))
+    assert wait_until(lambda: page.input_value("#prompt") == "the meta prompt")
+    assert wait_until(lambda: page.locator("#thumbs img").count() == 1)
+    thumb = page.locator("#thumbs img").nth(0)
+    assert _thumb_title(thumb, "uploaded image 120\u00d790 (click to restore)")
+    assert "selected" in (thumb.get_attribute("class") or "")
+
+    # a second prompt drop REPLACES the single upload thumbnail (the canvas
+    # only ever tracks one canvas-upload entity)
+    _drop_png(page, "#prompt", _meta_png(120, 90, rgb=(200, 210, 220)),
+              "second.png")
+    assert wait_until(lambda: canvas_px(base, 1, 1) == (200, 210, 220))
+    assert page.locator("#thumbs img").count() == 1
+    assert "selected" in (page.locator("#thumbs img").nth(0).get_attribute("class") or "")
+
+    # the dropped image survived generation as the source thumbnail and
+    # still restores (this is where it used to go dead: no thumbnail, no
+    # way back after the canvas moved on)
+    page.click("#btn-generate")
+    page.wait_for_function("state.thumbs.length >= 2")
+    page.locator("#thumbs img").nth(1).click()  # the result onto the canvas
+    assert wait_until(lambda: canvas_px(base, 1, 1) != (200, 210, 220))
+    page.locator("#thumbs img").nth(0).click()  # back to the dropped image
+    assert wait_until(lambda: canvas_px(base, 1, 1) == (200, 210, 220))
+    assert "unknown canvas image" not in (page.text_content("#status-line") or "")
+
+
 def test_second_drop_replaces_the_upload_thumbnail(page, server):
     """The canvas only ever tracks ONE canvas-upload entity: dropping a
     second PNG onto the canvas replaces its content and RE-POINTS the

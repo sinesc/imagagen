@@ -2165,9 +2165,46 @@ function wireConfig() {
 }
 
 // ---------------- PNG drag&drop import (prompt / negative prompt) ----------------
+// Shared upload path for BOTH drop targets (the canvas and the prompt
+// fields): the PNG becomes a canvas entity AND a thumbnail. The upload is
+// what the canvas shows, so it gets a thumbnail (selected, like the crop
+// is): restorable via the strip after a generation puts a result on the
+// canvas, and pinnable like any other thumbnail. The entity is pinned
+// server-side (like a crop), so it survives thumbnail switches until the
+// next generation releases it along with the client's unpinned upload
+// thumbnail. The upload thumbnail is REPLACED only when it is the entity
+// the canvas shows (a strip-dropped pinned upload sitting last in the strip
+// keeps its thumbnail and gets a new entry appended instead); ?replace=
+// retires the superseded server entity (transferring its user pin). Any
+// other canvas content (a result, a crop, a source snapshot) keeps its
+// thumbnail and gets a new one appended. Returns the new entity id.
+async function uploadPngToCanvas(file) {
+  const last = state.thumbs[state.thumbs.length - 1];
+  const replace = last?.upload && last.image_id === currentEntityId
+    ? last.image_id : null;
+  const up = await fetch(
+    "/api/canvas/upload" +
+    (replace ? `?replace=${encodeURIComponent(replace)}` : ""),
+    { method: "POST", body: await file.arrayBuffer() });
+  if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
+  const { image_id } = await up.json();
+  const url = `/api/canvas/image.png?id=${encodeURIComponent(image_id)}`;
+  if (replace) {
+    last.image_id = image_id; // re-point it at the new entity
+    last.url = url; // last.pinned carries over (transferred server-side)
+  } else {
+    state.thumbs.push({ image_id, upload: true, url });
+  }
+  state.currentThumb = state.thumbs.length - 1; // the canvas shows it
+  currentEntityId = image_id;
+  renderThumbs();
+  return image_id;
+}
+
 // Dropping a PNG onto the prompt or negative-prompt field sets the image on
-// the canvas and applies its embedded metadata to the controls. Without
-// metadata, only the width/height come from the image dimensions.
+// the canvas (thumbnail included, exactly like dropping on the canvas) and
+// applies its embedded metadata to the controls. Without metadata, only the
+// width/height come from the image dimensions.
 async function importPng(file) {
   try {
     const metaRes = await fetch("/api/png-meta", { method: "POST", body: await file.arrayBuffer() });
@@ -2176,10 +2213,7 @@ async function importPng(file) {
       throw new Error(j?.error || `png-meta: ${metaRes.status}`);
     }
     const { meta, width, height } = await metaRes.json();
-    const up = await fetch("/api/canvas/upload", { method: "POST", body: await file.arrayBuffer() });
-    if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
-    const { image_id } = await up.json();
-    currentEntityId = image_id; // the upload became the displayed entity
+    await uploadPngToCanvas(file); // the upload becomes the displayed entity
     await applyPngMeta(meta, width, height);
     viewRefresh();
     setStatus(meta ? `imported ${file.name} (metadata applied)` : `loaded ${file.name} onto the canvas (no metadata)`);
@@ -2300,16 +2334,8 @@ function parseMetaLoras(items) {
 }
 
 // Dropping a PNG directly on the canvas just sets the image there --
-// applying metadata is what dropping on the prompt fields is for. The
-// upload becomes a canvas entity, so it also gets a thumbnail (selected,
-// like the crop is): restorable via the strip after a generation puts a
-// result on the canvas, and pinnable like any other thumbnail. The entity
-// is pinned server-side (like a crop), so it survives thumbnail switches
-// until the next generation releases it along with the client's unpinned
-// upload thumbnail. Dropping onto the upload thumbnail of the CANVAS image
-// replaces it (?replace= retires the superseded entity, transferring its
-// user pin); any other canvas content (a result, a crop, a source
-// snapshot) keeps its thumbnail and gets a new one appended.
+// applying metadata is what dropping on the prompt fields is for (both go
+// through uploadPngToCanvas, so both register the thumbnail).
 function wireCanvasDrop() {
   const holder = $("canvas-holder");
   holder.addEventListener("dragover", (e) => {
@@ -2328,29 +2354,7 @@ function wireCanvasDrop() {
       return;
     }
     try {
-      // the upload thumbnail is REPLACED only when it is the entity the
-      // canvas shows (a strip-dropped pinned upload sitting last in the
-      // strip keeps its thumbnail and gets a new entry appended instead);
-      // ?replace= retires the superseded server entity (pin transfer)
-      const last = state.thumbs[state.thumbs.length - 1];
-      const replace = last?.upload && last.image_id === currentEntityId
-        ? last.image_id : null;
-      const up = await fetch(
-        "/api/canvas/upload" +
-        (replace ? `?replace=${encodeURIComponent(replace)}` : ""),
-        { method: "POST", body: await file.arrayBuffer() });
-      if (!up.ok) throw new Error(`canvas upload: ${up.status}`);
-      const { image_id } = await up.json();
-      const url = `/api/canvas/image.png?id=${encodeURIComponent(image_id)}`;
-      if (replace) {
-        last.image_id = image_id; // re-point it at the new entity
-        last.url = url; // last.pinned carries over (transferred server-side)
-      } else {
-        state.thumbs.push({ image_id, upload: true, url });
-      }
-      state.currentThumb = state.thumbs.length - 1; // the canvas shows it
-      currentEntityId = image_id;
-      renderThumbs();
+      await uploadPngToCanvas(file);
       viewRefresh();
       setStatus(`loaded ${file.name} onto the canvas`);
     } catch (err) {
