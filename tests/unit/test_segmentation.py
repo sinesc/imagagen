@@ -180,6 +180,22 @@ def test_generate_feather_softens_the_edge_and_keeps_the_core(tmp_path):
     assert soft[10, 10] < 255   # the corner softened
 
 
+def test_generate_shifts_mask_back_by_half_a_model_cell(tmp_path):
+    # MediaPipe's mask grid sits half a model cell (W/512 px, H/512 px for
+    # the 256px models) right/below the true image content; generate()
+    # compensates on the continuous confidence, so a step edge at x=512 /
+    # y=256 of a 1024x512 image must land at 510/255 (cell = 4 px here).
+    H, W = 512, 1024
+    conf = np.zeros((H, W), np.float32)
+    conf[256:, 512:] = 1.0  # ON block: vertical edge at x=512, horizontal at y=256
+    svc = make_service(tmp_path, {"m.tflite": (["background", "hair"], [[0.0], conf])})
+    mask = svc.generate("m.tflite", ["hair"], np.zeros((H, W, 3), np.uint8))
+    # vertical edge: content moves left by 1024/512 = 2 px -> ON from x=510
+    assert mask[400, 509] == 0 and mask[400, 510] == 255
+    # horizontal edge: content moves up by 512/512 = 1 px -> ON from y=255
+    assert mask[254, 700] == 0 and mask[255, 700] == 255
+
+
 def test_generate_feather_rejects_out_of_range(tmp_path):
     conf = np.full((2, 2), 1.0, np.float32)
     svc = make_service(tmp_path, {"m.tflite": (["background", "hair"], [[0.0], conf])})

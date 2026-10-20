@@ -78,6 +78,39 @@ CONFIDENCE_THRESHOLD = 0.25
 # Upper bound for the feather radius in canvas px (mirrors the UI input).
 MAX_FEATHER = 64
 
+# Input resolution of the MediaPipe image-segmenter task models (the
+# selfie_multiclass_256x256 family). Used to undo the mask's half-cell
+# placement offset (see _correct_grid_offset).
+MODEL_INPUT_SIZE = 256
+
+
+def _correct_grid_offset(conf: np.ndarray, scale_x: float, scale_y: float) -> np.ndarray:
+    """Shift a confidence map left/up by half a model-resolution cell.
+
+    MediaPipe resamples its model-resolution mask grid onto the input image
+    with mismatched pixel conventions, so the returned mask consistently
+    sits half a model cell (~W/512, H/512 output px for a 256px model)
+    *right and below* the actual image content. Measured on
+    dev/references/segmenting/52-women-on-black-background.png (a black-
+    background photo whose silhouette is exact ground truth): every
+    silhouette edge's confidence midpoint is offset by ~W/512 px right at
+    512, 768, 1024, 2048 and 4096 px input widths, and shifting the mask
+    back by exactly half a cell maximises IoU against the silhouette.
+    (Upstream's a-person-mask-generator has the same behaviour; it just
+    never compensates.) The correction runs on the *continuous*
+    confidence (before binarizing) so edges land in the right place after
+    the threshold cut; out-of-image samples are confidence 0.
+    """
+    from PIL import Image
+
+    dx = scale_x / 2.0
+    dy = scale_y / 2.0
+    im = Image.fromarray(np.ascontiguousarray(conf, dtype=np.float32), mode="F")
+    # output(x) = conf(x + dx): content moves *left* by dx (and up by dy)
+    im = im.transform(im.size, Image.AFFINE, (1.0, 0.0, dx, 0.0, 1.0, dy),
+                      resample=Image.BILINEAR)
+    return np.asarray(im, dtype=np.float64)
+
 
 class SegmentationError(Exception):
     """User-facing segmentation failure (no models dir, bad model/class)."""
@@ -245,6 +278,13 @@ class SegmentationService:
         # per-run peak-normalization would make the threshold relative and
         # turn an all-noise run (a class that is not in the image at all)
         # into a fully masked canvas.
+        # Undo MediaPipe's half-cell right/down mask offset (see
+        # _correct_grid_offset) on the continuous confidence, i.e. before
+        # the threshold cut, so the binarized edge tracks the true image
+        # edge instead of sitting half a model cell to its right.
+        scale_x = rgb.shape[1] / MODEL_INPUT_SIZE
+        scale_y = rgb.shape[0] / MODEL_INPUT_SIZE
+        mask = _correct_grid_offset(mask, scale_x, scale_y)
         mask = np.where(mask > threshold, 255.0, 0.0)
         if feather > 0.0:
             # Blur the binary mask: the edge softens, the opaque core
