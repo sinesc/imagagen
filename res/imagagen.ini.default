@@ -75,16 +75,6 @@
 #                Costs a few seconds of CPU per census; keep it off normally.
 #   memory-debug-interval  30 (default, seconds)
 #                Spacing of the sampler lines when memory-debug is on.
-#   malloc-trim         false (default) | true
-#                Return freed C-heap pages to the OS (glibc malloc_trim)
-#                after model parks and checkpoint loads, and cap the
-#                malloc arena count to 4. The app churns multi-GiB
-#                pageable host buffers (park/restore, checkpoint reads,
-#                encoder moves); glibc keeps freed memory in per-thread
-#                arenas, so RSS ratchets up toward the worst-case
-#                allocation interleaving even though nothing leaks.
-#                Enable this if RAM grows while the census (memory-debug)
-#                shows only a small live object set.
 [imagagen]
 primary-gpu = auto
 ignore-gpus =
@@ -97,4 +87,3 @@ ignore-gpus =
 #prefetch-text-encoder = true
 #memory-debug = false
 #memory-debug-interval = 30
-#malloc-trim = false

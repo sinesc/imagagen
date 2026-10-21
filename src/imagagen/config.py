@@ -46,12 +46,6 @@ class Config:
     memory_debug: bool = False
     # Seconds between the sampler's cheap RSS lines (memory-debug only).
     memory_debug_interval: float = 30.0
-    # Call glibc malloc_trim(0) (return free C-heap pages to the OS) after
-    # model parks and checkpoint loads, and cap the malloc arena count. The
-    # app churns multi-GiB pageable host buffers (park/restore, safetensors
-    # loads, encoder moves); glibc caches freed memory in per-thread arenas
-    # and RSS then ratchets up toward the worst-case interleaving.
-    malloc_trim: bool = False
     # Development aid: no-store on all responses (see cache middleware in
     # app.py); without it responses are revalidated on every request.
     debug: bool = False
@@ -158,7 +152,6 @@ def load_config(root: Path | str | None = None) -> Config:
         prefetch_text_encoder,
         memory_debug,
         memory_debug_interval,
-        malloc_trim,
     ) = _parse_ini(root / "user" / "imagagen.ini")
     config = Config(
         root=root,
@@ -174,14 +167,20 @@ def load_config(root: Path | str | None = None) -> Config:
         prefetch_text_encoder=prefetch_text_encoder,
         memory_debug=memory_debug,
         memory_debug_interval=memory_debug_interval,
-        malloc_trim=malloc_trim,
     )
-    if malloc_trim:
-        # cap glibc's per-thread malloc arenas BEFORE the worker/timer/
-        # threadpool threads start allocating (see Config.malloc_trim)
-        from .memdbg import mallopt_arenas
+    # Always active (not an ini option): cap glibc's per-thread malloc
+    # arenas BEFORE the worker/timer/threadpool threads start allocating.
+    # The app churns multi-GiB pageable host buffers (model park/restore,
+    # safetensors loads, text-encoder moves); with one arena per thread
+    # (8x CPUs by default) every thread caches its own multi-GiB freed
+    # segments and RSS ratchets up toward the worst-case interleaving.
+    # Host measurements (SDXL, 2 GPUs, memory-debug log): without this +
+    # the ModelRegistry malloc_trim calls the live object set stayed at
+    # ~15GiB while RSS grew past 46GiB with 36GiB pushed to swap; with
+    # them RSS hugs the ~18GiB working set and swap stays at zero.
+    from .memdbg import mallopt_arenas
 
-        mallopt_arenas(4)
+    mallopt_arenas(4)
     # Must happen before huggingface_hub is imported (it reads these at
     # import time): cache hub files in the project, keep the console quiet.
     os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(config.hf_cache_dir))
@@ -234,16 +233,15 @@ def load_config(root: Path | str | None = None) -> Config:
 def _parse_ini(
     path: Path,
 ) -> tuple[int | None, frozenset[int], str, str, bool, bool, bool, float,
-           float, bool, bool, float, bool]:
+           float, bool, bool, float]:
     """Parse ``<root>/user/imagagen.ini``: GPU selection, VRAM options, debug.
 
     A missing file yields the defaults
-    (auto, none, off, gpu, False, False, True, 0.9, 90.0, True, False, 30.0,
-    False).
+    (auto, none, off, gpu, False, False, True, 0.9, 90.0, True, False, 30.0).
     """
     if not path.is_file():
         return (None, frozenset(), "off", "gpu", False, False, True, 0.9,
-                90.0, True, False, 30.0, False)
+                90.0, True, False, 30.0)
     cp = configparser.ConfigParser()
     try:
         cp.read(path, encoding="utf-8")
@@ -251,7 +249,7 @@ def _parse_ini(
         raise ValueError(f"cannot parse {path.name}: {e}") from e
     if not cp.has_section("imagagen"):
         return (None, frozenset(), "off", "gpu", False, False, True, 0.9,
-                90.0, True, False, 30.0, False)
+                90.0, True, False, 30.0)
     sec = cp["imagagen"]
 
     raw = sec.get("primary-gpu", "auto").strip().lower()
@@ -357,13 +355,6 @@ def _parse_ini(
             f"{path.name}: memory-debug-interval must be at least 2 seconds, "
             f"got {memory_debug_interval!r}"
         )
-    try:
-        malloc_trim = sec.getboolean("malloc-trim", False)
-    except ValueError:
-        raise ValueError(
-            f"{path.name}: malloc-trim must be true/false, "
-            f"got {sec.get('malloc-trim')!r}"
-        ) from None
     return (
         primary,
         frozenset(ignored),
@@ -377,7 +368,6 @@ def _parse_ini(
         prefetch_te,
         memory_debug,
         memory_debug_interval,
-        malloc_trim,
     )
 
 
