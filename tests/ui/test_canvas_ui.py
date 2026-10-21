@@ -1971,9 +1971,9 @@ def test_tool_indicator_text_and_rendering(page, server):
         page.wait_for_function("view.cursor !== null")
 
     hover(100, 75)
-    assert indicator() == "D"  # brush (draw)
+    assert indicator() == "D+"  # brush (draw)
     page.keyboard.down("Control")
-    assert indicator() == "D:P"  # colour-picker mode
+    assert indicator() == "Pick"  # colour-picker mode
     page.keyboard.up("Control")
     # brush eraser only within a floating selection (probe the function
     # directly; a fake view.sel must not go through viewRedraw)
@@ -1988,16 +1988,16 @@ def test_tool_indicator_text_and_rendering(page, server):
                 return t;
             }"""
         )
-        == "D:E"
+        == "D-"
     )
     page.keyboard.press("s")
     assert indicator() == "S"
     page.keyboard.press("c")
     assert indicator() == "C"
     page.keyboard.press("m")
-    assert indicator() == "M"
+    assert indicator() == "M+"
     page.keyboard.down("Shift")
-    assert indicator() == "M:E"
+    assert indicator() == "M-"
     page.keyboard.up("Shift")
     page.keyboard.press("p")
     assert indicator() == "Crop"

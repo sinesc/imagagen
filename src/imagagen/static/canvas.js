@@ -786,13 +786,13 @@ function drawCursor(ctx) {
 function toolIndicatorText() {
   const tool = Tools.current;
   if (tool === "brush") {
-    if (ctrlDown) return "D:P"; // colour-picker mode
-    if (shiftDown && view.sel) return "D:E"; // eraser within a selection
-    return "D";
+    if (ctrlDown) return "Pick"; // colour-picker mode
+    if (shiftDown && view.sel) return "D-"; // eraser within a selection
+    return "D+";
   }
   if (tool === "smudge") return "S";
   if (tool === "clone") return "C";
-  if (tool === "mask") return shiftDown ? "M:E" : "M";
+  if (tool === "mask") return shiftDown ? "M-" : "M+";
   if (tool === "crop") return "Crop";
   if (tool === "copy") return "Copy";
   return null; // paste (and anything else): no indicator
