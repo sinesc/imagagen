@@ -1957,7 +1957,12 @@ function openSegDialog() {
       state.segFeather = fea;
       scheduleSaveUiState(0);
       setStatus(`mask generated: ${r.pixels.toLocaleString()} px (undo to revert)`);
-      viewRefresh();
+      await viewRefresh();
+      // The mask overlay is only rendered in mask mode (canvas.js
+      // maskVisible()), so arm the mask tool: the generated mask would
+      // otherwise be invisible. Skipped when the mask ended up empty (the
+      // segmenter found nothing), where switching would just surprise.
+      if (r.pixels > 0) switchTool("mask");
     } catch (e) {
       statusIsError = true;
       setStatus(`segmentation failed: ${e.message}`, true);

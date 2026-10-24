@@ -84,10 +84,14 @@ def test_segment_mask_flow(seg_env, page):
     # most of the image stays unmasked (a person is <50% of the frame)
     assert (mask > 0).mean() < 0.5
 
-    # the mask write is one undo step. Undo follows the active tool, so
-    # switch to the mask tool first (the default is the brush tool, whose
-    # draw stack is empty).
-    page.keyboard.press("m")
+    # the mask tool is armed automatically: the mask overlay is only drawn
+    # in mask mode, so the user would otherwise not see the result
+    assert wait_until(
+        lambda: page.locator("#tool-mask.active").count() == 1, timeout=30
+    ), "segmentation should switch to the mask tool"
+
+    # the mask write is one undo step. Undo follows the active tool, which
+    # segmentation just made the mask tool (so its stack holds the write).
     page.click("#btn-undo")
     assert wait_until(
         lambda: (m := mask_arr(base)) is not None and m.max() == 0)
