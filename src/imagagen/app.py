@@ -28,7 +28,13 @@ from .backends import (
 from .canvas import Canvas, _decode_mask, _decode_png
 from .config import Config, ensure_dirs, load_config
 from .generation import INPAINT_PADDING, GenerationError, with_inpaint
-from .lora_settings import LoraSettings, all_settings, apply_lora_texts, save_settings
+from .lora_settings import (
+    LoraSettings,
+    activation_tag_universe,
+    all_settings,
+    apply_lora_texts,
+    save_settings,
+)
 from .model_configs import (
     ConfigError,
     ConfigStore,
@@ -222,6 +228,10 @@ class GenerateBody(BaseModel):
     # image metadata (name@weight, in UI row order) so an import restores
     # them in the disabled state
     disabled_loras: list[tuple[str, float]] = Field(default_factory=list)
+    # activation-text tags the UI switched OFF (comma-separated tags of the
+    # selected LoRAs' "activation text", see lora_settings.split_tags); they
+    # are dropped from the prompt, everything else applies
+    disabled_activation_tags: list[str] = Field(default_factory=list)
     # ordered list of style names (styles.csv), applied to the prompt /
     # negative prompt before generation
     styles: list[str] = Field(default_factory=list)
@@ -503,7 +513,10 @@ def create_app(
             app.state.style_store.get,
         )
         # LoRA activation texts are part of the model prompt, too
-        prompt, _ = apply_lora_texts(prompt, "", body.get("loras", []), config)
+        prompt, _ = apply_lora_texts(
+            prompt, "", body.get("loras", []), config,
+            body.get("disabled_activation_tags"),
+        )
         tokens = count_prompt_tokens(prompt)
         if tokens is None:
             return {"tokens": None, "windows": 0}
@@ -548,7 +561,8 @@ def create_app(
             app.state.style_store.get,
         )
         prompt, negative = apply_lora_texts(
-            prompt, negative, body.get("loras", []), config)
+            prompt, negative, body.get("loras", []), config,
+            body.get("disabled_activation_tags"))
         # wildcards: the per-seed resolution always misses the cache, so
         # the raw text must not be checked (nor encoded)
         force = (wildcards.has_wildcards(prompt)
@@ -755,8 +769,16 @@ def create_app(
             app.state.style_store.get,
         )
         prompt, negative_prompt = apply_lora_texts(
-            prompt, negative_prompt, loras, config
+            prompt, negative_prompt, loras, config,
+            body.disabled_activation_tags,
         )
+        # the tags that DID make it into the prompt (the universe of the
+        # applied LoRAs minus the ones the UI switched off): recorded in the
+        # PNG so it says what the image was generated with
+        applied_tags = [
+            t for t in activation_tag_universe(loras, config)
+            if t not in set(body.disabled_activation_tags)
+        ]
         # Wildcards are validated up front (seed-independent structural
         # errors: a missing file or a recursion) so the whole job is rejected
         # with a clear message instead of failing per-image; the actual
@@ -868,6 +890,8 @@ def create_app(
                            meta_styles=meta_styles,
                            # recorded in the metadata but NOT applied
                            meta_disabled_loras=disabled_loras,
+                           # the activation-text tags that were applied
+                           meta_activation_tags=applied_tags or None,
                            # the configuration NAME rides to the PNG metadata
                            # so an import re-selects it
                            meta_config_name=entry.name)

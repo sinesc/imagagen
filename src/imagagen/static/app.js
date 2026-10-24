@@ -33,8 +33,12 @@ const state = {
   referenceImageId: null,
   referenceCaption: null, // preview text for the checked reference (null = fetching/none)
   // enabled caption sections for the checked reference (null = all;
-  // see renderRefSections for the tag row under the negative prompt)
+  // see renderPromptTags for the tag row under the negative prompt)
   referenceSections: null,
+  // activation-text tags the tag row switched OFF (the comma-separated
+  // "activation text" of the selected LoRAs, split into tags; everything not
+  // listed here is ON, so [] = all tags apply)
+  disabledActivationTags: [],
 };
 
 function setStatus(text, isError = false) {
@@ -89,6 +93,7 @@ async function updatePromptTokens() {
       prompt: $("prompt").value,
       styles: getStyles(),
       loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
+      disabled_activation_tags: state.disabledActivationTags,
     });
   } catch (e) {
     return;
@@ -118,6 +123,7 @@ async function postTextPrefetch() {
       negative_prompt: $("negative").value,
       styles: getStyles(),
       loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
+      disabled_activation_tags: state.disabledActivationTags,
     });
   } catch (e) { /* prefetch is fire-and-forget */ }
 }
@@ -246,6 +252,8 @@ function mainLoraChange() {
   scheduleSaveUiState();
   // a LoRA's activation text is part of the model prompt
   schedulePromptTokens();
+  // ... and its tags are the toggle buttons under the negative prompt
+  renderPromptTags();
 }
 // items: [name, weight] or [name, weight, enabled]
 function renderMainLoras(items) {
@@ -253,6 +261,8 @@ function renderMainLoras(items) {
   c.innerHTML = "";
   (items || []).forEach(([n, w, en]) =>
     c.append(loraRow(n, w, mainLoraChange, en !== false)));
+  // the LoRA set just changed, so the activation-tag universe did too
+  renderPromptTags();
 }
 // [name, weight, enabled] per row
 const getLoras = () => readLoraList($("loras")).filter((x) => x[0]);
@@ -437,7 +447,9 @@ function openLoraDialog(name, onClose = null) {
   wtIn.value = s["preferred weight"] ?? 0.8;
   const actIn = el("textarea", {
     class: "style-prompt", rows: "3",
-    placeholder: "Will be appended to prompt, or use {prompt} to place prompt in text.",
+    placeholder: "Comma separated: every tag gets its own on/off button under "
+      + "the negative prompt. Will be appended to prompt, or use {prompt} to "
+      + "place prompt in text.",
   });
   actIn.value = s["activation text"] || "";
   const negIn = el("textarea", {
@@ -451,7 +463,8 @@ function openLoraDialog(name, onClose = null) {
     el("label", {}, "Name", nameIn),
     el("label", {}, "Description", descIn),
     el("label", {}, "Preferred weight", wtIn),
-    el("label", {}, "Activation text", actIn),
+    el("label", { title: "comma-separated tags: each tag gets an on/off button in the row under the negative prompt" },
+       "Optional LoRA activation text", actIn),
     el("label", {}, "Negative text", negIn),
     el("label", {}, "Notes", notesIn));
   openDialog("Edit LoRA", box, async () => {
@@ -466,6 +479,11 @@ function openLoraDialog(name, onClose = null) {
     try {
       const r = await api("/api/loras/settings", body);
       state.loraSettings[name] = r.settings;
+      // the activation text is what the tag row shows: a new text means new
+      // tags (and a different prompt, hence the token counter)
+      renderPromptTags();
+      schedulePromptTokens();
+      scheduleSaveUiState();
     } catch (e) {
       dialogError(e.message);
       return false;
@@ -671,7 +689,7 @@ function pinToggle(t) {
             state.referenceImageId = null;
             state.referenceCaption = null;
             state.referenceSections = null;
-            renderRefSections(); // the tag row goes with the reference
+            renderPromptTags(); // the tag row goes with the reference
           }
         }
       } catch (e) {
@@ -723,58 +741,110 @@ function parseCaptionSections(caption) {
   return out;
 }
 
-// The caption-section tag row under the negative prompt: one toggle per
-// section of the checked reference's caption preview, all enabled by
-// default (state.referenceSections null = all). Hidden when no
-// reference is checked or the caption has <= 1 section. While the
-// preview is still pending, an animated "Processing..." placeholder
-// spins (the dots cycle every 500 ms).
+// The tag row under the negative prompt: one toggle per section of the
+// checked reference's caption preview, then (behind a separator) one per
+// activation-text tag of the selected LoRAs. Caption sections are enabled by
+// default (state.referenceSections null = all), activation tags likewise
+// (state.disabledActivationTags = the switched-off ones). The row is hidden
+// when neither group has anything to offer. While the caption preview is
+// still pending, an animated "Processing..." placeholder spins (the dots
+// cycle every 500 ms).
 let refDotsTimer = null;
-function renderRefSections() {
+function renderPromptTags() {
   const root = $("ref-sections");
   root.textContent = "";
   if (refDotsTimer) { clearInterval(refDotsTimer); refDotsTimer = null; }
+  let count = 0;
+  let pending = false;
   if (state.referenceImageId && state.referenceCaption === null) {
+    pending = true;
     const dots = el("span", {}, ".");
     root.appendChild(el("span", { class: "ref-processing" },
                         "Processing", dots));
-    root.classList.remove("hidden");
     refDotsTimer = setInterval(() => {
       dots.textContent = ".".repeat(dots.textContent.length % 3 + 1);
     }, 500);
-    return;
+  } else {
+    const secs = state.referenceImageId && state.referenceCaption
+      ? parseCaptionSections(state.referenceCaption) : [];
+    // fallback: a caption the parser found no sections in gets a single
+    // "Reference" tag toggling the whole description (enabled = null =
+    // all sections; off = [] = apply nothing)
+    const tags = secs.length === 1
+      ? [{ title: "Reference", text: secs[0].text }] : secs;
+    const enabled = (t) => !Array.isArray(state.referenceSections)
+      || state.referenceSections.includes(t);
+    for (const s of tags) {
+      root.appendChild(el("button", {
+        type: "button",
+        class: `ref-tag mini${enabled(s.title) ? " active" : ""}`,
+        title: `include the "${s.title}" caption section in the prompt`,
+        onclick: () => {
+          const titles = tags.map((x) => x.title);
+          const next = new Set(titles.filter(enabled));
+          if (next.has(s.title)) next.delete(s.title);
+          else next.add(s.title);
+          const everythingOn = titles.every((t) => next.has(t));
+          state.referenceSections = everythingOn ? null
+            : titles.filter((t) => next.has(t));
+          renderPromptTags();
+        },
+      }, s.title));
+      count++;
+    }
   }
-  const secs = state.referenceImageId && state.referenceCaption
-    ? parseCaptionSections(state.referenceCaption) : [];
-  // fallback: a caption the parser found no sections in gets a single
-  // "Reference" tag toggling the whole description (enabled = null =
-  // all sections; off = [] = apply nothing)
-  const tags = secs.length === 1
-    ? [{ title: "Reference", text: secs[0].text }] : secs;
-  if (tags.length <= 0) {
-    root.classList.add("hidden");
-    return;
+  // LoRA activation tags: they ride in the same row, split off from the
+  // caption tags by a separator, and are green instead of blue.
+  const all = getActivationTags();
+  if (all.length > 0) {
+    if (count > 0) root.appendChild(el("span", { class: "tag-sep" }));
+    const on = (t) => !state.disabledActivationTags.includes(t);
+    for (const t of all) {
+      root.appendChild(el("button", {
+        type: "button",
+        class: `lora-tag mini${on(t) ? " active" : ""}`,
+        title: `include the "${t}" activation tag of the selected LoRAs in `
+          + "the prompt",
+        onclick: () => {
+          const off = new Set(state.disabledActivationTags);
+          if (off.has(t)) off.delete(t);
+          else off.add(t);
+          // tags no current LoRA contributes drop out of the disabled list
+          // (they would only linger as inert entries, but keeping the list
+          // tight also re-enables a re-added LoRA's tags)
+          state.disabledActivationTags = all.filter((x) => off.has(x));
+          renderPromptTags();
+          // the tag is part of the prompt the model sees (token counter,
+          // encoding cache prefetch) and of the persisted UI state
+          schedulePromptTokens();
+          scheduleSaveUiState();
+        },
+      }, t));
+      count++;
+    }
   }
-  root.classList.remove("hidden");
-  const enabled = (t) => !Array.isArray(state.referenceSections)
-    || state.referenceSections.includes(t);
-  for (const s of tags) {
-    root.appendChild(el("button", {
-      type: "button",
-      class: `ref-tag mini${enabled(s.title) ? " active" : ""}`,
-      title: `include the "${s.title}" caption section in the prompt`,
-      onclick: () => {
-        const titles = tags.map((x) => x.title);
-        const next = new Set(titles.filter(enabled));
-        if (next.has(s.title)) next.delete(s.title);
-        else next.add(s.title);
-        const all = titles.every((t) => next.has(t));
-        state.referenceSections = all ? null
-          : titles.filter((t) => next.has(t));
-        renderRefSections();
-      },
-    }, s.title));
+  root.classList.toggle("hidden", count === 0 && !pending);
+}
+
+// Mirror of imagagen.lora_settings.split_tags (keep in sync): a LoRA's
+// comma-separated "activation text" -> its individual tags.
+function splitTags(text) {
+  return (text || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+// The tag universe of the current form: every activation-text tag of the
+// ENABLED sidebar LoRA rows, in row order, deduped. A row toggled off (or
+// family-locked) contributes nothing, exactly like its activation text is
+// not applied. (The selected model CONFIGURATION's LoRAs are not part of
+// the row: they are not shown as rows, so their tags always apply.)
+function getActivationTags() {
+  const out = [];
+  for (const [name, , enabled] of getLoras()) {
+    if (!enabled) continue;
+    for (const t of splitTags(state.loraSettings[name]?.["activation text"]))
+      if (!out.includes(t)) out.push(t);
   }
+  return out;
 }
 
 // Fetch the caption preview for the checked reference (shared by the
@@ -787,14 +857,14 @@ async function fetchReferencePreview() {
     if (state.referenceImageId === id) {
       state.referenceCaption = r.caption;
       renderThumbs();
-      renderRefSections();
+      renderPromptTags();
     }
   } catch (e) {
     if (state.referenceImageId === id) {
       // empty (not null) marks the preview as finished-failed so the
       // tag row stops spinning instead of showing the placeholder
       state.referenceCaption = "";
-      renderRefSections();
+      renderPromptTags();
       setStatus(`reference caption preview failed: ${e.message}`, true);
     }
   }
@@ -859,14 +929,14 @@ function renderThumbs() {
           state.referenceImageId = null;
           state.referenceCaption = null;
           state.referenceSections = null;
-          renderRefSections();
+          renderPromptTags();
           renderThumbs();
           return;
         }
         state.referenceImageId = t.image_id;
         state.referenceCaption = null;
         state.referenceSections = null; // new reference: all sections on
-        renderRefSections();
+        renderPromptTags();
         if (!t.pinned) {
           // unpinned thumbnails are dropped at submit: a reference must
           // survive, so auto-pin it (same API as the pin checkbox)
@@ -998,6 +1068,9 @@ async function generate() {
     // record them (restored disabled on import)
     loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
     disabled_loras: getLoras().filter((x) => !x[2]).map(([n, w]) => [n, w]),
+    // activation-text tags switched off in the tag row: the remaining tags
+    // of those LoRAs still go into the prompt (see /api/generate)
+    disabled_activation_tags: state.disabledActivationTags,
     // disabled styles are not applied but travel so the image metadata can
     // record them (restored disabled on import)
     styles: getStyles(),
@@ -1158,6 +1231,7 @@ async function refreshLoras() {
   // "Disabled LoRAs" of an imported PNG, whose file may not exist here)
   [...list.querySelectorAll(".lora-row")].forEach((row) =>
     row.applyFamilyLock && row.applyFamilyLock());
+  renderPromptTags(); // the family switch changed which tags apply
 }
 
 async function refreshModels(keepSelection = true) {
@@ -2482,6 +2556,9 @@ function readUiState() {
     // are model configuration settings, not persisted here
     loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
     disabled_loras: getLoras().filter((x) => !x[2]).map(([n, w]) => [n, w]),
+    // the activation tags the tag row switched off (the LoRAs' remaining
+    // tags still apply); a tag of a LoRA that is gone is simply inert
+    disabled_activation_tags: state.disabledActivationTags,
     styles: getStyles(),
     disabled_styles: getAllStyles().filter((x) => !x[1]).map((x) => x[0]),
     // preset is not persisted either: the dropdown always starts at "—"
@@ -2544,6 +2621,8 @@ function applyUiState(st) {
   if (st.reference_image_id) state.referenceImageId = st.reference_image_id;
   if (Array.isArray(st.reference_sections))
     state.referenceSections = st.reference_sections;
+  if (Array.isArray(st.disabled_activation_tags))
+    state.disabledActivationTags = st.disabled_activation_tags;
   if (state.referenceImageId) fetchReferencePreview(); // renders the tag row
   // soft inpainting and self attention guidance (enable flags + options)
   // are model configuration settings, not persisted in the ui-state

@@ -80,11 +80,39 @@ def get_settings(name: str, config) -> dict | None:
         return _to_file(_from_file(_read_file(p)))
 
 
+def split_tags(text: str) -> list[str]:
+    """Comma-separated activation text -> its individual tags (surrounding
+    whitespace stripped, empty parts dropped, order kept, duplicates kept).
+
+    The UI shows one toggle button per tag of the selected LoRAs, so a
+    single activation text like ``blue eyes, 8k`` can be switched on and off
+    tag by tag. The UI mirrors this split (app.js ``splitTags``).
+    """
+    return [t.strip() for t in (text or "").split(",") if t.strip()]
+
+
+def activation_tag_universe(
+    loras: list[tuple[str, float]], config
+) -> list[str]:
+    """Every activation-text tag the given (enabled) LoRAs contribute, in
+    LoRA list order, deduped: the tag universe of a request."""
+    out: list[str] = []
+    for name, _weight in loras:
+        s = get_settings(name, config)
+        if s is None:
+            continue
+        for tag in split_tags(s.get("activation text", "")):
+            if tag not in out:
+                out.append(tag)
+    return out
+
+
 def apply_lora_texts(
     prompt: str,
     negative_prompt: str,
     loras: list[tuple[str, float]],
     config,
+    disabled_tags: list[str] | None = None,
 ) -> tuple[str, str]:
     """Apply each enabled LoRA's activation/negative text to the prompt /
     negative prompt (in LoRA list order).
@@ -94,13 +122,22 @@ def apply_lora_texts(
     the text is appended comma-separated; empty texts are a no-op. This is
     processing-only: the saved image metadata records the LoRAs by
     name/weight as before, not the expanded texts.
+
+    ``disabled_tags`` lists activation-text tags the UI switched OFF: those
+    tags are dropped from the activation text before it is applied (the
+    remaining ones keep their order). Only the activation text is split into
+    tags -- a LoRA's negative text is applied as a whole.
     """
+    off = set(disabled_tags or ())
     for name, _weight in loras:
         s = get_settings(name, config)
         if s is None:
             continue
         # get_settings dicts carry the Forge file keys ("activation text", ...)
-        prompt = apply_one(s.get("activation text", ""), prompt)
+        text = s.get("activation text", "")
+        if text and off:
+            text = ", ".join(t for t in split_tags(text) if t not in off)
+        prompt = apply_one(text, prompt)
         negative_prompt = apply_one(s.get("negative text", ""), negative_prompt)
     return prompt, negative_prompt
 

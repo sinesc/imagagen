@@ -102,6 +102,10 @@ class Job:
     # LoRAs the UI showed toggled off: not applied to the request, recorded
     # in the image metadata so an import restores them in the disabled state
     meta_disabled_loras: list[tuple[str, float]] | None = None
+    # the LoRA activation-text tags that were folded into the prompt (the
+    # LoRAs' tags minus the ones the UI switched off); recorded so the PNG
+    # says what the image was actually generated with
+    meta_activation_tags: list[str] | None = None
     # NAME of the model configuration the job runs on: recorded in the image
     # metadata so importing the PNG re-selects that configuration
     meta_config_name: str | None = None
@@ -244,6 +248,7 @@ class GenerationQueue:
         meta_negative: str | None = None,
         meta_styles: list[dict] | None = None,
         meta_disabled_loras: list[tuple[str, float]] | None = None,
+        meta_activation_tags: list[str] | None = None,
         meta_config_name: str | None = None,
     ) -> Job:
         import random
@@ -306,6 +311,7 @@ class GenerationQueue:
                   meta_prompt=meta_prompt, meta_negative=meta_negative,
                   meta_styles=meta_styles,
                   meta_disabled_loras=meta_disabled_loras,
+                  meta_activation_tags=meta_activation_tags,
                   meta_config_name=meta_config_name, resolved=resolved,
                   meta_resolved=meta_resolved)
         job.source_image_id = self.canvas.current_id()
@@ -948,6 +954,10 @@ def _result_to_png(
         # reference used)
         reference_caption=result.reference_caption,
         reference_sections=result.reference_sections,
+        # the LoRA activation-text tags that were applied (the UI tag row;
+        # None = nothing recorded, LoRA-less backends record nothing)
+        activation_tags=(job.meta_activation_tags if job is not None
+                         and backend.supports_loras else None),
     )
     img, pnginfo = metadata.attach_metadata(Image.fromarray(image), params)
     buf = BytesIO()

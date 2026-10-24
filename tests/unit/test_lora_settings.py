@@ -1,10 +1,15 @@
-"""Tests for apply_lora_texts (LoRA activation/negative text in the prompt)."""
+"""Tests for apply_lora_texts (LoRA activation/negative text in the prompt)
+and the activation-text tag split the UI toggles work on."""
 
 import json
 from pathlib import Path
 
 from imagagen.config import Config
-from imagagen.lora_settings import apply_lora_texts
+from imagagen.lora_settings import (
+    activation_tag_universe,
+    apply_lora_texts,
+    split_tags,
+)
 
 
 def make_config(tmp_path: Path) -> Config:
@@ -87,3 +92,66 @@ def test_placeholder_chains_across_loras(tmp_path):
     add_lora(config, "i", **{"activation text": "({prompt})"})
     prompt, _ = apply_lora_texts("a cat", "", [("h", 1.0), ("i", 1.0)], config)
     assert prompt == "([a cat])"
+
+
+def test_split_tags():
+    assert split_tags("blue eyes, 8k ,, photo of {prompt}") == [
+        "blue eyes", "8k", "photo of {prompt}"
+    ]
+    assert split_tags("") == []
+
+
+def test_activation_tag_universe(tmp_path):
+    config = make_config(tmp_path)
+    add_lora(config, "j", **{"activation text": "red hair, green eyes"})
+    add_lora(config, "k", **{"activation text": " green eyes , 8k"})
+    add_lora(config, "l")  # no settings file -> no tags
+    # LoRA list order, deduped across LoRAs (a repeated tag has one toggle)
+    assert activation_tag_universe(
+        [("j", 1.0), ("k", 0.5), ("l", 1.0), ("missing", 1.0)], config
+    ) == ["red hair", "green eyes", "8k"]
+
+
+def test_disabled_tags_drop_only_those_tags(tmp_path):
+    config = make_config(tmp_path)
+    add_lora(
+        config, "m",
+        **{"activation text": "red hair, green eyes, 8k",
+           "negative text": "blurry, low res"},
+    )
+    prompt, negative = apply_lora_texts(
+        "a cat", "", [("m", 1.0)], config, ["green eyes"]
+    )
+    assert prompt == "a cat, red hair, 8k"
+    # the negative text is NOT split into tags: it applies as a whole
+    assert negative == "blurry, low res"
+
+
+def test_disabled_tags_are_per_lora_and_keep_the_order(tmp_path):
+    config = make_config(tmp_path)
+    add_lora(config, "n", **{"activation text": "one, two"})
+    add_lora(config, "o", **{"activation text": "three, four"})
+    prompt, _ = apply_lora_texts(
+        "a cat", "", [("n", 1.0), ("o", 1.0)], config, ["two", "three"]
+    )
+    assert prompt == "a cat, one, four"
+
+
+def test_all_tags_disabled_applies_no_activation_text(tmp_path):
+    config = make_config(tmp_path)
+    add_lora(config, "p", **{"activation text": "x, y",
+                             "negative text": "bad"})
+    prompt, negative = apply_lora_texts(
+        "a cat", "", [("p", 1.0)], config, ["x", "y"]
+    )
+    assert prompt == "a cat"
+    assert negative == "bad"  # the negative text is not affected
+
+
+def test_disabled_tags_unknown_ones_are_inert(tmp_path):
+    config = make_config(tmp_path)
+    add_lora(config, "q", **{"activation text": "only tag"})
+    prompt, _ = apply_lora_texts(
+        "a cat", "", [("q", 1.0)], config, ["a tag of a removed lora"]
+    )
+    assert prompt == "a cat, only tag"

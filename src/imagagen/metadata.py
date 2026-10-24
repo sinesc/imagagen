@@ -113,6 +113,7 @@ def build_parameters(
     turbo: bool | None = None,
     reference_caption: str | None = None,
     reference_sections: list[str] | None = None,
+    activation_tags: list[str] | None = None,
 ) -> str:
     """Serialize the `parameters` text chunk as a JSON document.
 
@@ -152,6 +153,10 @@ def build_parameters(
       applied (key omitted when no reference was used). Importing records
       it as a style-like note only: the reference IMAGE itself cannot
       round-trip through the prompt text.
+    * ``activation_tags``: the LoRA activation-text tags that were folded
+      into the prompt (key omitted when there were none). Tags the UI
+      switched off are absent; like the reference sections this documents
+      the prompt, it is not re-imported.
     """
     doc: dict[str, Any] = {
         "format": _FORMAT,
@@ -217,6 +222,10 @@ def build_parameters(
     if reference_sections:
         # the caption sections that were applied (the UI tag row)
         doc["reference_sections"] = reference_sections
+    if activation_tags:
+        # the LoRA activation-text tags that were applied (the UI tag row
+        # under the negative prompt; switched-off tags are missing here)
+        doc["activation_tags"] = activation_tags
     if sag is not None:
         # written unconditionally, so a dropped image can restore the
         # checkbox in BOTH states

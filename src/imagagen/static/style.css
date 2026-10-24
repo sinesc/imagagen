@@ -328,8 +328,9 @@ button.mini.icon {
 }
 #prompt { height: 92px; }
 #negative { height: 30px; }
-/* caption-section toggle tags (reference image); active = folded into
-   the prompt, same accent as the toolbar's active tools */
+/* caption-section and LoRA activation toggle tags (the row under the
+   negative prompt); active = folded into the prompt. Reference tags use the
+   toolbar's active accent, LoRA activation tags green. */
 #ref-sections { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 /* the ID rule above out-specifies a plain .hidden, so hide explicitly */
 #ref-sections.hidden { display: none; }
@@ -343,6 +344,26 @@ button.mini.icon {
 #ref-sections .ref-tag.active {
   background: #1a5fb4;
   border-color: #1a5fb4;
+}
+/* activation tags can be long sentences: they never grow past 10em, the
+   text is cut with an ellipsis (the button's title shows the whole tag) */
+#ref-sections .lora-tag {
+  max-width: 10em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#ref-sections .lora-tag.active {
+  background: #2e6b34;
+  border-color: #2e6b34;
+}
+#ref-sections .lora-tag.active:hover { background: #38813f; }
+/* visual break between the reference's caption tags and the LoRA tags */
+#ref-sections .tag-sep {
+  width: 1px;
+  align-self: stretch;
+  background: #444;
+  margin: 0 0.2rem;
 }
 /* PNG drag&drop target on the canvas: sets the image only (no metadata) */
 #canvas-holder.drop {

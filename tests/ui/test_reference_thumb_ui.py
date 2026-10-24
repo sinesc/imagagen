@@ -122,7 +122,7 @@ def test_section_reference_fallback_button(page, server):
     # the whole description (driven directly, like the spinner test)
     page.evaluate("state.referenceImageId = 'x:1';"
                   "state.referenceCaption = 'one flat paragraph';"
-                  "renderRefSections();")
+                  "renderPromptTags();")
     assert page.evaluate(
         "document.querySelectorAll('#ref-sections .ref-tag').length") == 1
     assert page.evaluate(
@@ -141,7 +141,7 @@ def test_section_reference_fallback_button(page, server):
     assert page.evaluate("state.referenceSections") is None
 
     # an empty caption renders no buttons at all
-    page.evaluate("state.referenceCaption = ''; renderRefSections();")
+    page.evaluate("state.referenceCaption = ''; renderPromptTags();")
     assert page.evaluate("getComputedStyle("
                          "document.getElementById('ref-sections')).display") == "none"
 
@@ -164,7 +164,7 @@ def test_section_processing_spinner(page, server):
     # to catch through the real check flow): a checked reference with no
     # caption yet renders the animated placeholder
     page.evaluate("state.referenceImageId = 'x:1';"
-                  "state.referenceCaption = null; renderRefSections();")
+                  "state.referenceCaption = null; renderPromptTags();")
     txt = page.evaluate("document.querySelector('#ref-sections .ref-processing')"
                         ".textContent")
     assert txt.startswith("Processing")
@@ -179,14 +179,14 @@ def test_section_processing_spinner(page, server):
     # resolving the caption replaces the placeholder with the tags and
     # stops the timer
     page.evaluate("state.referenceCaption = 'intro\\n\\n**Subject:** b';"
-                  "renderRefSections();")
+                  "renderPromptTags();")
     assert page.evaluate(
         "document.querySelectorAll('#ref-sections .ref-tag').length") == 2
     assert page.evaluate(
         "document.querySelectorAll('#ref-sections .ref-processing').length") == 0
 
     # clearing the reference hides the row
-    page.evaluate("state.referenceImageId = null; renderRefSections();")
+    page.evaluate("state.referenceImageId = null; renderPromptTags();")
     assert page.evaluate("getComputedStyle("
                          "document.getElementById('ref-sections')).display") == "none"
 
