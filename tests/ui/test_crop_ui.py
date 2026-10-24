@@ -239,6 +239,36 @@ def test_copy_shift_locks_aspect_to_image(page, server):
     assert _canvas_size(base) == (200, 150)  # copy never crops
 
 
+def test_crop_shift_lock_freezes_at_image_edge(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150 -> aspect 4:3
+    # zoom out so the drag can run past the image edge (like the bounds test)
+    page.evaluate("viewZoomAt(0.5, holderBox().w / 2, holderBox().h / 2)")
+    page.evaluate("viewZoomAt(0.5, holderBox().w / 2, holderBox().h / 2)")
+    page.click("#tool-crop")
+
+    page.keyboard.down("Shift")
+    page.mouse.move(*screen_pos(page, 50, 30))
+    page.mouse.down()
+    # first position whose locked corner crosses BOTH image edges: the rect
+    # is scaled down uniformly -> corner pinned at (200, 142.5), 150x112.5
+    page.mouse.move(*screen_pos(page, 230, 160), steps=5)
+    r1 = page.evaluate("cropRect()")
+    assert _approx_rect(r1, 150, 112.5), f"corner not pinned to the edge: {r1}"
+
+    # keep pushing right/down: BOTH dimensions freeze (the old behaviour let
+    # the unclamped one keep growing and skewed the ratio)
+    page.mouse.move(*screen_pos(page, 260, 175), steps=5)
+    r2 = page.evaluate("cropRect()")
+    assert _approx_rect(r2, 150, 112.5), f"grew past the edge: {r2} -> {r1}"
+
+    page.keyboard.press("Escape")
+    page.mouse.up()
+    page.keyboard.up("Shift")
+    assert _canvas_size(base) == (200, 150)
+
+
 def test_crop_single_click_is_noop(page, server):
     base, _ = server
     _open(page, base)

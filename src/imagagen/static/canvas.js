@@ -2080,15 +2080,31 @@ function syncSelActions() {
 function applyCropAspect() {
   if (!view.crop || !shiftDown) return;
   const c = view.crop;
-  const dx = c.ex - c.sx, dy = c.ey - c.sy;
+  let dx = c.ex - c.sx, dy = c.ey - c.sy;
   const aspect = view.w / view.h;
   if (Math.abs(dx) >= Math.abs(dy) * aspect) {
     const h = Math.abs(dx) / aspect;
-    c.ey = c.sy + (dy < 0 ? -h : h);
+    dy = (dy < 0 ? -1 : 1) * h;
   } else {
     const w = Math.abs(dy) * aspect;
-    c.ex = c.sx + (dx < 0 ? -w : w);
+    dx = (dx < 0 ? -1 : 1) * w;
   }
+  // Scale the locked delta UNIFORMLY (aspect preserved) so the moving
+  // corner cannot cross the image bounds: at an edge the corner sticks to
+  // it and pushing further freezes BOTH dimensions instead of letting the
+  // clamped one grow past the image and skew the ratio (cropRect's clamp
+  // would otherwise hit only the crossing axis). A drag that STARTED
+  // outside the image (cropRect then intersects it) is left untouched.
+  const dimT = (s, d, hi) => {
+    if (d === 0) return 1;
+    if (d > 0 && s + d > hi) return (hi - s) / d;
+    if (d < 0 && s + d < 0) return -s / d;
+    return 1;
+  };
+  let t = Math.min(dimT(c.sx, dx, view.w), dimT(c.sy, dy, view.h));
+  if (!(t > 0) || t > 1) t = 1; // start outside the crossed edge, or no clamping needed
+  c.ex = c.sx + dx * t;
+  c.ey = c.sy + dy * t;
 }
 
 // The crop selection's actual region: the drag's bounding rect clamped to
