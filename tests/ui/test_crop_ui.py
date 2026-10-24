@@ -161,6 +161,84 @@ def test_crop_esc_aborts_selection(page, server):
     assert canvas_px(base, 100, 75) == BG
 
 
+def _approx_rect(r, w, h):
+    """cropRect() live values carry sub-pixel jitter from the screen->canvas
+    coordinate round-trip, so compare with a small tolerance."""
+    return r is not None and abs(r["w"] - w) < 0.5 and abs(r["h"] - h) < 0.5
+
+
+def test_crop_shift_locks_aspect_to_image(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150 -> image aspect 4:3
+    page.click("#tool-crop")
+
+    # SHIFT held for the whole drag: the rect locks to the image aspect.
+    # Raw pointer rect would be 100x70; the locked rect is 100x75 (4:3).
+    page.keyboard.down("Shift")
+    page.mouse.move(*screen_pos(page, 50, 30))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 150, 100), steps=5)
+    r = page.evaluate("cropRect()")
+    assert _approx_rect(r, 100, 75), f"not aspect-locked: {r}"
+    page.mouse.up()
+
+    assert wait_until(lambda: _canvas_size(base) == (100, 75))
+    page.keyboard.up("Shift")
+
+
+def test_crop_shift_lock_applies_mid_drag(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150 -> aspect 4:3
+    page.click("#tool-crop")
+
+    # free-form drag first, press SHIFT mid-drag: the rect re-locks; release
+    # SHIFT and the rect goes back to free-form resizing
+    page.mouse.move(*screen_pos(page, 50, 30))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 150, 100), steps=5)
+    r = page.evaluate("cropRect()")
+    assert _approx_rect(r, 100, 70), f"free-form drag: {r}"
+
+    page.keyboard.down("Shift")
+    r = page.evaluate("cropRect()")
+    assert _approx_rect(r, 100, 75), f"mid-drag lock: {r}"
+
+    # vertical-dominant drag while locked: the Y travel drives the width
+    page.mouse.move(*screen_pos(page, 150, 130), steps=4)
+    r = page.evaluate("cropRect()")
+    assert _approx_rect(r, 400 / 3, 100), f"vertical-dominant lock: {r}"
+
+    page.keyboard.up("Shift")
+    page.mouse.move(*screen_pos(page, 150, 100), steps=4)
+    r = page.evaluate("cropRect()")
+    assert _approx_rect(r, 100, 70), f"unlocked after SHIFT up: {r}"
+
+    page.keyboard.press("Escape")
+    page.mouse.up()
+    assert _canvas_size(base) == (200, 150)
+
+
+def test_copy_shift_locks_aspect_to_image(page, server):
+    base, _ = server
+    _open(page, base)
+    _show(page, base)  # 200x150 -> aspect 4:3
+    page.keyboard.press("y")  # copy tool
+    assert page.evaluate("document.getElementById('tool-copy').classList.contains('active')")
+
+    page.keyboard.down("Shift")
+    page.mouse.move(*screen_pos(page, 50, 30))
+    page.mouse.down()
+    page.mouse.move(*screen_pos(page, 150, 100), steps=5)
+    page.mouse.up()
+    page.keyboard.up("Shift")
+
+    clip = page.evaluate("view.clip ? [view.clip.w, view.clip.h] : null")
+    assert clip == [100, 75], f"copy clip not aspect-locked: {clip}"
+    assert _canvas_size(base) == (200, 150)  # copy never crops
+
+
 def test_crop_single_click_is_noop(page, server):
     base, _ = server
     _open(page, base)

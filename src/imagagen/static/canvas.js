@@ -824,11 +824,19 @@ let shiftDown = false;
 // via ctrl+wheel remain visible)
 let ctrlDown = false;
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Shift" && !shiftDown) { shiftDown = true; viewRedraw(); }
+  if (e.key === "Shift" && !shiftDown) {
+    shiftDown = true;
+    if (view.crop) applyCropAspect(); // re-lock an in-flight crop/copy rect
+    viewRedraw();
+  }
   if (e.key === "Control" && !ctrlDown) { ctrlDown = true; viewRedraw(); }
 });
 document.addEventListener("keyup", (e) => {
-  if (e.key === "Shift" && shiftDown) { shiftDown = false; viewRedraw(); }
+  if (e.key === "Shift" && shiftDown) {
+    shiftDown = false;
+    if (view.crop) applyCropAspect(); // no-op while unlocked, keeps the rect
+    viewRedraw();
+  }
   if (e.key === "Control" && ctrlDown) { ctrlDown = false; viewRedraw(); }
 });
 
@@ -2063,6 +2071,26 @@ function syncSelActions() {
 
 // ---------------- crop tool ----------------
 
+// SHIFT during a crop / copy drag: lock the rectangle to the image's aspect
+// ratio (view.w : view.h). The axis the pointer travelled further along
+// drives the other one, so the drag direction (which corner the rect opens
+// towards) is preserved. Applied on every pointermove while SHIFT is held,
+// and on SHIFT keydown / keyup so the preview updates live mid-drag; a
+// mid-drag SHIFT release simply returns the rect to free-form resizing.
+function applyCropAspect() {
+  if (!view.crop || !shiftDown) return;
+  const c = view.crop;
+  const dx = c.ex - c.sx, dy = c.ey - c.sy;
+  const aspect = view.w / view.h;
+  if (Math.abs(dx) >= Math.abs(dy) * aspect) {
+    const h = Math.abs(dx) / aspect;
+    c.ey = c.sy + (dy < 0 ? -h : h);
+  } else {
+    const w = Math.abs(dy) * aspect;
+    c.ex = c.sx + (dx < 0 ? -w : w);
+  }
+}
+
 // The crop selection's actual region: the drag's bounding rect clamped to
 // the image bounds, so a selection that starts or ends outside the image
 // still crops the intersection. Null when the intersection is empty.
@@ -2294,6 +2322,7 @@ function setupCanvasInput() {
     if (view.crop) {
       view.crop.ex = p[0];
       view.crop.ey = p[1];
+      applyCropAspect();
       viewRedraw();
       return;
     }
