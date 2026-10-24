@@ -109,6 +109,32 @@ def lora_paths(config) -> dict[str, Path]:
     return {name: path for name, _, path in _discover_loras(config)}
 
 
+def filter_loras_for_family(
+    loras: list[tuple[str, float]], family: str, config
+) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+    """Split a ``(name, weight)`` LoRA list into LoRAs that live under
+    ``loras/<family>/`` and LoRAs discovered under a *different* family
+    dir (the first path component under ``loras/`` IS the family).
+
+    Foreign-family entries are dropped rather than passed to a backend
+    that cannot load them (generation continues with the matching ones);
+    names that are not discovered at all stay in the kept list so the
+    backend still reports them as "not found".
+    """
+    paths = lora_paths(config)
+    kept: list[tuple[str, float]] = []
+    foreign: list[tuple[str, float]] = []
+    for name, weight in loras:
+        p = paths.get(name)
+        if p is not None:
+            rel = p.relative_to(config.loras_dir)
+            if len(rel.parts) > 1 and rel.parts[0] != family:
+                foreign.append((name, weight))
+                continue
+        kept.append((name, weight))
+    return kept, foreign
+
+
 def resolve_lora_names(
     names: list[str], config, hashes: dict[str, str] | None = None
 ) -> list[str]:

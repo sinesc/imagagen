@@ -38,7 +38,12 @@ from .model_configs import (
     mode_section,
     resolve_settings,
 )
-from .models import ModelRegistry, list_loras, resolve_lora_names
+from .models import (
+    ModelRegistry,
+    filter_loras_for_family,
+    list_loras,
+    resolve_lora_names,
+)
 from .paths import next_output_path
 from .presets import Preset, PresetError, PresetSaveRequest, PresetStore
 from .queue import GenerationQueue
@@ -709,6 +714,26 @@ def create_app(
         except ConfigError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         model_id = entry.model_id
+        # A LoRA discovered under ANOTHER family's dir does not match the
+        # selected checkpoint: ignore it (logged, and recorded as disabled
+        # so the PNG metadata round-trips) instead of failing the job. The
+        # UI force-disables such rows on model switch, but a stale UI (or
+        # a scripted JSON caller) may still send them.
+        info = app.state.registry.get(model_id)
+        family = info.family if info is not None else "sdxl"
+        loras, foreign_loras = filter_loras_for_family(loras, family, config)
+        disabled_loras = list(body.disabled_loras)
+        if foreign_loras:
+            log.warning(
+                "generate: ignoring %d LoRA(s) from another family "
+                "(model family is %s): %s",
+                len(foreign_loras), family,
+                ", ".join(n for n, _ in foreign_loras),
+            )
+            known = {n for n, _ in disabled_loras}
+            disabled_loras += [
+                (n, w) for n, w in foreign_loras if n not in known
+            ]
         # Styles are applied right before the prompt reaches the model
         # (in list order; {prompt} replaced with the prompt so far).
         # Each enabled LoRA's activation/negative text (from its settings
@@ -842,7 +867,7 @@ def create_app(
                            meta_negative=body.negative_prompt,
                            meta_styles=meta_styles,
                            # recorded in the metadata but NOT applied
-                           meta_disabled_loras=body.disabled_loras,
+                           meta_disabled_loras=disabled_loras,
                            # the configuration NAME rides to the PNG metadata
                            # so an import re-selects it
                            meta_config_name=entry.name)

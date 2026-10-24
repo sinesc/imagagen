@@ -432,6 +432,33 @@ def test_loras_family_filter(client, tmp_path):
     assert client.get("/api/loras?family=nope").json()["loras"] == []
 
 
+def test_generate_ignores_foreign_family_loras(client, tmp_path):
+    """A LoRA discovered under another family's dir does not match the
+    selected model: it is IGNORED (kept out of the applied list, recorded
+    as disabled in the metadata) instead of failing the job. Unknown names
+    still travel to the backend (which reports "not found" there)."""
+    from imagagen import metadata
+    for family, name in (("sdxl", "FooXL"), ("flux", "Bar1.0")):
+        d = tmp_path / "loras" / family
+        d.mkdir(parents=True, exist_ok=True)
+        (d / (name + ".safetensors")).touch()
+    with client.websocket_connect("/api/ws") as ws:
+        r = client.post("/api/generate", json={
+            "prompt": "family filter test", "width": 64, "height": 64,
+            "steps": 2, "seed": 1,
+            "loras": [("FooXL", 0.8), ("Bar1.0", 1.0), ("ghost", 0.5)],
+        })
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+        _wait_for(client, ws, "done")
+        m = metadata.read_metadata(
+            client.get(f"/api/thumb/{job_id}/0.png").content)
+        # the mock model is an SDXL stand-in: the flux LoRA is dropped, the
+        # sdxl one AND the (undiscoverable) unknown name are kept
+        assert m["loras"] == ["FooXL@0.8", "ghost@0.5"]
+        assert m["disabled_loras"] == ["Bar1.0@1"]
+
+
 def test_generate_records_disabled_loras(client):
     """Disabled LoRAs are recorded in the image metadata (for import) but
     are NOT applied — the backend only receives the enabled ones."""

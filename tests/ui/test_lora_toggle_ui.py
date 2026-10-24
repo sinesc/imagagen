@@ -32,6 +32,41 @@ def _toggle(page, index=-1):
     page.locator("#loras .lora-row").nth(index).locator("button.lora-toggle").click()
 
 
+def _row_full(page, index=-1):
+    """[enabled, comboDisabled, toggleDisabled, toggleText, familyOff,
+    name] of a sidebar LoRA row (familyOff = the auto-disable marker set
+    when the row's LoRA left the selected model's family)."""
+    return page.evaluate(
+        """(i) => {
+            const rows = document.querySelectorAll('#loras .lora-row');
+            const r = i < 0 ? rows[rows.length + i] : rows[i];
+            const tog = r.querySelector('button.lora-toggle');
+            return [
+                !r.classList.contains('off'),
+                r.querySelector('.combo-input').disabled,
+                tog.disabled,
+                tog.textContent,
+                r.dataset.familyOff || null,
+                r.querySelector('.combo-input').value,
+            ];
+        }""", index)
+
+
+def _switch_family(page, family):
+    """Simulate a model switch to another family: inject a matching entry,
+    select it and let refreshLoras() do the family work (the mock registry
+    only has one model, so no real second-family checkpoint exists)."""
+    page.evaluate(
+        """async (family) => {
+            state.entries.push({
+                id: 'fam-' + family, model_id: family + '/mock', name: 'fam',
+                family, is_default: true,
+            });
+            document.getElementById('model').value = 'fam-' + family;
+            await refreshLoras();
+        }""", family)
+
+
 def _row_state(page, index=-1):
     """[enabled, comboDisabled] of a sidebar LoRA row."""
     return page.evaluate(
@@ -69,6 +104,44 @@ def test_toggle_button_state_and_position(page, server):
     # on again
     _toggle(page)
     assert _row_state(page) == [True, False]
+
+
+def test_model_switch_disables_foreign_loras(page, server):
+    """Switching to a model of another family keeps the selected LoRAs but
+    force-disables them: the toggle becomes a locked padlock, and the rows
+    re-enable (with the ◐ toggle again) when the family comes back."""
+    base, root = server
+    _open(page, base, root)
+    # a LoRA of the current (sdxl) family + one that only exists under flux
+    (root / "loras" / "flux").mkdir(parents=True, exist_ok=True)
+    (root / "loras" / "flux" / "gamma.safetensors").write_bytes(b"")
+    _add_lora(page, "alpha", 0.8)
+    wait_until(lambda: page.locator("#loras .lora-row").count() == 1)
+    assert _row_full(page, 0) == [True, False, False, "\u25d0", None, "alpha"]
+
+    _switch_family(page, "flux")
+    # kept in the list but off; the toggle is disabled and shows a padlock
+    assert wait_until(lambda: _row_full(page, 0) ==
+                      [False, True, True, "\U0001f512", "1", "alpha"])
+    assert page.evaluate("getLoras()") == [["alpha", 0.8, False]]
+    # a fresh LoRA of the new family is enabled and unlocked
+    _add_lora(page, "gamma", 0.6)
+    wait_until(lambda: page.locator("#loras .lora-row").count() == 2)
+    assert _row_full(page, 1) == [True, False, False, "\u25d0", None, "gamma"]
+
+    # back to the sdxl mock model: the auto-disabled row re-enables, the
+    # flux row is now the foreign one (padlock, but NOT forgotten)
+    page.evaluate(
+        """async () => {
+            document.getElementById('model').value = state.entries[0].id;
+            await refreshLoras();
+        }""")
+    def settled():
+        return (_row_full(page, 0) == [True, False, False, "\u25d0", None, "alpha"]
+                and _row_full(page, 1) == [False, True, True, "\U0001f512", "1", "gamma"])
+    assert wait_until(settled), (_row_full(page, 0), _row_full(page, 1))
+    assert page.evaluate("getLoras()") == [
+        ["alpha", 0.8, True], ["gamma", 0.6, False]]
 
 
 def test_generate_sends_enabled_and_disabled_loras(page, server):

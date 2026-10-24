@@ -164,14 +164,43 @@ function loraRow(name, weight, onChange, enabled = true, withToggle = true) {
   const rm = el("button", { type: "button", class: "mini icon lora-rm", title: "remove" }, "−");
   const row = el("div", { class: "lora-row" }, root, wt, tog, rm);
   const setInput = root.querySelector(".combo-input");
+  // Family lock: a main-form row whose LoRA is not in the selected model
+  // family's list (state.loras) is force-disabled and its toggle locked
+  // (padlock, disabled) -- an SDXL LoRA cannot be enabled while a Flux
+  // model is selected and vice versa. The forced disable is remembered
+  // (dataset.familyOff) so switching back to a matching model re-enables
+  // the row; rows the USER disabled stay disabled (but unlock again).
+  const applyFamilyLock = () => {
+    if (!tog) return;
+    const foreign = !!root.value && !state.loras.includes(root.value);
+    if (foreign) {
+      if (!row.classList.contains("off")) {
+        row.dataset.familyOff = "1";
+        setEnabled(false);
+      }
+      tog.disabled = true;
+      tog.textContent = "\ud83d\udd12";
+      tog.title =
+        "this LoRA is not available for the selected model " +
+        "(kept in the list, not applied; switch back to its model to enable it)";
+    } else {
+      tog.disabled = false;
+      tog.textContent = "\u25d0";
+      if (row.dataset.familyOff) {
+        delete row.dataset.familyOff;
+        setEnabled(true);
+      }
+      tog.title = row.classList.contains("off")
+        ? "enable this LoRA"
+        : "disable this LoRA (kept in the list, not applied)";
+    }
+  };
+  row.applyFamilyLock = applyFamilyLock;
   const setEnabled = (on) => {
     row.classList.toggle("off", !on);
     // disabled UI state for the dropdown: dimmed (CSS) and not openable
     setInput.disabled = !on;
-    if (tog)
-      tog.title = on
-        ? "disable this LoRA (kept in the list, not applied)"
-        : "enable this LoRA";
+    applyFamilyLock(); // keeps the toggle label/state/title consistent
   };
   if (tog)
     tog.onclick = () => {
@@ -185,6 +214,7 @@ function loraRow(name, weight, onChange, enabled = true, withToggle = true) {
     const s = state.loraSettings[root.value];
     if (s && typeof s["preferred weight"] === "number")
       wt.value = s["preferred weight"];
+    applyFamilyLock(); // a name from another family locks the row
     onChange && onChange();
   };
   wt.oninput = () => onChange && onChange();
@@ -1091,9 +1121,10 @@ function applyFamilyControls() {
     : "-1 = use the model configuration's CFG";
 }
 
-// Refetch the LoRA list for the selected model's family and drop any
-// main-form rows whose LoRA is no longer in that family's list (e.g. an
-// SDXL LoRA selected before switching to a Flux model). Mirrors
+// Refetch the LoRA list for the selected model's family and force-disable
+// (padlock) any main-form row whose LoRA is not in that family's list (e.g.
+// an SDXL LoRA selected before switching to a Flux model) instead of
+// dropping it: the row comes back when the user switches back. Mirrors
 // refreshSamplers().
 function modelOptions(models) {
   // one option per configuration; default entries' names are model paths and
@@ -1121,15 +1152,12 @@ async function refreshLoras() {
   state.loras = r.loras;
   if (r.settings) state.loraSettings = r.settings;
   const list = $("loras");
-  [...list.querySelectorAll(".lora-row")].forEach((row) => {
-    const name = row.querySelector(".lora-name").value;
-    // rows for LoRAs the new family does not offer are dropped -- but only
-    // the enabled ones: a DISABLED row is never applied, and disabled
-    // selections (e.g. the "Disabled LoRAs" of an imported PNG, whose file
-    // may not exist here) must survive so the metadata round-trips
-    if (name && !r.loras.includes(name) && !row.classList.contains("off"))
-      row.remove();
-  });
+  // rows for LoRAs the new family does not offer are KEPT but forced off
+  // (locked toggle, see applyFamilyLock): never applied, but they travel as
+  // disabled_loras so the PNG metadata and ui-state round-trip (e.g. the
+  // "Disabled LoRAs" of an imported PNG, whose file may not exist here)
+  [...list.querySelectorAll(".lora-row")].forEach((row) =>
+    row.applyFamilyLock && row.applyFamilyLock());
 }
 
 async function refreshModels(keepSelection = true) {

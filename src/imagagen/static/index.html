@@ -36,7 +36,12 @@
         <label>Scheduler <select id="scheduler"><option value="">Model default</option></select></label>
       </div>
       <div class="row">
-        <label title="LoRAs (loras/<model-type>/) are used in addition to the model configuration's LoRAs, which are always prepended">LoRAs
+        <!-- for="" disassociates the caption: an implicit label points at the
+             FIRST labelable descendant (a row's combo input); when that row is
+             toggled off its input is disabled, which marks the whole label
+             :disabled (Chromium) and blocks clicks on the subtree (Playwright)
+             -->
+        <label for="" title="LoRAs (loras/<model-type>/) are used in addition to the model configuration's LoRAs, which are always prepended">LoRAs
           <span class="loras">
             <span id="loras" class="lora-list"></span>
             <span class="mini-btns">
@@ -47,7 +52,7 @@
         </label>
       </div>
       <div class="row">
-        <label title="Styles (styles.csv), applied to the prompt in list order before generation: a style's {prompt} placeholder is replaced by the prompt so far, otherwise the style text is appended">Styles
+        <label for="" title="Styles (styles.csv), applied to the prompt in list order before generation: a style's {prompt} placeholder is replaced by the prompt so far, otherwise the style text is appended">Styles
           <span class="styles">
             <span id="styles" class="style-list"></span>
             <span class="mini-btns">
