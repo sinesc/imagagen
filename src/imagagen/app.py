@@ -200,6 +200,7 @@ class LoraSettingsBody(BaseModel):
     description: str = ""
     preferred_weight: float = Field(default=0.0, ge=-10, le=10)
     activation_text: str = ""
+    optional_activation_text: str = ""
     negative_text: str = ""
     notes: str = ""
 
@@ -228,9 +229,10 @@ class GenerateBody(BaseModel):
     # image metadata (name@weight, in UI row order) so an import restores
     # them in the disabled state
     disabled_loras: list[tuple[str, float]] = Field(default_factory=list)
-    # activation-text tags the UI switched OFF (comma-separated tags of the
-    # selected LoRAs' "activation text", see lora_settings.split_tags); they
-    # are dropped from the prompt, everything else applies
+    # optional-activation-text tags the UI switched OFF (comma-separated
+    # tags of the selected LoRAs' "optional activation text", see
+    # lora_settings.split_tags); they are dropped from the prompt, everything
+    # else (including the plain "activation text") applies
     disabled_activation_tags: list[str] = Field(default_factory=list)
     # ordered list of style names (styles.csv), applied to the prompt /
     # negative prompt before generation
@@ -752,7 +754,9 @@ def create_app(
         # (in list order; {prompt} replaced with the prompt so far).
         # Each enabled LoRA's activation/negative text (from its settings
         # file) is applied the same way (in LoRA list order, after the
-        # styles); empty texts are a no-op.
+        # styles); empty texts are a no-op. The plain "activation text"
+        # always applies in full, the comma-separated "optional activation
+        # text" only minus the tags the UI switched off.
         # The raw (unapplied) prompt and the style *contents* are kept for
         # the image metadata: the PNG must round-trip as "same prompt +
         # same style list", not as the pre-applied text. The LoRAs are
@@ -772,7 +776,7 @@ def create_app(
             prompt, negative_prompt, loras, config,
             body.disabled_activation_tags,
         )
-        # the tags that DID make it into the prompt (the universe of the
+        # the tags that DID make it into the prompt (the optional tags of the
         # applied LoRAs minus the ones the UI switched off): recorded in the
         # PNG so it says what the image was generated with
         applied_tags = [

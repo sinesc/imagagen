@@ -279,16 +279,20 @@ def test_lora_settings(client, tmp_path):
     assert got["preferred weight"] == 0.7
     assert got["activation text"] == "foo"
     assert got["negative text"] == ""
+    # the imagagen-only field defaults when the file has no such key
+    assert got["optional activation text"] == ""
 
     # saving writes the .json next to the .safetensors and preserves the
     # unknown extra fields
     r = client.post("/api/loras/settings", json={
         "name": "dmd2", "description": "d", "preferred_weight": 0.5,
-        "activation_text": "a", "negative_text": "n", "notes": "m"})
+        "activation_text": "a", "optional_activation_text": "x, y",
+        "negative_text": "n", "notes": "m"})
     assert r.status_code == 200, r.text
     data = json.loads(j.read_text())
     assert data == {"description": "d", "sd version": "SDXL",
                     "activation text": "a", "preferred weight": 0.5,
+                    "optional activation text": "x, y",
                     "negative text": "n", "notes": "m"}
     assert client.get("/api/loras").json()["settings"]["dmd2"]["description"] == "d"
 

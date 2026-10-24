@@ -1,11 +1,12 @@
 """Browser tests for the LoRA activation-tag toggles (the green buttons in
 the tag row under the negative prompt).
 
-A LoRA's comma-separated "activation text" (its settings .json, edited in the
-"Edit LoRA" dialog) is split into tags: one toggle per tag of the selected
-LoRAs, placed after the reference image's caption tags and split off by a
-separator. All tags are on by default; only the enabled ones reach the
-prompt. Uses the mock-backend server in a temp root.
+A LoRA's comma-separated "optional activation text" (its settings .json,
+edited in the "Edit LoRA" dialog) is split into tags: one toggle per tag of
+the selected LoRAs, placed after the reference image's caption tags and split
+off by a separator. All tags are on by default; only the enabled ones reach
+the prompt, while a LoRA's plain "activation text" always does. Uses the
+mock-backend server in a temp root.
 """
 
 import json
@@ -13,12 +14,14 @@ import json
 from conftest import combo_pick, set_canvas, wait_until
 
 
-def _seed_lora(root, name, activation, negative=""):
+def _seed_lora(root, name, tags, activation="", negative=""):
     d = root / "loras" / "sdxl"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{name}.safetensors").write_bytes(b"")
     (d / f"{name}.json").write_text(json.dumps({
-        "activation text": activation, "negative text": negative,
+        "activation text": activation,
+        "optional activation text": tags,
+        "negative text": negative,
     }))
 
 
@@ -45,7 +48,9 @@ def _tags(page):
 
 def test_activation_tag_buttons_toggle_on_off(page, server):
     base, root = server
-    _seed_lora(root, "alpha", "blue eyes, freckles")
+    # "sig style" is plain activation text: it always applies and never
+    # becomes a toggle button
+    _seed_lora(root, "alpha", "blue eyes, freckles", activation="sig style")
     _seed_lora(root, "beta", "freckles, 8k")
     _open(page, base, root)
 
@@ -55,10 +60,11 @@ def test_activation_tag_buttons_toggle_on_off(page, server):
                          "document.getElementById('ref-sections')).display") == "none"
 
     _add_lora(page, "alpha")
-    # every tag of the selected LoRA shows up, enabled by default
+    # every optional tag of the selected LoRA shows up, enabled by default
     assert wait_until(lambda: _tags(page) == [["blue eyes", True],
                                               ["freckles", True]])
     assert page.evaluate("state.disabledActivationTags") == []
+    assert "sig style" not in page.evaluate("getActivationTags()")
 
     # toggle "freckles" off: the button loses .active, the state records it
     page.click("#ref-sections .lora-tag:has-text('freckles')")

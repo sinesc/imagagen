@@ -36,8 +36,8 @@ const state = {
   // see renderPromptTags for the tag row under the negative prompt)
   referenceSections: null,
   // activation-text tags the tag row switched OFF (the comma-separated
-  // "activation text" of the selected LoRAs, split into tags; everything not
-  // listed here is ON, so [] = all tags apply)
+  // "optional activation text" of the selected LoRAs, split into tags;
+  // everything not listed here is ON, so [] = all tags apply)
   disabledActivationTags: [],
 };
 
@@ -447,11 +447,16 @@ function openLoraDialog(name, onClose = null) {
   wtIn.value = s["preferred weight"] ?? 0.8;
   const actIn = el("textarea", {
     class: "style-prompt", rows: "3",
+    placeholder: "Will be appended to prompt, or use {prompt} to place prompt in text.",
+  });
+  actIn.value = s["activation text"] || "";
+  const optIn = el("textarea", {
+    class: "style-prompt", rows: "3",
     placeholder: "Comma separated: every tag gets its own on/off button under "
       + "the negative prompt. Will be appended to prompt, or use {prompt} to "
       + "place prompt in text.",
   });
-  actIn.value = s["activation text"] || "";
+  optIn.value = s["optional activation text"] || "";
   const negIn = el("textarea", {
     class: "style-prompt", rows: "3",
     placeholder: "Will be appended to negative prompt, or use {prompt} to place negative prompt in text.",
@@ -463,8 +468,9 @@ function openLoraDialog(name, onClose = null) {
     el("label", {}, "Name", nameIn),
     el("label", {}, "Description", descIn),
     el("label", {}, "Preferred weight", wtIn),
+    el("label", {}, "Activation text", actIn),
     el("label", { title: "comma-separated tags: each tag gets an on/off button in the row under the negative prompt" },
-       "Optional LoRA activation text", actIn),
+       "Optional LoRA activation text", optIn),
     el("label", {}, "Negative text", negIn),
     el("label", {}, "Notes", notesIn));
   openDialog("Edit LoRA", box, async () => {
@@ -473,14 +479,15 @@ function openLoraDialog(name, onClose = null) {
       description: descIn.value,
       preferred_weight: parseFloat(wtIn.value) || 0,
       activation_text: actIn.value,
+      optional_activation_text: optIn.value,
       negative_text: negIn.value,
       notes: notesIn.value,
     };
     try {
       const r = await api("/api/loras/settings", body);
       state.loraSettings[name] = r.settings;
-      // the activation text is what the tag row shows: a new text means new
-      // tags (and a different prompt, hence the token counter)
+      // the optional activation text is what the tag row shows: a new text
+      // means new tags (and a different prompt, hence the token counter)
       renderPromptTags();
       schedulePromptTokens();
       scheduleSaveUiState();
@@ -743,12 +750,12 @@ function parseCaptionSections(caption) {
 
 // The tag row under the negative prompt: one toggle per section of the
 // checked reference's caption preview, then (behind a separator) one per
-// activation-text tag of the selected LoRAs. Caption sections are enabled by
-// default (state.referenceSections null = all), activation tags likewise
-// (state.disabledActivationTags = the switched-off ones). The row is hidden
-// when neither group has anything to offer. While the caption preview is
-// still pending, an animated "Processing..." placeholder spins (the dots
-// cycle every 500 ms).
+// "optional activation text" tag of the selected LoRAs. Caption sections are
+// enabled by default (state.referenceSections null = all), activation tags
+// likewise (state.disabledActivationTags = the switched-off ones). The row
+// is hidden when neither group has anything to offer. While the caption
+// preview is still pending, an animated "Processing..." placeholder spins
+// (the dots cycle every 500 ms).
 let refDotsTimer = null;
 function renderPromptTags() {
   const root = $("ref-sections");
@@ -803,8 +810,8 @@ function renderPromptTags() {
       root.appendChild(el("button", {
         type: "button",
         class: `lora-tag mini${on(t) ? " active" : ""}`,
-        title: `include the "${t}" activation tag of the selected LoRAs in `
-          + "the prompt",
+        title: `include the "${t}" optional activation tag of the selected `
+          + "LoRAs in the prompt",
         onclick: () => {
           const off = new Set(state.disabledActivationTags);
           if (off.has(t)) off.delete(t);
@@ -827,21 +834,23 @@ function renderPromptTags() {
 }
 
 // Mirror of imagagen.lora_settings.split_tags (keep in sync): a LoRA's
-// comma-separated "activation text" -> its individual tags.
+// comma-separated "optional activation text" -> its individual tags.
 function splitTags(text) {
   return (text || "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
-// The tag universe of the current form: every activation-text tag of the
-// ENABLED sidebar LoRA rows, in row order, deduped. A row toggled off (or
-// family-locked) contributes nothing, exactly like its activation text is
-// not applied. (The selected model CONFIGURATION's LoRAs are not part of
-// the row: they are not shown as rows, so their tags always apply.)
+// The tag universe of the current form: every "optional activation text"
+// tag of the ENABLED sidebar LoRA rows, in row order, deduped. A row
+// toggled off (or family-locked) contributes nothing, exactly like its tags
+// are not applied. A LoRA's plain "activation text" is NOT part of the row:
+// it always goes into the prompt. (The selected model CONFIGURATION's LoRAs
+// are not shown as rows either, so their tags always apply.)
 function getActivationTags() {
   const out = [];
   for (const [name, , enabled] of getLoras()) {
     if (!enabled) continue;
-    for (const t of splitTags(state.loraSettings[name]?.["activation text"]))
+    for (const t of splitTags(
+      state.loraSettings[name]?.["optional activation text"]))
       if (!out.includes(t)) out.push(t);
   }
   return out;

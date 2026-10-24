@@ -102,9 +102,9 @@ class Job:
     # LoRAs the UI showed toggled off: not applied to the request, recorded
     # in the image metadata so an import restores them in the disabled state
     meta_disabled_loras: list[tuple[str, float]] | None = None
-    # the LoRA activation-text tags that were folded into the prompt (the
-    # LoRAs' tags minus the ones the UI switched off); recorded so the PNG
-    # says what the image was actually generated with
+    # the "optional activation text" tags that were folded into the prompt
+    # (the LoRAs' tags minus the ones the UI switched off); recorded so the
+    # PNG says what the image was actually generated with
     meta_activation_tags: list[str] | None = None
     # NAME of the model configuration the job runs on: recorded in the image
     # metadata so importing the PNG re-selects that configuration
@@ -954,7 +954,7 @@ def _result_to_png(
         # reference used)
         reference_caption=result.reference_caption,
         reference_sections=result.reference_sections,
-        # the LoRA activation-text tags that were applied (the UI tag row;
+        # the optional-activation-text tags that were applied (the tag row;
         # None = nothing recorded, LoRA-less backends record nothing)
         activation_tags=(job.meta_activation_tags if job is not None
                          and backend.supports_loras else None),

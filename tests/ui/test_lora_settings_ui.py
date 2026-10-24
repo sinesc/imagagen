@@ -6,6 +6,7 @@ when a LoRA is selected in the generation form. Uses the mock-backend
 server in a temp root.
 """
 import json
+import re
 
 from conftest import combo_pick
 
@@ -17,10 +18,28 @@ def _seed_lora(root, name="DMD", weight=0.7, with_json=True):
     if with_json:
         (d / f"{name}.json").write_text(json.dumps({
             "description": "forge desc", "sd version": "SDXL",
-            "activation text": "act", "preferred weight": weight,
+            "activation text": "act", "optional activation text": "opt, 8k",
+            "preferred weight": weight,
             "negative text": "neg", "notes": "note",
         }))
     return d / f"{name}.json"
+
+
+def _lora_label(page, body, pattern):
+    """The edit-LoRA dialog label whose caption starts with `pattern` (the
+    plain and the optional activation text are told apart by their exact
+    caption, because :has-text() would match both)."""
+    return page.locator(f"{body} label").filter(
+        has_text=re.compile(pattern, re.I))
+
+
+def _lora_field(page, body, pattern):
+    return _lora_label(page, body, pattern).locator(
+        "textarea, input").input_value()
+
+
+def _set_lora_field(page, body, pattern, value):
+    _lora_label(page, body, pattern).locator("textarea, input").fill(value)
 
 
 def test_lora_settings_ui(page, server):
@@ -64,6 +83,8 @@ def test_lora_settings_ui(page, server):
     assert page.locator(
         f"{body} label:has-text('preferred weight') input"
     ).input_value() == "0.8"
+    # without a settings .json the optional activation text is empty too
+    assert _lora_field(page, body, r"^Optional LoRA activation text") == ""
     page.locator("#dialog-cancel").click()  # close the edit dialog
     page.wait_for_function(
         "document.getElementById('dialog-title').textContent === 'LoRA configuration'"
@@ -85,7 +106,10 @@ def test_lora_settings_ui(page, server):
         f"{body} label:has-text('description') textarea"
     ).input_value() == "forge desc"
     assert page.locator(f"{body} label:has-text('preferred weight') input").input_value() == "0.7"
-    assert page.locator(f"{body} label:has-text('activation text') textarea").input_value() == "act"
+    # "Activation text" (Forge, always applied) and the imagagen-only
+    # "Optional LoRA activation text" (toggleable prompt tags) are separate
+    assert _lora_field(page, body, r"^Activation text") == "act"
+    assert _lora_field(page, body, r"^Optional LoRA activation text") == "opt, 8k"
     assert page.locator(f"{body} label:has-text('negative text') textarea").input_value() == "neg"
     assert page.locator(f"{body} label:has-text('notes') textarea").input_value() == "note"
 
@@ -93,6 +117,8 @@ def test_lora_settings_ui(page, server):
     # extra fields like "sd version"
     page.locator(f"{body} label:has-text('description') textarea").fill("edited")
     page.locator(f"{body} label:has-text('preferred weight') input").fill("0.35")
+    _set_lora_field(page, body, r"^Optional LoRA activation text",
+                    "opt edited")
     page.click("#dialog-ok")
     # saving returns to the management list dialog
     page.wait_for_function(
@@ -102,6 +128,8 @@ def test_lora_settings_ui(page, server):
     data = json.loads(jpath.read_text())
     assert data["description"] == "edited"
     assert data["preferred weight"] == 0.35
+    assert data["activation text"] == "act"  # untouched by the edit above
+    assert data["optional activation text"] == "opt edited"
     assert data["sd version"] == "SDXL"
 
     # the fresh preferred weight is used for new selections

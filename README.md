@@ -127,18 +127,19 @@ prompt + style list. Imported images that reference styles missing from
 `user/styles.csv` get those styles added as in-memory temporaries under
 the "Session" optgroup (never written to the CSV).
 
-### LoRA activation text
+### Optional LoRA activation text
 
 The ⚙ next to *+ LoRA* edits the settings of every available LoRA (a `.json`
-next to its `.safetensors`, Forge-compatible keys), including an *optional
-LoRA activation text*. That text is comma separated: every tag gets its own toggle
-button in the row under the negative prompt (green = on, all of them on by
-default, split off from the reference image's caption tags by a separator).
-Everything that is still on gets appended to the prompt when the image is
-generated, the switched-off tags do not; the tags of a LoRA whose row is
-toggled off disappear from the row entirely. The selection is part of the
-saved UI state, and the tags that were applied end up in the PNG metadata as
-`activation_tags`.
+next to its `.safetensors`, Forge-compatible keys). Besides the Forge
+"activation text" (applied to the prompt in full, always) it carries the
+imagagen-only *optional activation text*: that one is comma separated, and
+every tag gets its own toggle button in the row under the negative prompt
+(green = on, all of them on by default, split off from the reference image's
+caption tags by a separator). Everything that is still on gets appended to
+the prompt when the image is generated, the switched-off tags do not; the
+tags of a LoRA whose row is toggled off disappear from the row entirely. The
+selection is part of the saved UI state, and the tags that were applied end
+up in the PNG metadata as `activation_tags`.
 
 ### Token weights
 

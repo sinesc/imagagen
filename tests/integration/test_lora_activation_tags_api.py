@@ -1,8 +1,10 @@
-"""LoRA activation-text tags: request filtering, PNG metadata, ui-state.
+"""LoRA optional-activation-text tags: request filtering, PNG metadata,
+ui-state.
 
-A LoRA's "activation text" is comma separated; the UI shows one toggle per
-tag under the negative prompt and sends the switched-off ones as
-``disabled_activation_tags``. The remaining tags still go into the prompt,
+A LoRA's "optional activation text" is comma separated; the UI shows one
+toggle per tag under the negative prompt and sends the switched-off ones as
+``disabled_activation_tags``. The remaining tags still go into the prompt (as
+does the plain Forge "activation text", which can never be switched off),
 the applied ones are recorded in the PNG, and the selection round-trips
 through the ui-state.
 """
@@ -25,11 +27,12 @@ def _setup(tmp_path):
     for name in ("alpha", "beta"):
         (d / f"{name}.safetensors").write_bytes(b"")
     (d / "alpha.json").write_text(json.dumps({
-        "activation text": "blue eyes, freckles",
+        "activation text": "signature style",
+        "optional activation text": "blue eyes, freckles",
         "negative text": "blurry",
     }))
     (d / "beta.json").write_text(json.dumps({
-        "activation text": "freckles, 8k",
+        "optional activation text": "freckles, 8k",
     }))
     return TestClient(create_app(config=config, backend=MockBackend()))
 
@@ -59,7 +62,8 @@ def _generate(c, **kw):
 
 def test_tags_of_the_selected_loras_are_recorded(tmp_path):
     with _setup(tmp_path) as c:
-        # no selection: every tag applies (deduped across LoRAs)
+        # no selection: every optional tag applies (deduped across LoRAs);
+        # the plain activation text is not part of the tag list
         meta = _generate(c)
         assert meta["activation_tags"] == ["blue eyes", "freckles", "8k"]
 
@@ -67,13 +71,17 @@ def test_tags_of_the_selected_loras_are_recorded(tmp_path):
 def test_disabled_tags_are_dropped_from_the_prompt(tmp_path):
     with _setup(tmp_path) as c:
         # the token counter applies the prompt exactly as generation does,
-        # so switching a tag off must change the count it reports
+        # so switching tags off must change the count it reports ...
         base = c.post("/api/prompt-tokens", json={
             "prompt": "a cat", "loras": [["alpha", 1.0]]}).json()
         fewer = c.post("/api/prompt-tokens", json={
             "prompt": "a cat", "loras": [["alpha", 1.0]],
             "disabled_activation_tags": ["blue eyes", "freckles"]}).json()
         assert fewer["tokens"] < base["tokens"]
+        # ... but the plain activation text stays in there regardless
+        bare = c.post("/api/prompt-tokens",
+                      json={"prompt": "a cat"}).json()
+        assert fewer["tokens"] > bare["tokens"]
 
         meta = _generate(c, disabled_activation_tags=["freckles"])
         assert meta["activation_tags"] == ["blue eyes", "8k"]

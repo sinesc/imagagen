@@ -139,10 +139,11 @@ class UiState(BaseModel):
     styles: list[str] = Field(default_factory=list)
     # style names shown toggled off in the UI (not applied, kept in the list)
     disabled_styles: list[str] = Field(default_factory=list)
-    # activation-text tags the UI switched off (comma-separated tags of the
-    # selected LoRAs' "activation text"): dropped from the prompt, everything
-    # else applies. Tags are plain text, so entries of LoRAs that are gone
-    # now are simply inert.
+    # optional-activation-text tags the UI switched off (comma-separated
+    # tags of the selected LoRAs' "optional activation text"): dropped from
+    # the prompt, everything else (the plain "activation text" included)
+    # applies. Tags are plain text, so entries of LoRAs that are gone now
+    # are simply inert.
     disabled_activation_tags: list[str] = Field(default_factory=list)
     # person mask generation (Phase 5): the selected segmentation model
     # (file name in models/segmentation/), the last-used class selection

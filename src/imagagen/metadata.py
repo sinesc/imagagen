@@ -153,10 +153,11 @@ def build_parameters(
       applied (key omitted when no reference was used). Importing records
       it as a style-like note only: the reference IMAGE itself cannot
       round-trip through the prompt text.
-    * ``activation_tags``: the LoRA activation-text tags that were folded
-      into the prompt (key omitted when there were none). Tags the UI
-      switched off are absent; like the reference sections this documents
-      the prompt, it is not re-imported.
+    * ``activation_tags``: the LoRA "optional activation text" tags that
+      were folded into the prompt (key omitted when there were none; the
+      plain ``activation text`` always applies and is never listed here).
+      Tags the UI switched off are absent; like the reference sections this
+      documents the prompt, it is not re-imported.
     """
     doc: dict[str, Any] = {
         "format": _FORMAT,
@@ -223,7 +224,7 @@ def build_parameters(
         # the caption sections that were applied (the UI tag row)
         doc["reference_sections"] = reference_sections
     if activation_tags:
-        # the LoRA activation-text tags that were applied (the UI tag row
+        # the optional-activation-text tags that were applied (the tag row
         # under the negative prompt; switched-off tags are missing here)
         doc["activation_tags"] = activation_tags
     if sag is not None:
