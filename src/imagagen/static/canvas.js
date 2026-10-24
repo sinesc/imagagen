@@ -293,11 +293,10 @@ function drawMaskOutline(ctx) {
   ctx.lineWidth = 1 / view.scale; // 1 screen px, faint grey
   ctx.strokeStyle = "rgba(128,128,128,0.6)";
   ctx.strokeRect(r.x, r.y, r.w, r.h);
-  // live mask extent in image-space px (includes the in-flight stroke,
-  // so it updates while drawing), tucked inside the box's bottom-right
-  // corner (the drawn box is padded, the number is the raw mask extent)
-  const b = maskBboxLive();
-  if (b) {
+  // the padded mask extent in image-space px (the box drawn above, so it also
+  // includes the in-flight stroke and updates while drawing), tucked inside
+  // the box's bottom-right corner
+  {
     const fs = 15 / view.scale; // ~15 screen px
     ctx.font = `${fs}px system-ui, sans-serif`;
     ctx.fillStyle = "rgba(128,128,128,0.9)";
@@ -309,7 +308,7 @@ function drawMaskOutline(ctx) {
     ctx.shadowBlur = 1;
     ctx.shadowOffsetY = 1;
     const inset = 2 / view.scale;
-    ctx.fillText(`${b.w}x${b.h}`, r.x + r.w - inset, r.y + r.h - inset);
+    ctx.fillText(`${r.w}x${r.h}`, r.x + r.w - inset, r.y + r.h - inset);
   }
   ctx.restore();
 }
