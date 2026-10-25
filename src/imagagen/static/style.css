@@ -645,6 +645,13 @@ button.danger:hover { background: #a33; }
   gap: 0.7rem;
 }
 #dialog-box h3 { margin: 0; font-size: 0.95rem; }
+/* disabled dialog buttons dim like the sidebar controls (#controls
+   :disabled convention): an Ok that cannot be used right now (e.g.
+   Upscale while a run is in flight) visibly reads as disabled */
+#dialog-box button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 #dialog-title-row {
   display: flex;
   align-items: center;

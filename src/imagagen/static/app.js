@@ -1198,10 +1198,12 @@ async function openUpscaleDialog() {
       return true;
     } catch (e) {
       if (e.message === "aborted") {
-        // the user cancelled mid-run: closing is the expected outcome
-        // (onOk's return value settles the dialog), no retry error
+        // the user cancelled mid-run: the dialog STAYS open (only a
+        // Cancel while nothing is running closes it) so the upscale can
+        // be retried or the dialog closed deliberately
         setStatus("upscale aborted");
-        return;
+        dialogError("upscale aborted");
+        return false;
       }
       dialogError(`upscale failed: ${e.message}`);
       return false; // keep the dialog open (fix tile size on OOM and retry)
@@ -1216,8 +1218,8 @@ async function openUpscaleDialog() {
     }
   }, "Upscale", null, null, "", () => {
     // Cancel/Escape/backdrop while an upscale runs: ABORT it instead of
-    // closing (the in-flight request then settles as "aborted", which
-    // closes the dialog); without a run this is the plain close
+    // closing (the in-flight request settles with "upscale aborted" but
+    // the dialog stays open); without a run this is the plain close
     if (!upsRunning) { closeDialog(); return; }
     if (upsAborting) return; // abort already requested; wait for the settle
     upsAborting = true;

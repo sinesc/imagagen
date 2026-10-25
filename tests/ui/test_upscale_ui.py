@@ -186,13 +186,19 @@ def test_upscale_cancel_aborts_running_upscale(page, server):
         "document.getElementById('dialog-ok').disabled === true")
     page.wait_for_timeout(1200)  # let the run actually start (model load)
 
-    # Cancel mid-run aborts instead of closing; the dialog settles closed
-    # once the request comes back as "aborted"
+    # Cancel mid-run aborts but does NOT close the dialog: the request
+    # settles with an in-dialog "upscale aborted" note while it stays open
     page.click("#dialog-cancel")
     page.wait_for_function(
-        "document.getElementById('dialog').hidden === true"
-        " && document.getElementById('dialog-ok').disabled === false",
-        timeout=60000)
+        "!document.getElementById('dialog').hidden"
+        " && [...document.querySelectorAll('.dialog-error')]"
+        ".some(d => d.textContent.includes('aborted'))", timeout=30000)
+    # Ok is enabled again (retry possible)... Cancel now closes (idle)
+    assert page.evaluate(
+        "document.getElementById('dialog-ok').disabled") is False
+    page.click("#dialog-cancel")
+    page.wait_for_function(
+        "document.getElementById('dialog').hidden === true")
     # nothing was applied: canvas untouched, no new entities/thumbs
     assert _canvas_size(base) == (64, 64)
     assert _thumb_titles(page) == []
