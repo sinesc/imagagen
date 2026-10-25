@@ -3,24 +3,29 @@
 imagagen is a locally-run AI image generator with a **unified canvas**. A
 Python backend serves a web UI that runs entirely on your machine:
 generate images from text, then paint, edit, inpaint, combine and
-upscale them on one canvas — no cloud, no subscription, your models and
-your images stay local.
+upscale them on one canvas — everything stays local.
+
+## Supported platforms/models
+
+- **Currently Linux/NVIDIA only**.
+- Supports SDXL, Z-image turbo, Flux dev/schnell, Krea2.
 
 ## Features
 
 - **Unified canvas** — several images live on one canvas: inpaint into
-  masked regions, paint with greyscale brushes, clone and smudge,
+  masked regions, paint with customizable brushes, clone and smudge,
   copy/paste with a floating selection, rotate and crop. Everything is
   undoable.
 - **Presets and model configurations** — save complete generation
   settings as named presets, and attach per-model configurations
   (sampler, scheduler, CFG and a fixed LoRA set, separately for
-  text-to-image and inpainting) so a tuned look is one click away.
+  text-to-image and inpainting).
 - **Prompt styles & wildcards** — A1111-style reusable prompt templates
   (with a `{prompt}` placeholder and grouping), wildcards, and token
   weights like `(red fox:1.2)`. Every generated image stores its full
   settings in the PNG metadata: drop an image back onto the canvas and
-  the UI restores its prompt, styles, LoRAs and seed.
+  the UI restores its prompt, styles, LoRAs and seed. Also supports
+  reading Forge PNG metadata.
 - **LoRA support** — combine several LoRAs per generation with
   individual strengths and enable toggles, plus optional activation-tag
   toggles per LoRA.
@@ -65,9 +70,8 @@ uv python install --install-dir "$PWD/.python313" --no-bin 3.13
 uv sync --python .python313/cpython-3.13.*-*/bin/python3.13
 ```
 
-Both `.python313/` and `.venv/` are gitignored; `launch.sh` keeps the
-venv relocatable (it repairs the venv paths on every start), so you
-don't have to touch any of it manually.
+The launch script `launch.sh` keeps the venv relocatable so you can move
+the `imagagen` folder wherever you want.
 
 ## Launching
 
@@ -130,3 +134,5 @@ Hugging Face are cached in `cache/`.
 uv sync --extra dev
 .venv/bin/python -m pytest   # mock backend, no GPU required
 ```
+
+Check the `dev` folder for additional information.
