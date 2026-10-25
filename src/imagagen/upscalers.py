@@ -315,7 +315,8 @@ class UpscalerManager:
                 break
             cur_w *= ms
             cur_h *= ms
-        total = sum(self._tile_count(sw, sh, tile) for sw, sh in sizes)
+        total = sum(self._tile_count(sw, sh, tile, tile_overlap)
+                    for sw, sh in sizes)
 
         desc.to(self._device)
         try:
@@ -330,10 +331,14 @@ class UpscalerManager:
             img = img.resize((dest_w, dest_h), resample=LANCZOS)
         return np.asarray(img.convert("RGB"))
 
-    def _tile_count(self, w: int, h: int, tile: int) -> int:
+    def _tile_count(self, w: int, h: int, tile: int,
+                    tile_overlap: int) -> int:
         if not self._tiles(w, h, tile):
             return 1
-        overlap = self._overlap(tile, tile)
+        # SAME overlap split_grid runs with (clamped), or the progress
+        # total overshoots and the bar finishes early (max-overlap
+        # counting nearly quadruples the tiles at small overlaps)
+        overlap = self._overlap(tile, tile_overlap)
         cols = math.ceil((w - overlap) / (tile - overlap))
         rows = math.ceil((h - overlap) / (tile - overlap))
         return max(cols, 1) * max(rows, 1)

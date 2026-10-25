@@ -14,6 +14,7 @@ from imagagen.upscalers import (
     UpscaleError,
     UpscalerManager,
     limit_size_by_one_dimension,
+    split_grid,
 )
 
 
@@ -47,15 +48,41 @@ def test_tiled_pass_reproduces_full_resize():
     """Regression: the combine grid must scale the tile ROW positions by
     the model's factor too (forge's newtiles.append([y * scale, ...]));
     without that the lower rows land at source-y offsets and the bottom
-    of the result stays black."""
+    of the result stays black. Also pins that the progress `total` matches
+    the tile count actually processed (it used to be computed with the
+    maximal overlap: 1720x720/tile 192/overlap 8 counted 119 but ran 40)."""
     m = _Fake4x.__new__(_Fake4x)
     src = np.arange(96 * 128 * 3, dtype=np.uint8).reshape(96, 128, 3)
     img = Image.fromarray(src)
     for tile, overlap in ((32, 8), (48, 16), (48, 1)):
-        out, _done = m._model_pass(None, img, tile, overlap, None, 0, 0)
+        events = []
+        out, done = m._model_pass(None, img, tile, overlap,
+                                  lambda d, t, ev=events: ev.append((d, t)),
+                                  0, 0)
         assert out.size == (512, 384)
         want = np.asarray(img.resize((512, 384), Image.NEAREST))
         assert np.array_equal(np.asarray(out), want), (tile, overlap)
+        # the pass processes exactly the number of tiles _tile_count
+        # promises and reports each one (run() passes this count as total)
+        assert done == events[-1][0] == len(events) == m._tile_count(
+            128, 96, tile, overlap), (tile, overlap, events[-1])
+
+
+def test_tile_count_matches_split_grid():
+    m = UpscalerManager.__new__(UpscalerManager)
+    # the reported-user-case: 1720x720, tile 192, overlap 8 -> 40 tiles
+    g = split_grid(Image.new("RGB", (1720, 720)), 192, 192,
+                   m._overlap(192, 8))
+    assert m._tile_count(1720, 720, 192, 8) == 40 == \
+        sum(len(row_imgs) for _y, _h, row_imgs in g.tiles)
+    for w, h, tile, ov in ((512, 512, 192, 8), (100, 60, 40, 20),
+                           (64, 64, 64, 8), (300, 300, 100, 50)):
+        if m._tiles(w, h, tile):
+            g = split_grid(Image.new("RGB", (w, h)), tile, tile,
+                           m._overlap(tile, ov))
+            assert m._tile_count(w, h, tile, ov) == \
+                sum(len(row_imgs) for _y, _h, row_imgs in g.tiles), \
+                (w, h, tile, ov)
 
 
 def test_tiling_guards():
