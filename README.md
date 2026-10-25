@@ -1,180 +1,132 @@
 # imagagen
 
-AI image generator with a unified canvas. See `concept.md` for the full feature
-spec and `PLAN.md` for the implementation plan.
+imagagen is a locally-run AI image generator with a **unified canvas**. A
+Python backend serves a web UI that runs entirely on your machine:
+generate images from text, then paint, edit, inpaint, combine and
+upscale them on one canvas — no cloud, no subscription, your models and
+your images stay local.
 
-## Setup (dev)
+## Features
+
+- **Unified canvas** — several images live on one canvas: inpaint into
+  masked regions, paint with greyscale brushes, clone and smudge,
+  copy/paste with a floating selection, rotate and crop. Everything is
+  undoable.
+- **Presets and model configurations** — save complete generation
+  settings as named presets, and attach per-model configurations
+  (sampler, scheduler, CFG and a fixed LoRA set, separately for
+  text-to-image and inpainting) so a tuned look is one click away.
+- **Prompt styles & wildcards** — A1111-style reusable prompt templates
+  (with a `{prompt}` placeholder and grouping), wildcards, and token
+  weights like `(red fox:1.2)`. Every generated image stores its full
+  settings in the PNG metadata: drop an image back onto the canvas and
+  the UI restores its prompt, styles, LoRAs and seed.
+- **LoRA support** — combine several LoRAs per generation with
+  individual strengths and enable toggles, plus optional activation-tag
+  toggles per LoRA.
+- **Mask generation** — one-click subject/person masks from a
+  MediaPipe segmentation model; edit the result by hand and undo freely.
+- **Upscaling** — RealESRGAN-class upscalers with tiled processing for
+  large outputs, cancellable mid-run.
+- **Reference images** — check any image on the canvas as a reference: a
+  vision model describes it and the description (or just selected
+  sections of it) feeds the generation prompt.
+- **Multi-GPU and VRAM management** — generation runs in parallel on
+  several GPUs; models are parked/swapped automatically, with optional
+  quantization to fit small cards.
+
+## Requirements
+
+- Linux (x86_64) and an NVIDIA GPU with a recent driver — the CUDA
+  build of PyTorch is installed automatically by `uv`. CPU-only
+  machines still start the app with a mock backend, but real generation
+  needs a GPU.
+- VRAM: SDXL runs comfortably on 8 GB (and on ~6 GB cards with the
+  memory-saving options in the ini file). Larger models like Flux want
+  12–16 GB. Expect a few GB of downloads for the Python dependencies.
+
+## Installation
 
 ```bash
-uv sync --extra dev          # syncs into .venv (see below)
-.venv/bin/python -m pytest   # run tests (mock backend, no GPU needed)
-bash dev/smoke.sh        # start mock server + hit endpoints
+# 1. Get uv (skip if already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. Clone the repository
+git clone https://github.com/sinesc/imagagen.git
+cd imagagen
+
+# 3. Install a self-contained CPython 3.13 into the project folder
+#    (imagagen requires Python >= 3.13; keeping the interpreter inside
+#    the project makes the setup independent of your distro's Python)
+uv python install --install-dir "$PWD/.python313" --no-bin 3.13
+
+# 4. Create the project venv (.venv) on top of it and install the
+#    dependencies (a few GB, mostly CUDA-enabled PyTorch — first run only)
+uv sync --python .python313/cpython-3.13.*-*/bin/python3.13
 ```
 
-## Run
+Both `.python313/` and `.venv/` are gitignored; `launch.sh` keeps the
+venv relocatable (it repairs the venv paths on every start), so you
+don't have to touch any of it manually.
+
+## Launching
 
 ```bash
-.venv/bin/python -m imagagen --root <project-root> --port 8080
-# --mock forces the CPU mock backend (automatic fallback when no CUDA/models)
+./launch.sh
 ```
 
-### Python environment (`.venv`)
+The first start copies the shipped defaults into `user/` (config,
+example styles). The server then listens on port 8080 — open
+<http://localhost:8080> in your browser. Extra arguments are passed to
+the server, e.g. `./launch.sh --port 9000` or `./launch.sh --host
+0.0.0.0` to reach it from another machine on your LAN.
 
-The project uses a single self-contained venv: `.venv` (venv) backed by a
-full CPython 3.13 install in `.python313/` (both in the shared workspace, both
-gitignored). It works both inside this container and from the host (whose
-Python is too old). So the venv is always backed by the `.python313` CPython
-(rather than the container's system Python), sync with:
+## Configuration file
+
+After the first launch there is `user/imagagen.ini`. Every option is
+documented inline in the file; briefly, it controls:
+
+- **GPU selection** — pick the GPU used for generation or exclude
+  specific ones (no need for `CUDA_VISIBLE_DEVICES`; by default the
+  GPU with the most free VRAM is picked automatically).
+- **Memory-saving options** — UNet quantization, keeping text encoders
+  in system RAM, forced VAE tiling — trade a little quality/speed to
+  fit smaller cards.
+- **Speed/residency knobs** — how long a loaded model stays warm in
+  VRAM after a generation, and prompt-aware prefetching of text
+  encoders so model swaps happen while you type instead of at Generate
+  time.
+- **Misc/debug** — whether the UI's form state is persisted, and
+  verbose logging/memory debugging switches.
+
+The file is plain text and re-read on every start.
+
+## Where to put the weights
+
+All model weights are gitignored; drop them into these folders (they
+are scanned recursively and symlinked files/folders are followed):
+
+- `models/<family>/` — generation checkpoints (SDXL, Flux, Z-Image,
+  Krea 2), plus segmentation and upscaler models — details in
+  [models/README.md](models/README.md)
+- `loras/<family>/` — LoRAs, per model family — details in
+  [loras/README.md](loras/README.md)
+- `infra/` — shared text-encoder / VAE files needed by Flux, Z-Image
+  and Krea 2 — details in [infra/README.md](infra/README.md)
+
+The UI lists everything that is found; no registration step is needed.
+
+## Your data
+
+Everything the app writes lives in `user/` — `imagagen.ini`, presets,
+model configurations, styles, wildcards, custom brushes and the UI's
+saved state. Back up (or sync) that one folder and you keep all your
+setup. Saved images go to `output/`; small files auto-fetched from
+Hugging Face are cached in `cache/`.
+
+## Development (optional)
 
 ```bash
-uv sync --python .python313/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13
+uv sync --extra dev
+.venv/bin/python -m pytest   # mock backend, no GPU required
 ```
-
-The rebuild rewrites three files with absolute container paths that only
-resolve inside the container. Re-make them relative afterwards (the same
-commands originally used to create the venv). `launch.sh` does this
-automatically before every start, so host usage self-heals; the commands
-below are only needed if you don't start via `launch.sh`:
-
-```bash
-ln -sfn ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13 .venv/bin/python
-sed -i 's|^home = .*|home = ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bin|' .venv/pyvenv.cfg
-printf '../../../../src\n' > .venv/lib/python3.13/site-packages/_editable_impl_imagagen.pth
-```
-
-Place SDXL weights in `models/sdxl/` and LoRAs in `loras/sdxl/` (subdirectories
-are scanned recursively, models/LoRAs are addressed by their relative path
-without extension, e.g. `test-dir/JuggernautXL9.0`). Small HuggingFace hub
-files fetched on first load are cached in `cache/`. Greyscale brush
-PNGs in `user/brushes/` (the provided defaults in `res/brushes/` are
-searched first). Outputs land in `output/`.
-
-All user data lives in `user/` (settings, model configurations, presets,
-styles, wildcards, brushes, UI state — share or back up that one folder).
-The provided defaults live in `res/` (tracked in git, never written by
-the app): default brushes in `res/brushes/`, and `imagagen.ini.default`
-/ `styles.csv.default`, which `launch.sh` copies to `user/` on first
-start.
-
-**Person mask generation**: drop a MediaPipe image-segmenter `.tflite` into
-`models/segmentation/` (e.g. the selfie multiclass model, 16 MB, from
-`https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite`).
-The toolbar's model dropdown + *segment* button then generate a person-part
-mask into the mask buffer (undoable). MediaPipe needs the `libEGL`/`libGLES`
-system libraries (Debian/Ubuntu: `apt install libegl1 libgles2`). Named model configurations
-live in `user/model-configs/`, generation-setting presets in
-`user/presets/` (both plain JSON), and prompt styles in `user/styles.csv`
-(all created/edited from the UI and safe to edit by hand).
-
-Optional: put an improved VAE (`sdxl_vae.safetensors`, e.g. the ft-MSE
-"Improved VAE") in `infra/` (the home for encoder/decoder weights). The
-stock SDXL VAE overflows to NaN in fp16 for high-magnitude latents; the
-improved VAE is fp16-stable and renders color better. If it is present, it
-is swapped in automatically.
-
-### VRAM
-
-SDXL in fp16 is ~6.6 GiB of weights. Generation at 1024² needs roughly
-1.5 GiB more. The text encoders are offloaded to CPU after prompt encoding.
-On a 16 GB card shared with other GPU work, expect 1024² to be at the ceiling
-(512²–768² are comfortable).
-
-### GPU selection
-
-Which GPU the server uses is configured in `user/imagagen.ini`:
-
-```ini
-[imagagen]
-# "auto" (default): the non-ignored GPU with the most free VRAM
-# or an explicit index, e.g. primary-gpu = 1
-primary-gpu = auto
-# comma-separated indices to exclude from auto-pick (a friendlier
-# alternative to CUDA_VISIBLE_DEVICES), e.g. ignore-gpus = 3,4,5,6
-ignore-gpus =
-```
-
-With `auto` the server re-checks free VRAM on startup and on every
-`/api/health` call, so a card that was busy during development is picked
-around automatically. The chosen GPU is reported by `GET /api/health`
-(`gpu` plus a `selected` flag per entry of `gpus`).
-
-### Model configurations
-
-Every model shows up in the selector as at least one *configuration*:
-models with files in `user/model-configs/` get one entry per file (you can have
-several per model, e.g. "Base" and "Base + DMD2 Lora"), unconfigured models
-get a read-only in-memory default. A configuration stores, separately for
-text-to-image and inpainting, a sampler, a scheduler, a CFG and a LoRA list;
-`null` means "no override". Per generation, the form's values win unless a
-setting is set to "Use model default" (CFG −1 in the form), in which case the
-configuration's value is used, then the backend built-in. The configuration's
-LoRAs are always loaded in front of the LoRAs you pick in the form.
-
-### Prompt styles
-
-Prompt styles live in `user/styles.csv` (A1111-style CSV:
-`name,prompt,negative_prompt,optgroup` — created from `res/styles.csv.default`,
-safe to edit by hand). In the UI, *+ Style* adds a dropdown row (styles are
-grouped by `optgroup`, everything sorted alphabetically); each row has a −
-to remove it, and the ⚙ next to *+ Style* opens the style configuration
-(create/edit/delete). Styles are applied to the prompt in list order before
-generation: a style's `{prompt}` placeholder is replaced with the user's
-prompt plus the styles applied before it, and without a placeholder the
-style text is appended to the end (same for the style's negative prompt).
-Generated images record the *raw* prompt plus the selected styles' names
-and contents in the PNG metadata, so re-importing an image restores the same
-prompt + style list. Imported images that reference styles missing from
-`user/styles.csv` get those styles added as in-memory temporaries under
-the "Session" optgroup (never written to the CSV).
-
-### Optional LoRA activation text
-
-The ⚙ next to *+ LoRA* edits the settings of every available LoRA (a `.json`
-next to its `.safetensors`, Forge-compatible keys). Besides the Forge
-"activation text" (applied to the prompt in full, always) it carries the
-imagagen-only *optional activation text*: that one is comma separated, and
-every tag gets its own toggle button in the row under the negative prompt
-(green = on, all of them on by default, split off from the reference image's
-caption tags by a separator). Everything that is still on gets appended to
-the prompt when the image is generated, the switched-off tags do not; the
-tags of a LoRA whose row is toggled off disappear from the row entirely. The
-selection is part of the saved UI state, and the tags that were applied end
-up in the PNG metadata as `activation_tags`.
-
-### Token weights
-
-SDXL prompts support Forge/A1111-style per-token weights: ``(green:1.2)``
-scales the CLIP embeddings of "green" by 1.2 (a bare ``(green)`` uses the
-usual 1.1 emphasis, ``[green]`` 1/1.1, nested groups multiply, and ``\(``
-escapes a literal parenthesis). The weight applies to every token the group
-expands to, in both the prompt and the negative prompt. The raw prompt
-(including the weight syntax) is what gets stored in the PNG metadata and
-restored on import.
-
-### UI state persistence
-
-The web UI's last-used form inputs (model configuration, prompt, negative
-prompt, size, steps, CFG, seed, batch, sampler, scheduler, LoRAs, styles) are
-saved automatically to `user/ui-state.json` as you type and on
-every generation. On server start the UI restores them, so the page picks up
-where you left off. The file is plain JSON and safe to edit by hand;
-a missing or corrupt file simply falls back to the form defaults.
-
-```json
-{
-  "model": "epicrealismxl11-base",
-  "prompt": "a red panda on a mossy log",
-  "steps": 28,
-  "cfg": 6.5,
-  "sampler": "DPM++ 2M",
-  "scheduler": "Karras",
-  "loras": [["sdxl/dmd2", 0.8]]
-}
-```
-
-(`model` is a configuration id: the sanitized configuration name, or the
-model's relative path for its in-memory default entry.)
-
-This is deliberately separate from `imagagen.ini` (operator
-configuration): `ui-state.json` is rewritten constantly by the app, while
-the INI is something you edit by hand.

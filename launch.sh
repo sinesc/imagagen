@@ -3,11 +3,23 @@ cd "${0%/*}"
 mkdir -p user
 [ -f "user/imagagen.ini" ] || cp res/imagagen.ini.default user/imagagen.ini
 [ -f "user/styles.csv" ] || cp res/styles.csv.default user/styles.csv
-# uv sync (in the container) rewrites these three venv files with absolute
-# container paths, which break host usage; restore the relative versions
-# (also documented in README.md, "Running on the host system")
-ln -sfn ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13 .venv/bin/python
-sed -i 's|^home = .*|home = ../../.python313/cpython-3.13.15-linux-x86_64-gnu/bin|' .venv/pyvenv.cfg
-printf '../../../../src\n' > .venv/lib/python3.13/site-packages/_editable_impl_imagagen.pth
+# A uv sync may rewrite the venv's launcher files with absolute paths (and
+# does on any machine that is not the one where they were first written);
+# restore the relocatable relative versions. No-op when .venv or a
+# project-local CPython (.python313/cpython-*/) does not exist.
+if [ -d .venv ]; then
+  for pybin in .python313/cpython-*/bin; do
+    if [ -x "$pybin/python3.13" ]; then
+      ln -sfn "../../$pybin/python3.13" .venv/bin/python
+      sed -i "s|^home = .*|home = ../../$pybin|" .venv/pyvenv.cfg
+      break
+    fi
+  done
+  for pkg in .venv/lib/python*/site-packages; do
+    if [ -f "$pkg/_editable_impl_imagagen.pth" ]; then
+      printf '../../../../src\n' > "$pkg/_editable_impl_imagagen.pth"
+    fi
+  done
+fi
 
 .venv/bin/python -m imagagen $@

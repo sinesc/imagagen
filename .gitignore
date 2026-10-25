@@ -14,11 +14,11 @@ output
 
 # weights
 models/*
-!models/readme-folder-names.txt
+!models/README.md
 loras/*
-!loras/readme-folder-names.txt
+!loras/README.md
 infra/*
-!infra/readme-file-names.txt
+!infra/README.md
 
 # user state
 cache/*
