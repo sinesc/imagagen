@@ -1202,7 +1202,6 @@ async function openUpscaleDialog() {
         // Cancel while nothing is running closes it) so the upscale can
         // be retried or the dialog closed deliberately
         setStatus("upscale aborted");
-        dialogError("upscale aborted");
         return false;
       }
       dialogError(`upscale failed: ${e.message}`);
