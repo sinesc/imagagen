@@ -5,5 +5,6 @@ flux            Flux1S/D checkpoints
 zimage          Z-Image checkpoints
 krea2           Krea2 checkpoints
 segmentation    Mediapipe tflite segmentation models
+upscalers       upscaler models (.pth/.pt: RealESRGAN, ESRGAN, SwinIR, ...)
 
 Folders will be scanned recursively.

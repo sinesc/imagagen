@@ -20,6 +20,8 @@ dependencies = [
     "torchsde>=0.2.6",
     "mediapipe>=0.10.13",  # person mask generation (Phase 5); needs libEGL/libGLES system libs
     "gguf>=0.19.0",
+    "spandrel>=0.4.2",  # upscaler model loading (models/upscalers/)
+    "torchvision",
 ]
 
 [project.optional-dependencies]
@@ -65,6 +67,7 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu129" }
+torchvision = { index = "pytorch-cu129" }
 
 [dependency-groups]
 dev = [
