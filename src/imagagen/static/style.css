@@ -733,6 +733,16 @@ button.danger:hover { background: #a33; }
 #dialog-body input[type="range"] { height: auto; padding: 0; }
 #dialog-body input[type="checkbox"] { width: auto; height: auto; padding: 0; }
 
+/* upscale dialog: upscaler combobox + scale slider (reuses .soft-opt),
+   side-by-side number/dims rows */
+.ups-dialog { display: flex; flex-direction: column; gap: 0.55rem; }
+#dialog-body .ups-row { display: flex; gap: 0.5rem; align-items: end; }
+#dialog-body .ups-row label { flex: 1; min-width: 0; }
+#dialog-body .ups-row b {
+  color: #eee; font-size: 0.85rem; padding-bottom: 0.35rem;
+}
+#dialog-body .ups-upscaler { width: 100%; }
+
 /* model configuration dialog: name/model labels + per-mode fieldsets */
 .cfg-dialog {
   display: flex;

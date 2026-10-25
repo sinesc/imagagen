@@ -25,7 +25,7 @@ from .backends import (
     GenerateRequest,
     ModelBackend,
 )
-from .canvas import Canvas, _decode_mask, _decode_png
+from .canvas import Canvas, _decode_mask, _decode_png, transform_mask
 from .config import Config, ensure_dirs, load_config
 from .generation import INPAINT_PADDING, GenerationError, with_inpaint
 from .lora_settings import (
@@ -58,6 +58,7 @@ from .segmentation import CONFIDENCE_THRESHOLD, MAX_FEATHER, SegmentationError, 
 from .soft_inpaint import SoftInpainting
 from .styles import Style, StyleStore, apply_styles, strip_prompt_comments
 from .uistate import UiState, UiStateStore
+from .upscalers import UpscaleBusy, UpscaleError, UpscalerManager
 
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
@@ -302,6 +303,19 @@ class CropBody(BaseModel):
     height: float = Field(..., gt=0)
 
 
+class UpscaleBody(BaseModel):
+    # "Lanczos"/"Nearest" (built-in PIL resizes) or an upscaler id from
+    # GET /api/upscalers (a .pth/.pt under models/upscalers/)
+    upscaler: str
+    scale: float = Field(default=4.0, ge=1.0, le=8.0)
+    # 0 = no limit; when an output side would exceed it the output is
+    # shrunk to fit (forge's limit_size_by_one_dimention)
+    max_side_length: int = Field(default=0, ge=0)
+    # model tile size in source-image px (0 = no tiling) + tile overlap
+    tile: int = Field(default=192, ge=0, le=512)
+    tile_overlap: int = Field(default=8, ge=0, le=48)
+
+
 class ReferenceCaptionBody(BaseModel):
     image_id: str
 
@@ -340,6 +354,16 @@ def create_app(
                             parking_delay=config.transformer_parking_delay)
     queue.start()
 
+    # image upscaling (toolbar Upscale dialog): model runs happen on the
+    # primary GPU when the registry has one (the endpoint serializes them
+    # against generation via registry.gpu_lock); the mock/test registry and
+    # GPU-less hosts run models on CPU -- the built-in Lanczos/Nearest
+    # upscalers are pure PIL and need neither
+    upscale_device: str | None = None
+    if backend is None and registry.primary is not None:
+        upscale_device = f"cuda:{registry.primary}"
+    upscalers = UpscalerManager(config.upscalers_dir, device=upscale_device)
+
     app = FastAPI(title="imagagen", lifespan=_lifespan(segmentation))
     app.state.config = config
     app.state.hub = hub
@@ -354,6 +378,7 @@ def create_app(
     app.state.preset_store = PresetStore(config.presets_dir)
     app.state.style_store = StyleStore(config.styles_csv_path)
     app.state.segmentation = segmentation
+    app.state.upscaler_manager = upscalers
     app.state.last_config_id: str | None = None
     memdbg.start(registry=registry, queue=queue)
     # unique per server start: the client uses it to invalidate its
@@ -1223,6 +1248,87 @@ def create_app(
             "crop_image_id": crop_id,
             "prev_url": f"/api/canvas/image.png?id={prev_id}",
             "crop_url": f"/api/canvas/image.png?id={crop_id}",
+        }
+
+    # --- upscale ---
+    @app.get("/api/upscalers")
+    def upscalers_list() -> dict:
+        """The selectable upscalers: built-ins (Lanczos/Nearest) first,
+        then the .pth/.pt models found under models/upscalers/."""
+        return {"upscalers": upscalers.list_upscalers()}
+
+    @app.post("/api/upscale")
+    def canvas_upscale(body: UpscaleBody) -> dict:
+        """Upscale the displayed image into a NEW canvas entity (crop-style:
+        the pre-upscale image stays pinned as a restorable thumbnail, the
+        result becomes current). Runs synchronously (this threadpool
+        handler blocks until done) while holding the primary GPU's lock,
+        so it serializes against generation; WS phase/progress events
+        (job-less, like the segmentation endpoint's) drive the UI bar."""
+        if not canvas.has_image():
+            return JSONResponse({"error": "canvas is empty"}, status_code=400)
+        src_arr = canvas.image
+        assert src_arr is not None
+        h, w = src_arr.shape[:2]
+        dw, dh, _ = upscalers.dest_size(w, h, body.scale,
+                                        body.max_side_length)
+
+        def progress(done: int, total: int) -> None:
+            hub.emit({"type": "progress",
+                      "fraction": (done / total) if total else 1.0,
+                      "message": f"tile {done} / {total}"})
+
+        hub.emit({"type": "phase", "message": f"Upscaling @ {dw}x{dh}"})
+        # no lock when the upscaler runs on CPU (mock server, GPU-less
+        # host): there is no GPU state to serialize against
+        lock = (registry.gpu_lock(registry.primary)
+                if upscale_device is not None else None)
+        if lock is not None:
+            lock.acquire()
+        try:
+            out = upscalers.run(
+                src_arr, body.upscaler, body.scale,
+                max_side=body.max_side_length, tile=body.tile,
+                tile_overlap=body.tile_overlap, progress=progress)
+        except UpscaleBusy as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        except UpscaleError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except Exception as e:
+            log.exception("upscale failed (upscaler=%s scale=%s %dx%d)",
+                          body.upscaler, body.scale, w, h)
+            return JSONResponse({"error": f"{type(e).__name__}: {e}"},
+                                status_code=500)
+        finally:
+            if lock is not None:
+                lock.release()
+        # keep the SOURCE entity's PNG text chunks on the result (the
+        # prompt/seed/model round-trip and /api/save naming keep working;
+        # Forge records upscale info in the info panel only, never in the
+        # PNG)
+        from PIL.PngImagePlugin import PngInfo
+
+        src_info = canvas.entity_info(canvas.current_id()) or {}
+        pnginfo = PngInfo()
+        for k, v in src_info.items():
+            pnginfo.add_text(k, v)
+        buf = BytesIO()
+        Image.fromarray(out).save(buf, format="PNG", pnginfo=pnginfo)
+        new_h, new_w = out.shape[:2]
+        mask = transform_mask(canvas.mask, new_w, new_h)
+        try:
+            prev_id, eid = canvas.import_upscaled(buf.getvalue(), src_info,
+                                                  mask)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {
+            "ok": True,
+            "prev_image_id": prev_id,
+            "upscale_image_id": eid,
+            "prev_url": f"/api/canvas/image.png?id={prev_id}",
+            "upscale_url": f"/api/canvas/image.png?id={eid}",
+            "width": new_w,
+            "height": new_h,
         }
 
     @app.get("/api/canvas/image.png")

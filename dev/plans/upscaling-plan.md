@@ -47,19 +47,21 @@ combine_grid`), model loading follows Forge/ComfyUI via the **spandrel** library
 
 ### New module `src/imagagen/upscalers.py`
 
-- `UpscalerManager(registry, upscalers_dir)`:
+- `UpscalerManager(upscalers_dir, device)` (device string "cuda:N"/"cpu";
+  the device choice is made in app.py, so the manager needs no registry):
   - `list_upscalers() -> list[dict]`: built-ins first
     (`[{"id": "Lanczos", "name": "Lanczos", "builtin": True}, ...]`) then
     `{"id": rel_id, "name": rel_id, "builtin": False}` for every `.pth`/`.pt` under
-    `models/upscalers/` (use `modelregistry._walk_files` — py3.13 `rglob` skips
-    symlinked dirs).
+    `models/upscalers/` (uses `modelregistry._walk_files(dir, suffixes)` —
+    py3.13 `rglob` skips symlinked dirs; the suffix tuple became a parameter).
   - `run(arr, upscaler_id, scale, max_side, tile, tile_overlap, progress) -> np.ndarray`
     where `arr` is the canvas RGB uint8 HxWx3. Guards: upscale-busy lock (409 upstream),
     absolute cap — error if either output side would exceed 16384 px.
   - Model cache `{id: spandrel descriptor}` kept **on CPU**; per run the descriptor is
     moved to `torch.device(f"cuda:{registry.primary}")` (CPU when `registry.primary is
     None`, e.g. the mock/test server) and back to CPU afterwards. Model creation
-    (`ModelLoader().load_from_path(path, prefer_half=False)`) runs under
+    (`ModelLoader().load_from_file(path)` — spandrel 0.4 renamed this from
+    0.3's `load_from_path`) runs under
     `backends._PARAM_INIT_LOCK` (parameter-creation serialization, same rule as
     backends).
 - Size loop ported from `Upscaler.upscale` verbatim: `dest_w = int(w*scale)//8*8`,
@@ -73,6 +75,16 @@ combine_grid`), model loading follows Forge/ComfyUI via the **spandrel** library
   (feathered overlap masks). Work on numpy/PIL as Forge does; `tile<=0` runs one
   untiled pass. `progress(done, total_tiles)` -> WS events (below); `Lanczos`/`Nearest`
   upscalers are one `PIL.Image.resize` and emit no progress.
+  GOTCHAS found while porting (keep in sync with Forge!): the combine grid must
+  scale BOTH tile row y and column x by the model factor (`newtiles.append(
+  [y * sf, h * sf, row])` — missing the y-scale left the lower rows at source-y
+  offsets with a black bottom half); spandrel's `__call__` runs under
+  `torch.inference_mode()` so the BGR->PIL conversion (in-place `clamp_`) must
+  happen inside that same block; tiling only when `0 < tile < min(w, h)` and
+  `overlap <= tile//2` (avoids Forge's negative-crop clamp quirks and a
+  non-positive stride). Tiling correctness is pinned by
+  `tests/unit/test_upscalers.py::test_tiled_pass_reproduces_full_resize`
+  (fake 4x patch runner, exact pixel comparison).
 
 ### `models.py` (ModelRegistry)
 
@@ -189,8 +201,11 @@ buf = BytesIO(); img.save(buf, format="PNG", pnginfo=pnginfo)
   - `/api/upscalers` lists `Lanczos` + `Nearest` and a fake model file seeded at
     `models/upscalers/realesrgan/RealESRGAN_x4plus.pth` (dummy file: list-only).
   - upscale Lanczos x2 on a 200x150 canvas upload -> response ids/urls,
-    `/api/canvas/image.png?id=upscale:0` decodes to 400x300, entity is current,
-    prev entity pinned (`/api/queue` "pinned"), source PNG info chunks survive.
+    `/api/canvas/image.png?id=upscale:0` decodes to 400x296 (forge's //8*8
+    rule: 150*2=300 floors to 296!), entity is current, the prev entity
+    survives entity switches (crop-style pins are NOT reported by
+    /api/queue — that `pinned` list only carries user "Pin thumbnail"
+    pins), source PNG info chunks survive, mask resized with the image.
   - `max_side_length=256` clamps 200x150 x4 to 256x192 (Forge size rule:
     `int(w*scale)//8*8`).
   - empty canvas -> 400; unknown upscaler id -> 400; `scale` outside 1..8 rejected

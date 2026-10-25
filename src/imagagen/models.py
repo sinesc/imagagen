@@ -26,8 +26,9 @@ log = logging.getLogger(__name__)
 _MODEL_SUFFIXES = (".safetensors", ".ckpt", ".gguf")
 
 
-def _walk_files(base: Path) -> list[Path]:
-    """All ``*.safetensors``/``*.ckpt`` under ``base``, recursive.
+def _walk_files(base: Path,
+                suffixes: tuple[str, ...] = _MODEL_SUFFIXES) -> list[Path]:
+    """All files with one of ``suffixes`` under ``base``, recursive.
 
     An explicit scandir-style walk instead of ``rglob``: since Python 3.13,
     ``**`` does NOT descend into symlinked directories (it used to), so a
@@ -49,7 +50,7 @@ def _walk_files(base: Path) -> list[Path]:
                     if real not in seen:
                         seen.add(real)
                         walk(e)
-                elif e.suffix in _MODEL_SUFFIXES:
+                elif e.suffix in suffixes:
                     out.append(e)
             except OSError:
                 continue  # broken symlink etc.
@@ -298,6 +299,12 @@ class ModelRegistry:
     def _get_gpu_state(self, gpu: int) -> _GpuState:
         with self._meta_lock:
             return self._gpu_states.setdefault(gpu, _GpuState(gpu))
+
+    def gpu_lock(self, gpu: int) -> threading.RLock:
+        """The per-GPU lock, so external GPU work (upscaling) serializes
+        against load/swap/generate on that GPU. Only called with a valid
+        CUDA index (callers skip it when the registry has no GPU)."""
+        return self._get_gpu_state(gpu).lock
 
     def _park_state_locked(self, state: _GpuState) -> None:
         """Move the GPU-resident model to RAM and keep it parked.

@@ -72,7 +72,7 @@ def _png_text_chunks(data: bytes) -> dict:
     return {k: v for k, v in (img.info or {}).items() if isinstance(v, str)}
 
 
-def _transform_mask(mask: np.ndarray, W: int, H: int) -> np.ndarray:
+def transform_mask(mask: np.ndarray, W: int, H: int) -> np.ndarray:
     """mask (any size) -> (H, W) uint8: aspect fit within, centered — the
     same mapping the image itself receives in "inpaint not masked".
     Copied unchanged when the size already matches."""
@@ -114,6 +114,7 @@ class Canvas:
         self._user_pinned: set[str] = set()
         self._upload_counter = 0
         self._crop_counter = 0
+        self._upscale_counter = 0
         # brush PNG lookup: the provided defaults (res/brushes/) are
         # searched first, then the user's brushes (user/brushes/)
         self._brushes_dir = brushes_dir
@@ -188,7 +189,7 @@ class Canvas:
         fresh empty (zero) mask."""
         if src_id is None or src_id not in self._images:
             return np.zeros((H, W), dtype=np.uint8)
-        return _transform_mask(self._images[src_id].mask, W, H)
+        return transform_mask(self._images[src_id].mask, W, H)
 
     def add_result(
         self, job_id: int, index: int, png: bytes, info: dict | None,
@@ -453,6 +454,31 @@ class Canvas:
             )
             # keep both the pre-crop image and the crop restorable as
             # thumbnails (pinned before entering, so eviction sees them)
+            self._pin_locked(prev_id)
+            self._pin_locked(eid)
+            self._enter_entity_locked(eid)
+            return prev_id, eid
+
+    # --- upscale ---
+    def import_upscaled(self, png: bytes, info: dict,
+                        mask: np.ndarray) -> tuple[str, str]:
+        """Register an upscaled RGB PNG as a new ``upscale:{n}`` entity and
+        make it the displayed image. Mirrors ``crop()``: the previous image
+        is pinned (restorable thumbnail) and the new entity is pinned as
+        well (both survive thumbnail switches, released by the next
+        generation's ``release_pins()``). The mask is the SOURCE mask
+        already resized to the new image's size (see transform_mask).
+        Returns ``(prev_image_id, upscale_image_id)``."""
+        with self._lock:
+            if self._current is None:
+                raise ValueError("cannot upscale an empty canvas")
+            prev_id = self._current
+            eid = f"upscale:{self._upscale_counter}"
+            self._upscale_counter += 1
+            self._images[eid] = CanvasImage(
+                id=eid, png=png, info=dict(info),
+                image=_decode_png(png), mask=mask,
+            )
             self._pin_locked(prev_id)
             self._pin_locked(eid)
             self._enter_entity_locked(eid)

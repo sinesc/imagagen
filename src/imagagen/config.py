@@ -123,6 +123,12 @@ class Config:
         return self.models_dir / "segmentation"
 
     @property
+    def upscalers_dir(self) -> Path:
+        """Upscaler model files (.pth/.pt), loaded via spandrel (see
+        imagagen.upscalers)."""
+        return self.models_dir / "upscalers"
+
+    @property
     def hf_cache_dir(self) -> Path:
         """Persistent HuggingFace hub cache (tokenizers, configs, ...).
 
@@ -380,6 +386,7 @@ def ensure_dirs(config: Config) -> None:
         config.models_dir / "zimage",
         config.models_dir / "krea2",
         config.segmentation_models_dir,
+        config.upscalers_dir,
         config.loras_dir,
         config.infra_dir,
         config.user_dir,

@@ -22,6 +22,11 @@ const state = {
   segClasses: [], // last-used person-mask class selection ([] = default)
   segThreshold: 0.25, // confidence cut (0..1) of the segmenter dialog
   segFeather: 0, // mask edge feather radius (canvas px) of that dialog
+  // last-used Upscale dialog settings (session-only; not ui-state):
+  // upscaler id, scale factor, max side length (0 = no limit) and the
+  // model tile size/overlap (see imagagen/upscalers.py for the semantics)
+  upscale: { upscaler: "Lanczos", scale: 4, maxSide: 0, tile: 192,
+             tileOverlap: 8 },
   // the preset currently matching the form: {name, keys} where keys are its
   // enabled control keys. While set, the preset stays selected; a user edit of
   // any covered field clears it (clearActivePreset).
@@ -898,7 +903,9 @@ function renderThumbs() {
         ? `source image${dims}${typeof t.seed === "number" ? ` (seed ${t.seed})` : ""} (click to restore)`
         : t.crop
           ? `crop${dims} (click to restore)`
-          : t.upload
+          : t.upscale
+            ? `upscaled image${dims} (click to restore)`
+            : t.upload
             ? `uploaded image${dims} (click to restore)`
             : `#${i} seed ${t.seed}${dims}`;
     };
@@ -1040,6 +1047,162 @@ async function doCrop(x, y, w, h) {
     setStatus(`crop failed: ${e.message}`, true);
     viewRedraw();
   }
+}
+
+// ---------------- upscale (toolbar dialog, forge Extras semantics) ----------------
+// The current canvas image is upscaled into a NEW entity server-side
+// (POST /api/upscale runs synchronously, WS phase/progress events drive
+// the bar); the pre-upscale image stays as a restorable thumbnail and the
+// result is selected immediately -- exactly the crop flow.
+function addUpscaleThumbs(r) {
+  // the not-yet-upscaled image becomes a thumbnail, unless it already is
+  // one (e.g. a generation result currently on the canvas)
+  if (!state.thumbs.some((t) => t.image_id === r.prev_image_id)) {
+    state.thumbs.push({ image_id: r.prev_image_id, url: r.prev_url,
+                        upscale: true });
+  }
+  state.thumbs.push({ image_id: r.upscale_image_id, url: r.upscale_url,
+                      upscale: true });
+  state.currentThumb = state.thumbs.length - 1;
+  currentEntityId = r.upscale_image_id;
+  renderThumbs();
+}
+
+// mirrors imagagen/upscalers.py dest_size (forge's rule): optional
+// max-side clamp (limit_size_by_one_dimention on w*scale, h*scale) then
+// int(w*scale)//8*8 -- so the dialog shows the size the server will make
+function upscalePreviewDims(w, h, scale, maxSide) {
+  if (maxSide > 0 && Math.max(w, h) * scale > maxSide) {
+    const fw = w * scale, fh = h * scale;
+    let tw, th;
+    if (fh > fw && fh > maxSide) {
+      tw = Math.floor((maxSide * fw) / fh); th = maxSide;
+    } else if (fw > maxSide) {
+      th = Math.floor((maxSide * fh) / fw); tw = maxSide;
+    }
+    scale = Math.max(tw / w, th / h);
+  }
+  return [Math.floor((w * scale) / 8) * 8, Math.floor((h * scale) / 8) * 8];
+}
+
+async function openUpscaleDialog() {
+  let upscalers;
+  try {
+    const res = await fetch("/api/upscalers");
+    if (!res.ok) throw new Error(String(res.status));
+    upscalers = (await res.json()).upscalers;
+  } catch (e) {
+    setStatus(`upscaler list failed: ${e.message}`, true);
+    return;
+  }
+  const u = state.upscale;
+  // a model that vanished (or the first open) falls back to the first built-in
+  if (!upscalers.some((x) => x.id === u.upscaler)) u.upscaler = upscalers[0].id;
+
+  const comboRoot = el("span", { class: "ups-upscaler" });
+  makeCombobox(comboRoot, pathGroupOptions(
+    upscalers.map((x) => ({ value: x.id, text: x.name }))),
+    { initial: u.upscaler });
+  const scale = el("input", { class: "ups-scale", type: "range",
+    min: "1", max: "8", step: "0.25",
+    title: "upscaling factor: the model runs until the image reaches that size (max 3 passes), a final Lanczos fit adjusts it exactly -- a 4x model at scale 2 overshoots and shrinks back" });
+  scale.value = String(u.scale);
+  const scaleVal = el("b", {}, String(u.scale));
+  const maxSide = el("input", { class: "ups-maxside", type: "number",
+    min: "0", max: "16384", step: "8",
+    title: "if an output side would end up larger than this, the output is shrunk to fit (0 = no limit)" });
+  maxSide.value = String(u.maxSide);
+  const dimsOut = el("b", { class: "ups-dims" }, "");
+  const tile = el("input", { class: "ups-tile", type: "number",
+    min: "0", max: "512", step: "16",
+    title: "model tile size in source-image px (0 = untiled; lower it if the GPU runs out of memory)" });
+  tile.value = String(u.tile);
+  const overlap = el("input", { class: "ups-overlap", type: "number",
+    min: "0", max: "48", step: "1",
+    title: "tile overlap in px, feathered to hide seams (low values = visible seams)" });
+  overlap.value = String(u.tileOverlap);
+
+  const updateDims = () => {
+    if (!view.has) { dimsOut.textContent = ""; return; }
+    const s = parseFloat(scale.value);
+    const ms = parseInt(maxSide.value || "0", 10);
+    const [dw, dh] = upscalePreviewDims(view.w, view.h,
+      Number.isFinite(s) ? s : 1, Number.isFinite(ms) && ms > 0 ? ms : 0);
+    dimsOut.textContent = `${dw}\u00d7${dh}`;
+  };
+  comboRoot.addEventListener("change", () => {
+    // forge's set_scale_by_when_changing_upscaler: "4x"/"x4"/"2X" in the
+    // upscaler name pre-sets the scale factor
+    const m = /(\d)[xX]|[xX](\d)/.exec(comboRoot.value || "");
+    if (m) {
+      scale.value = m[1] || m[2];
+      scaleVal.textContent = scale.value;
+    }
+    updateDims();
+  });
+  scale.addEventListener("input", () => {
+    scaleVal.textContent = scale.value;
+    updateDims();
+  });
+  maxSide.addEventListener("input", updateDims);
+  updateDims();
+
+  const body = el("div", { class: "ups-dialog" },
+    el("label", {}, "Upscaler", comboRoot),
+    el("div", { class: "soft-opt" },
+      el("div", { class: "soft-opt-head" }, el("span", {}, "Scale by"), scaleVal),
+      scale),
+    el("div", { class: "ups-row" },
+      el("label", {}, "Max side length", maxSide),
+      el("label", {}, "Output size", dimsOut)),
+    el("div", { class: "ups-row" },
+      el("label", {}, "Tile size (px)", tile),
+      el("label", {}, "Overlap (px)", overlap)),
+  );
+
+  openDialog("Upscale", body, async () => {
+    const upscaler = comboRoot.value;
+    const s = parseFloat(scale.value);
+    const ms = parseInt(maxSide.value || "0", 10);
+    const tl = parseInt(tile.value || "0", 10);
+    const ov = parseInt(overlap.value || "0", 10);
+    if (!upscaler) { dialogError("pick an upscaler"); return false; }
+    if (!Number.isFinite(s) || s < 1 || s > 8) {
+      dialogError("scale must be between 1 and 8"); return false;
+    }
+    if (!Number.isFinite(ms) || ms < 0) {
+      dialogError("max side length must be 0 or more"); return false;
+    }
+    if (!Number.isFinite(tl) || tl < 0 || tl > 512) {
+      dialogError("tile size must be between 0 and 512"); return false;
+    }
+    if (!Number.isFinite(ov) || ov < 0 || ov > 48) {
+      dialogError("tile overlap must be between 0 and 48"); return false;
+    }
+    const okBtn = $("dialog-ok");
+    okBtn.disabled = true; // one upscale at a time (the server 409s anyway)
+    try {
+      await forceSync(); // the server upscales ITS copy of the canvas
+      const r = await api("/api/upscale", {
+        upscaler, scale: s, max_side_length: ms, tile: tl, tile_overlap: ov,
+      });
+      u.upscaler = upscaler; u.scale = s; u.maxSide = ms;
+      u.tile = tl; u.tileOverlap = ov;
+      addUpscaleThumbs(r);
+      await viewRefresh();
+      setStatus(`upscaled to ${r.width}\u00d7${r.height} (${upscaler})`);
+      return true;
+    } catch (e) {
+      dialogError(`upscale failed: ${e.message}`);
+      return false; // keep the dialog open (fix tile size on OOM and retry)
+    } finally {
+      okBtn.disabled = false;
+      // the WS-driven progress bar belongs to the upscale while the
+      // request is in flight; clear it once the response settles
+      $("progress-fill").style.width = "0%";
+      $("progress-label").textContent = "";
+    }
+  }, "Upscale");
 }
 
 function setGenerating(on) {
@@ -2247,6 +2410,7 @@ function wireToolbar() {
   $("mask-erode").onclick = () => maskOp("erode");
   $("mask-clear").onclick = () => maskOp("clear");
   $("seg-run").onclick = () => openSegDialog();
+  $("btn-upscale").onclick = () => openUpscaleDialog();
   $("rotation").onchange = () => { onUserFieldChange("rotation"); scheduleSaveUiState(0); };
   $("zoom-in").onclick = () => zoomCenter(1.25);
   $("zoom-out").onclick = () => zoomCenter(0.8);
@@ -2906,7 +3070,8 @@ document.addEventListener("keydown", (e) => {
 }, true);
 
 // D / S / C / M / P / Y / E switch tools (draw, smudge, clone, mask, crop,
-// copy, paste), N / K / R act on the mask, T opens the segment dialog, F
+// copy, paste), N / K / R act on the mask, T opens the segment dialog, U
+// opens the upscale dialog, F
 // fits the image, CTRL+S saves,
 // CTRL+G generates and CTRL+Z / CTRL+Y undo / redo; ENTER applies a floating
 // selection and ESC aborts an in-flight rectangle or discards the selection
@@ -2952,6 +3117,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "k" || e.key === "K") $("mask-erode").onclick();
   else if (e.key === "r" || e.key === "R") $("mask-clear").onclick();
   else if ((e.key === "t" || e.key === "T") && $("dialog").hidden) $("seg-run").onclick(); // guarded: while a dialog is open T must not re-open / reset it
+  else if ((e.key === "u" || e.key === "U") && $("dialog").hidden) $("btn-upscale").onclick(); // guarded: same for the Upscale dialog
   else if (e.key === "f" || e.key === "F") viewFit();
   // Esc aborts an in-flight rectangle first, else discards the floating
   // selection; Enter applies it (both only while no dialog is open)
