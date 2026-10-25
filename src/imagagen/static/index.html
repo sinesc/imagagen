@@ -9,13 +9,13 @@
   <div id="layout">
     <aside id="controls">
       <div class="row bottom-row">
-        <label title="preset: applies the checked settings of the selected preset on select">Preset
+        <label for="" title="preset: applies the checked settings of the selected preset on select">Preset
           <span id="preset"></span>
         </label>
         <button id="preset-manage" class="mini icon" title="create/edit/delete setting presets">⚙</button>
       </div>
       <div class="row model-row">
-        <label>Model
+        <label for="">Model
           <span id="model"></span>
         </label>
         <span class="mini-btns" title="model configurations">
@@ -25,21 +25,24 @@
         </span>
       </div>
       <div class="row">
-        <label class="cfg-slot" title="-1 = use the model default (the configuration's value, then the model built-in)">CFG <input id="cfg" type="number" value="-1" min="-1" step="0.1"></label>
-        <label class="steps-slot" title="-1 = use the model default (the configuration's value, then the model built-in)">Steps <input id="steps" type="number" value="-1" min="-1" max="150"></label>
-        <label class="seed-slot">Seed <input id="seed" type="number" value="-1" title="-1 = random"></label>
+        <label class="cfg-slot" for="" title="-1 = use the model default (the configuration's value, then the model built-in)">CFG <input id="cfg" type="number" value="-1" min="-1" step="0.1"></label>
+        <label class="steps-slot" for="" title="-1 = use the model default (the configuration's value, then the model built-in)">Steps <input id="steps" type="number" value="-1" min="-1" max="150"></label>
+        <label class="seed-slot" for="">Seed <input id="seed" type="number" value="-1" title="-1 = random"></label>
         <button id="seed-reset" class="mini icon" title="reset the seed to -1 (a new random seed for every image)">↺</button>
         <button id="seed-from-image" class="mini icon" title="copy the seed of the currently selected image into the seed field">⚄</button>
       </div>
       <div class="row">
-        <label>Sampler <select id="sampler"><option value="">Model default</option></select></label>
-        <label>Scheduler <select id="scheduler"><option value="">Model default</option></select></label>
+        <label for="">Sampler <select id="sampler"><option value="">Model default</option></select></label>
+        <label for="">Scheduler <select id="scheduler"><option value="">Model default</option></select></label>
       </div>
       <div class="row">
         <!-- for="" disassociates the caption: an implicit label points at the
-             FIRST labelable descendant (a row's combo input); when that row is
-             toggled off its input is disabled, which marks the whole label
-             :disabled (Chromium) and blocks clicks on the subtree (Playwright)
+             FIRST labelable descendant (a row's combo input), so clicking a
+             caption would focus/activate that control. Labels use for=""
+             throughout the main UI (checkboxes and radios excepted) to keep
+             caption clicks inert; it also avoids the case where a disabled
+             input marks the whole label :disabled (Chromium) and blocks clicks
+             on the subtree (Playwright).
              -->
         <label for="" title="LoRAs (loras/<model-type>/) are used in addition to the model configuration's LoRAs, which are always prepended">LoRAs
           <span class="loras">
@@ -63,13 +66,13 @@
         </label>
       </div>
       <div class="row dims-row">
-        <label class="dims" title="-1 = auto: mask bounding box, scaled by Scale, rounded up to a multiple of 16 and raised to a 1024 min side (AR preserved; Inpaint/Outpaint only)">Width <input id="width" type="number" value="1024" min="64" max="4096" step="8"></label>
+        <label class="dims" for="" title="-1 = auto: mask bounding box, scaled by Scale, rounded up to a multiple of 16 and raised to a 1024 min side (AR preserved; Inpaint/Outpaint only)">Width <input id="width" type="number" value="1024" min="64" max="4096" step="8"></label>
         <button id="swap-dims" type="button" class="mini icon" title="swap width and height">↔</button>
-        <label class="dims" title="-1 = auto: mask bounding box, scaled by Scale, rounded up to a multiple of 16 and raised to a 1024 min side (AR preserved; Inpaint/Outpaint only)">Height <input id="height" type="number" value="1024" min="64" max="4096" step="8"></label>
-        <label class="trio" title="scale the generation size (user-specified or mask-derived) before rounding up to a multiple of 16; auto-computed (-1) sizes are additionally raised to a 1024 min side with the other dimension scaled to keep the aspect ratio (Inpaint/Outpaint only)">Scale
+        <label class="dims" for="" title="-1 = auto: mask bounding box, scaled by Scale, rounded up to a multiple of 16 and raised to a 1024 min side (AR preserved; Inpaint/Outpaint only)">Height <input id="height" type="number" value="1024" min="64" max="4096" step="8"></label>
+        <label class="trio" for="" title="scale the generation size (user-specified or mask-derived) before rounding up to a multiple of 16; auto-computed (-1) sizes are additionally raised to a 1024 min side with the other dimension scaled to keep the aspect ratio (Inpaint/Outpaint only)">Scale
           <input id="oversample" type="number" value="1" min="0.1" max="4" step="0.05" disabled>
         </label>
-        <label class="trio" title="rotate the source before generating and counter-rotate the result: the model always sees upright content (+ = clockwise); ±45°/±135° extend the generation size so the rotated image fits">Rotate
+        <label class="trio" for="" title="rotate the source before generating and counter-rotate the result: the model always sees upright content (+ = clockwise); ±45°/±135° extend the generation size so the rotated image fits">Rotate
           <select id="rotation">
             <option value="-180">-180°</option>
             <option value="-135">-135°</option>
@@ -82,10 +85,10 @@
             <option value="180">+180°</option>
           </select>
         </label>
-        <label class="trio">Batch <input id="batch" type="number" value="1" min="1" max="32"></label>
+        <label class="trio" for="">Batch <input id="batch" type="number" value="1" min="1" max="32"></label>
       </div>
       <div class="row">
-        <label class="mode-label" title="Generate: new image — Inpaint: regenerate the masked area — Outpaint: regenerate the whole image (img2img/outpaint), masked content protected">
+        <label class="mode-label" for="" title="Generate: new image — Inpaint: regenerate the masked area — Outpaint: regenerate the whole image (img2img/outpaint), masked content protected">
           Mode
           <select id="mode">
             <option value="generate">Generate</option>
@@ -93,10 +96,10 @@
             <option value="inpaint_not_masked">Outpaint</option>
           </select>
         </label>
-        <label title="context padding around the masked area, canvas px per side (Inpaint only)">Mask pad
+        <label title="context padding around the masked area, canvas px per side (Inpaint only)" for="">Mask pad
           <input id="mask-padding" type="number" value="8" min="0" max="2048" step="8" disabled>
         </label>
-        <label title="denoising strength (inpaint modes only)">Denoise
+        <label title="denoising strength (inpaint modes only)" for="">Denoise
           <input id="denoise" type="number" value="1" min="0" max="1" step="0.01" disabled>
         </label>
       </div>
@@ -114,7 +117,7 @@
 
     <main id="stage">
       <div id="prompts">
-        <label>
+        <label for="">
           <span class="prompt-head">
             <span>Prompt</span>
             <span id="prompt-tokens" class="muted" title="CLIP tokens of the prompt with selected styles applied (75 per window); a prompt longer than one window is split across several"></span>
@@ -126,7 +129,7 @@
       </div>
       <div id="toolbar">
         <button id="tool-brush" class="tool active mini" title="draw tool (D); hold ctrl to pick the canvas colour at the cursor; with a floating selection active, shift draws as an eraser"><u>D</u>raw</button>
-        <label class="slab" title="brush colour (mask strokes ignore it)">
+        <label class="slab" for="" title="brush colour (mask strokes ignore it)">
           <input id="brush-color" type="color" value="#ffffff">
         </label>
         <span class="sep"></span>
@@ -135,7 +138,7 @@
         <button id="tool-mask" class="tool mini" title="mask tool (M); draw with shift held to erase"><u>M</u>ask</button>
         <span class="sep"></span>
         <select id="brush" title="brush shape (greyscale png from brushes/)"></select>
-        <label class="slab" title="brush size, logarithmic 10–500 px (canvas px; screen px when 'screen' is checked; Ctrl+mouse wheel adjusts it)">
+        <label class="slab" for="" title="brush size, logarithmic 10–500 px (canvas px; screen px when 'screen' is checked; Ctrl+mouse wheel adjusts it)">
           <span>Size</span>
           <input id="brush-size" type="range" min="0" max="1" step="0.001" value="0">
           <b id="brush-size-val">10</b>
@@ -144,13 +147,13 @@
           <span>Screen</span>
           <input id="brush-screen" type="checkbox">
         </label>
-        <label class="slab" title="brush opacity (Shift+mouse wheel adjusts it)">
+        <label class="slab" for="" title="brush opacity (Shift+mouse wheel adjusts it)">
           <span>Opacity</span>
           <input id="brush-opacity" type="range" min="0.05" max="1" step="0.01" value="1">
           <b id="brush-opacity-val">1.00</b>
         </label>
         <span class="sep"></span>
-        <label class="slab num">Mask px
+        <label class="slab num" for="">Mask px
           <input id="mask-px" type="number" value="4" min="0" max="100">
         </label>
         <button id="mask-dilate" class="mini" title="expand the mask by the given pixels (N)">Expa<u>n</u>d</button>
