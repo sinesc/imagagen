@@ -1,7 +1,7 @@
 """Key mapping for Z-Image LoRAs (imagagen.backends.zimage.lora).
 
 Two on-disk formats are tested:
-- the *official naming* asset ``loras/zimage/ZIT shiny latex bodysuit.
+- the *official naming* asset ``loras/zimage/ZIT-shine.
   safetensors`` (rank 32, 30 main blocks, ``to_q``/``to_k``/``to_v`` pairs,
   no alpha tensors): our transformer fuses q/k/v into one ``qkv`` GEMM, so
   each of those keys maps to a row slice of the fused weight;
@@ -30,7 +30,7 @@ from imagagen.backends.zimage.lora import (
 )
 
 ROOT = Path(__file__).resolve().parents[2] / "loras" / "zimage"
-OFFICIAL = ROOT / "ZIT shiny latex bodysuit.safetensors"
+OFFICIAL = ROOT / "ZIT-shine.safetensors"
 EXPORT = ROOT / "lora_3784692__zit1.safetensors"
 
 

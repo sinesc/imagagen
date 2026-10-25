@@ -37,7 +37,7 @@ print(f"loaded in {time.time() - t0:.1f}s", flush=True)
 loras = list_loras(cfg, family="zimage")
 print("loras:", loras, flush=True)
 EXPORT = "lora_3784692__zit1"
-OFFICIAL = "ZIT shiny latex bodysuit"
+OFFICIAL = "ZIT-shine"
 assert EXPORT in loras and OFFICIAL in loras
 
 

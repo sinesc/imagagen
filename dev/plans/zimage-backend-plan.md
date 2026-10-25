@@ -3,7 +3,7 @@
 Add Z-Image as the third model family alongside SDXL and Flux. Assets are in
 place: `models/zimage/intorealism_zitV40.safetensors` (6.1 GB, fp8
 transformer), `infra/zit_ae.safetensors` (VAE), `infra/zit_encoder.safetensors`
-(4.4 GB fp8 text encoder), `loras/zimage/ZIT shiny latex bodysuit.safetensors`.
+(4.4 GB fp8 text encoder), `loras/zimage/ZIT-shine.safetensors`.
 Reference: the ComfyUI checkout in `dev/implementations/ComfyUI` (Z-Image is
 implemented there as a `Lumina2`/`NextDiT` model with the Qwen3-4B encoder).
 
