@@ -228,6 +228,7 @@ function pathGroupOptions(options) {
 // ---------------- generic dialog ----------------
 let dialogOk = null;
 let dialogClose = null;
+let dialogCancel = null;  // cancel-override (openDialog's onCancel param)
 // quick-filter widget for the dialog title row. `onFilter` gets the trimmed,
 // lowercased query (debounced); the x clears it, Escape in the input does too
 // (without closing the dialog).
@@ -261,7 +262,7 @@ function makeFilterInput(onFilter, initial = "") {
   });
   return el("div", { class: "dialog-filter" }, input, clear);
 }
-function openDialog(title, body, onOk, okText = "Save", onClose = null, onFilter = null, initialFilter = "") {
+function openDialog(title, body, onOk, okText = "Save", onClose = null, onFilter = null, initialFilter = "", onCancel = null) {
   // list dialogs (they have the quick-filter) pin the title row and the
   // actions and scroll only their item list (.list in style.css)
   $("dialog-box").classList.toggle("list", !!onFilter);
@@ -275,6 +276,7 @@ function openDialog(title, body, onOk, okText = "Save", onClose = null, onFilter
   b.append(body);
   dialogOk = onOk;
   dialogClose = onClose;
+  dialogCancel = onCancel;
   // a close-only dialog (no onOk) has the ok button as its single action,
   // so the functionally identical Cancel button is hidden
   $("dialog-cancel").hidden = !onOk;
@@ -292,12 +294,22 @@ function closeDialog() {
   const onClose = dialogClose;
   dialogOk = null;
   dialogClose = null;
+  dialogCancel = null;
   if (onClose) onClose(); // e.g. return to the management list dialog
 }
-$("dialog-cancel").onclick = closeDialog;
-$("dialog").onclick = (e) => { if (e.target === $("dialog")) closeDialog(); };
+// every cancel path (Cancel button, Escape, backdrop click) routes through
+// the dialog's onCancel override when it has one (e.g. the Upscale dialog
+// aborts its running request instead of closing)
+function requestDialogCancel() {
+  if (dialogCancel) dialogCancel();
+  else closeDialog();
+}
+$("dialog-cancel").onclick = () => requestDialogCancel();
+$("dialog").onclick = (e) => {
+  if (e.target === $("dialog")) requestDialogCancel();
+};
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("dialog").hidden) closeDialog();
+  if (e.key === "Escape" && !$("dialog").hidden) requestDialogCancel();
 });
 function dialogError(text) {
   $("dialog-body").append(el("div", { class: "dialog-error" }, text));

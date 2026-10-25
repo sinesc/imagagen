@@ -8,8 +8,10 @@ no GPU; the pure-PIL built-in upscalers exercise the full round trip.
 """
 
 import io
+from pathlib import Path
 
 import httpx
+import pytest
 from conftest import combo_pick, combo_seq, set_canvas, set_input, wait_until
 from PIL import Image
 
@@ -153,3 +155,47 @@ def test_upscale_cancel_leaves_canvas(page, server):
     page.click("#dialog-cancel")
     assert _canvas_size(base) == (200, 150)
     assert page.evaluate("state.thumbs.length") == 0
+
+
+def test_upscale_cancel_aborts_running_upscale(page, server):
+    base, tmp = server
+    # a REAL model (smallest installed weight, symlinked into the server
+    # root) so the CPU run is slow enough to interrupt mid-tiling; the
+    # pure-PIL built-ins have no tile boundary to abort at
+    models_root = Path(__file__).resolve().parents[2] / "models" / "upscalers"
+    files = sorted(models_root.rglob("*.pth"),
+                   key=lambda p: p.stat().st_size) \
+        if models_root.is_dir() else []
+    if not files:
+        pytest.skip("no upscaler weights on this host")
+    model = next((f for f in files if "x2" in f.name.lower()), files[0])
+    dst = tmp / "models" / "upscalers" / model.name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.symlink_to(model.resolve())
+
+    _open(page, base)
+    _show(page, base, 64, 64)
+    _open_dialog(page)
+    combo_pick(page, page.locator(".ups-upscaler"), model.name[:-4])
+    # tiny tiles -> many slow CPU tiles: plenty of runtime to abort in
+    set_input(page, ".ups-tile", 8)
+    set_input(page, ".ups-overlap", 4)
+    page.click("#dialog-ok")
+    # the OK button is disabled while the upscale request is in flight
+    page.wait_for_function(
+        "document.getElementById('dialog-ok').disabled === true")
+    page.wait_for_timeout(1200)  # let the run actually start (model load)
+
+    # Cancel mid-run aborts instead of closing; the dialog settles closed
+    # once the request comes back as "aborted"
+    page.click("#dialog-cancel")
+    page.wait_for_function(
+        "document.getElementById('dialog').hidden === true"
+        " && document.getElementById('dialog-ok').disabled === false",
+        timeout=60000)
+    # nothing was applied: canvas untouched, no new entities/thumbs
+    assert _canvas_size(base) == (64, 64)
+    assert _thumb_titles(page) == []
+    # the manager is free again: a built-in upscale still works
+    assert httpx.post(f"{base}/api/upscale", json={
+        "upscaler": "Lanczos", "scale": 2.0}, timeout=30).status_code == 200

@@ -58,7 +58,7 @@ from .segmentation import CONFIDENCE_THRESHOLD, MAX_FEATHER, SegmentationError, 
 from .soft_inpaint import SoftInpainting
 from .styles import Style, StyleStore, apply_styles, strip_prompt_comments
 from .uistate import UiState, UiStateStore
-from .upscalers import UpscaleBusy, UpscaleError, UpscalerManager
+from .upscalers import UpscaleAborted, UpscaleBusy, UpscaleError, UpscalerManager
 
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
@@ -1290,6 +1290,9 @@ def create_app(
                 src_arr, body.upscaler, body.scale,
                 max_side=body.max_side_length, tile=body.tile,
                 tile_overlap=body.tile_overlap, progress=progress)
+        except UpscaleAborted:
+            # cancelled via /api/upscale/abort (the frontend's Cancel)
+            return JSONResponse({"error": "aborted"}, status_code=409)
         except UpscaleBusy as e:
             return JSONResponse({"error": str(e)}, status_code=409)
         except UpscaleError as e:
@@ -1330,6 +1333,13 @@ def create_app(
             "width": new_w,
             "height": new_h,
         }
+
+    @app.post("/api/upscale/abort")
+    def canvas_upscale_abort() -> dict:
+        """Cancel the running upscale (checked between tiles; the blocked
+        /api/upscale request then answers 409 "aborted"). Reports whether
+        an upscale was actually in flight."""
+        return {"was_running": upscalers.request_abort()}
 
     @app.get("/api/canvas/image.png")
     def canvas_image_png(id: str) -> Response:

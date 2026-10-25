@@ -10,6 +10,7 @@ import numpy as np
 from PIL import Image
 
 from imagagen.upscalers import (
+    UpscaleAborted,
     UpscaleBusy,
     UpscaleError,
     UpscalerManager,
@@ -52,6 +53,7 @@ def test_tiled_pass_reproduces_full_resize():
     the tile count actually processed (it used to be computed with the
     maximal overlap: 1720x720/tile 192/overlap 8 counted 119 but ran 40)."""
     m = _Fake4x.__new__(_Fake4x)
+    m._abort = threading.Event()
     src = np.arange(96 * 128 * 3, dtype=np.uint8).reshape(96, 128, 3)
     img = Image.fromarray(src)
     for tile, overlap in ((32, 8), (48, 16), (48, 1)):
@@ -93,6 +95,45 @@ def test_tiling_guards():
     # overlap never reaches half a tile (split_grid stride stays positive)
     assert m._overlap(64, 64) == 32
     assert m._overlap(64, 8) == 8
+
+
+def test_abort_check():
+    m = UpscalerManager(Path("/nonexistent"), device=None)
+    # no run in flight: request_abort reports that (but still latches the
+    # flag, cleared by the NEXT run)
+    assert m.request_abort() is False
+    img = Image.fromarray(np.zeros((96, 128, 3), np.uint8))
+    try:
+        m._model_pass(None, img, 48, 16, None, 0, 0)
+        raise AssertionError("expected UpscaleAborted")
+    except UpscaleAborted:
+        pass
+    # built-in resizes have no tile boundary to abort at (they are fast)
+    assert m.run(np.zeros((16, 16, 3), np.uint8), "Nearest", 2.0).shape[:2] \
+        == (32, 32)
+
+
+def test_abort_mid_tiled_run():
+    m = _Fake4x.__new__(_Fake4x)
+    m._abort = threading.Event()
+    base_patch = m._run_patch
+    n = []
+
+    def patched(desc, img):
+        out = base_patch(desc, img)
+        n.append(out)
+        if len(n) == 2:  # stop the run after two tiles
+            m._abort.set()
+        return out
+
+    m._run_patch = patched
+    img = Image.fromarray(np.zeros((96, 128, 3), np.uint8))
+    try:
+        m._model_pass(None, img, 48, 16, None, 0, 0)
+        raise AssertionError("expected UpscaleAborted")
+    except UpscaleAborted:
+        pass
+    assert len(n) == 2  # stopped at the next tile boundary, not earlier
 
 
 def test_run_builtins_and_busy_lock():

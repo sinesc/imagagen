@@ -54,6 +54,10 @@ class UpscaleBusy(UpscaleError):
     """Another upscale is already running (one at a time per process)."""
 
 
+class UpscaleAborted(UpscaleError):
+    """The run was cancelled via request_abort() (raised between tiles)."""
+
+
 # ------------------------------------------------------------------ grid ---
 # port of forge modules/images.py Grid/split_grid/combine_grid
 
@@ -195,6 +199,7 @@ class UpscalerManager:
         self._device = device or "cpu"
         self._models: dict[str, object] = {}  # id -> spandrel descriptor (CPU)
         self._busy = threading.Lock()
+        self._abort = threading.Event()  # set by request_abort()
 
     # --- discovery ---
     def _scan(self) -> dict[str, Path]:
@@ -271,15 +276,29 @@ class UpscalerManager:
 
         ``progress(done, total)`` is called once per tile (and once for an
         untiled pass). Raises UpscaleError (unknown/broken upscaler, hard
-        pixel limit) or UpscaleBusy (another run is active).
+        pixel limit), UpscaleBusy (another run is active) or UpscaleAborted
+        (request_abort() was called while this run was in flight).
         """
         if not self._busy.acquire(blocking=False):
             raise UpscaleBusy("an upscale is already running")
+        # a fresh run starts un-aborted (an abort that arrives BEFORE this
+        # request lands cannot be caught here; the UI's cancel is
+        # clickable only after the request was sent, so that window is
+        # tiny; pressing cancel again covers it)
+        self._abort.clear()
         try:
             return self._run(arr, upscaler_id, scale, max_side, tile,
                              tile_overlap, progress)
         finally:
             self._busy.release()
+
+    def request_abort(self) -> bool:
+        """Ask the running upscale (if any) to stop at the next tile
+        boundary; its run() then raises UpscaleAborted and the blocked
+        /api/upscale request fails with "aborted". Returns whether an
+        upscale was actually in flight."""
+        self._abort.set()
+        return self._busy.locked()
 
     def _run(self, arr, upscaler_id, scale, max_side, tile, tile_overlap,
              progress):
@@ -358,6 +377,10 @@ class UpscalerManager:
     def _model_pass(self, desc, img: Image.Image, tile: int, overlap: int,
                     progress, done: int,
                     total: int) -> tuple[Image.Image, int]:
+        # abort is only honoured BETWEEN tiles/passes: a model pass already
+        # running always finishes (no safe way to interrupt torch itself)
+        if self._abort.is_set():
+            raise UpscaleAborted("aborted")
         if not self._tiles(img.width, img.height, tile):
             out = self._run_patch(desc, img)
             done += 1
@@ -371,6 +394,8 @@ class UpscalerManager:
         for y, th, row in grid.tiles:
             new_row = []
             for x, tw, tile_img in row:
+                if self._abort.is_set():
+                    raise UpscaleAborted("aborted")
                 out = self._run_patch(desc, tile_img)
                 sf = out.width // tile_img.width
                 new_row.append([x * sf, tw * sf, out])

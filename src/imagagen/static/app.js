@@ -1160,7 +1160,10 @@ async function openUpscaleDialog() {
       el("label", {}, "Overlap (px)", overlap)),
   );
 
+  let upsRunning = false;   // an /api/upscale request is in flight
+  let upsAborting = false;  // cancel was pressed, waiting for the settle
   openDialog("Upscale", body, async () => {
+    if (upsRunning) return false;
     const upscaler = comboRoot.value;
     const s = parseFloat(scale.value);
     const ms = parseInt(maxSide.value || "0", 10);
@@ -1181,6 +1184,7 @@ async function openUpscaleDialog() {
     }
     const okBtn = $("dialog-ok");
     okBtn.disabled = true; // one upscale at a time (the server 409s anyway)
+    upsRunning = true;
     try {
       await forceSync(); // the server upscales ITS copy of the canvas
       const r = await api("/api/upscale", {
@@ -1193,16 +1197,32 @@ async function openUpscaleDialog() {
       setStatus(`upscaled to ${r.width}\u00d7${r.height} (${upscaler})`);
       return true;
     } catch (e) {
+      if (e.message === "aborted") {
+        // the user cancelled mid-run: closing is the expected outcome
+        // (onOk's return value settles the dialog), no retry error
+        setStatus("upscale aborted");
+        return;
+      }
       dialogError(`upscale failed: ${e.message}`);
       return false; // keep the dialog open (fix tile size on OOM and retry)
     } finally {
+      upsRunning = false;
+      upsAborting = false;
       okBtn.disabled = false;
       // the WS-driven progress bar belongs to the upscale while the
       // request is in flight; clear it once the response settles
       $("progress-fill").style.width = "0%";
       $("progress-label").textContent = "";
     }
-  }, "Upscale");
+  }, "Upscale", null, null, "", () => {
+    // Cancel/Escape/backdrop while an upscale runs: ABORT it instead of
+    // closing (the in-flight request then settles as "aborted", which
+    // closes the dialog); without a run this is the plain close
+    if (!upsRunning) { closeDialog(); return; }
+    if (upsAborting) return; // abort already requested; wait for the settle
+    upsAborting = true;
+    api("/api/upscale/abort", {}).catch(() => { /* raced: run finished */ });
+  });
 }
 
 function setGenerating(on) {

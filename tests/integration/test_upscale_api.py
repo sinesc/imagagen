@@ -3,6 +3,8 @@ new entity + pin + metadata/mask carry-over). Uses the pure-PIL built-in
 upscalers (Lanczos/Nearest) so no GPU/model weights are needed."""
 
 import io
+import threading
+import time
 
 import numpy as np
 from PIL import Image, PngImagePlugin
@@ -173,3 +175,66 @@ def test_upscale_entities_survive_switching(tmp_path):
                       json={"id": eid}).status_code == 200
         assert Image.open(io.BytesIO(
             c.get("/api/canvas.png").content)).size == (400, 296)
+
+
+def test_upscale_abort_mid_run(tmp_path, monkeypatch):
+    with _client(tmp_path) as c:
+        # nothing running: the abort endpoint says so
+        r = c.post("/api/upscale/abort")
+        assert r.status_code == 200 and r.json() == {"was_running": False}
+
+        _set_canvas(c, _png_bytes(w=100, h=100))
+
+        # fake 4x model with a slow tile pass so there is time to abort
+        from imagagen.upscalers import UpscalerManager
+
+        class FakeDesc:
+            scale = 4
+
+            def to(self, device):
+                return self
+
+            def cpu(self):
+                return self
+
+        monkeypatch.setattr(UpscalerManager, "_load",
+                            lambda self, uid: FakeDesc())
+
+        def slow_patch(self, desc, img):
+            time.sleep(0.2)
+            return img.resize((img.width * 4, img.height * 4),
+                              Image.NEAREST)
+
+        monkeypatch.setattr(UpscalerManager, "_run_patch", slow_patch)
+
+        holder = {}
+
+        def worker():
+            # own TestClient (own portal) so the abort can run in parallel
+            with TestClient(c.app) as c2:
+                holder["r"] = c2.post(
+                    "/api/upscale", json={"upscaler": "fake_x4",
+                                          "scale": 4.0, "tile": 32,
+                                          "tile_overlap": 8})
+
+        t = threading.Thread(target=worker)
+        t.start()
+        try:
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                if c.post("/api/upscale/abort").json()["was_running"]:
+                    break
+                time.sleep(0.05)
+            else:
+                raise AssertionError("upscale never started")
+            t.join(30)
+        finally:
+            t.join(30)
+        resp = holder["r"]
+        assert resp.status_code == 409 and resp.json()["error"] == "aborted"
+        # nothing was imported: canvas untouched...
+        assert Image.open(io.BytesIO(
+            c.get("/api/canvas.png").content)).size == (100, 100)
+        # ...and the busy lock was released: a fresh upscale still works
+        assert c.post("/api/upscale", json={"upscaler": "Lanczos",
+                                            "scale": 2.0}).status_code == 200
