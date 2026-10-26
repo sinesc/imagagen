@@ -33,6 +33,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PYTEST = [str(ROOT / ".venv/bin/python"), "-m", "pytest"]
 BASE_ARGS = ["-p", "no:cacheprovider", "--no-header", "-q", "--tb=no"]
+# extra args for profiling plugins, e.g. EXTRA_PYTEST_ARGS="-p prof_plugin"
+BASE_ARGS += [a for a in os.environ.get("EXTRA_PYTEST_ARGS", "").split() if a]
 COLLECT_RE = re.compile(r"^[^\s]+::[^\s\[\]]+(?:\[[^\]]*\])?$")
 
 
@@ -136,7 +138,8 @@ def main() -> None:
         "per-test wall-clock runtime (each test in its own pytest process)",
         f"measured {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"tests: {len(rows)}   jobs: {args.jobs}   sum of runtimes: {total:.1f}s",
-        f"pure pytest-process overhead baseline: {base:.2f}s (no test module imported; 'net' = seconds - baseline)",
+        f"bare pytest-process startup baseline: {base:.2f}s "
+        f"(no test module imported; 'net' = seconds - baseline)",
         "",
         f"{'seconds':>9}  {'net':>8}  {'exit':>4}  node",
         "-" * 78,
