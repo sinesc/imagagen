@@ -565,6 +565,9 @@ button.danger:hover { background: #a33; }
   touch-action: none; /* pointer events, not scrolling, on the canvas */
   cursor: crosshair;
 }
+#canvas-empty.muted h1, #canvas-empty.muted p {
+  text-align: center;
+}
 /* tool hotkeys are live (no input/select focused): focus-color border */
 #canvas.hotkeys { border-color: #777; }
 

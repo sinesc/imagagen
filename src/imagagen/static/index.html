@@ -177,7 +177,17 @@
       <div id="canvas-holder">
         <canvas id="canvas" hidden></canvas>
         <div id="thumb-preview" hidden><img id="thumb-preview-img" alt="" draggable="false"></div>
-        <div id="canvas-empty" class="muted">empty — generate or drop a PNG here (or onto the prompt fields to import its metadata)</div>
+        <div id="canvas-empty" class="muted">
+          <h1>Nothing to show yet</h1>
+          <p>
+            Generate an image or drop a PNG here (or drop it onto
+            the prompt fields to also import its metadata).
+          </p>
+          <p>
+            Press ESC at any time to focus canvas contents and enable tool
+            hotkeys (underlined letter on tool buttons).
+          </p>
+        </div>
         <div id="sel-actions" hidden>
           <button id="sel-flip-h" class="mini" title="flip the floating selection horizontally">↔<span class="sel-word"> H-flip</span></button>
           <button id="sel-ok" class="mini" title="apply the floating selection to the image (Enter)">✓<span class="sel-word"> Apply</span></button>
