@@ -102,6 +102,7 @@ def build_parameters(
     model_name: str,
     model_hash: str,
     model_config: str | None = None,
+    model_family: str | None = None,
     denoise: float | None = None,
     rotation: int | None = None,
     loras: list[tuple[str, float]] | None = None,
@@ -131,6 +132,12 @@ def build_parameters(
       selects that configuration again (falling back to best-match scoring
       over the model + LoRAs when it is missing or its configuration was
       deleted).
+    * ``model_family``: the checkpoint family (``sdxl``/``flux``/...), the
+      directory under ``models/`` the checkpoint was loaded from
+      (imagagen-only: foreign images have none). When an import cannot
+      find the recorded checkpoint (moved/renamed file, another install's
+      folder layout), the family decides which LoRAs apply and which
+      fallback configuration is selected.
     * ``styles``: entries with "name", "prompt", "negative_prompt" and
       "enabled" -- the raw (unapplied) prompt is recorded, not the
       style-applied one, so re-import re-applies the styles exactly like a
@@ -178,6 +185,10 @@ def build_parameters(
         # the configuration name (not just the checkpoint): importing the
         # image re-selects the exact configuration it was generated with
         doc["model_config"] = model_config
+    if model_family:
+        # the checkpoint family: an import that cannot find the checkpoint
+        # itself still knows which family (and LoRA dir) the image belongs to
+        doc["model_family"] = model_family
     if denoise is not None:
         # A1111/Forge's inpaint strength: importing restores the slider
         doc["denoise"] = denoise

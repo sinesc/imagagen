@@ -104,6 +104,25 @@ def lora_files(config) -> dict[str, str]:
     return {name: fname for name, fname, _ in _discover_loras(config)}
 
 
+def loras_by_family(config) -> dict[str, list[str]]:
+    """family -> LoRA names discovered under ``loras/<family>/``.
+
+    The UI uses this to tell a LoRA of ANOTHER model family (its name is
+    discovered under some family dir, but not the selected model's) from
+    one whose file simply cannot be found at all (imported metadata whose
+    LoRA path no longer exists here).
+    """
+    loras_dir = config.loras_dir
+    out: dict[str, list[str]] = {}
+    for name, _, path in _discover_loras(config):
+        try:
+            fam = path.relative_to(loras_dir).parts[0]
+        except (ValueError, IndexError):
+            continue
+        out.setdefault(fam, []).append(name)
+    return out
+
+
 def lora_paths(config) -> dict[str, Path]:
     """Discovered LoRA name -> its file path (e.g. for the settings .json
     stored next to the .safetensors)."""

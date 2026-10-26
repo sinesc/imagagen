@@ -48,6 +48,7 @@ from .models import (
     ModelRegistry,
     filter_loras_for_family,
     list_loras,
+    loras_by_family,
     resolve_lora_names,
 )
 from .paths import next_output_path
@@ -499,9 +500,12 @@ def create_app(
     @app.get("/api/loras")
     def loras(family: str | None = None) -> dict:
         # family filters to loras/<family>/ so the UI only offers LoRAs
-        # for the selected model's family (default: all, as before)
+        # for the selected model's family (default: all, as before);
+        # by_family lets the UI tell a LoRA of another family (padlock)
+        # from one whose file cannot be found at all (❌)
         return {"loras": list_loras(config, family=family),
-                "settings": all_settings(config)}
+                "settings": all_settings(config),
+                "by_family": loras_by_family(config)}
 
     @app.post("/api/loras/settings")
     def lora_settings_save(body: LoraSettingsBody) -> dict:
@@ -1185,6 +1189,10 @@ def create_app(
             # imagagen PNGs name it outright (model_config); A1111/Forge PNGs
             # are scored over checkpoint + LoRAs, so the configuration that
             # also provides the image's LoRAs wins over a bare-checkpoint one.
+            # imagagen IDs are matched exactly: the recorded path must exist
+            # here, no guessing over same-named checkpoints in other
+            # subfolders (that silently picks the wrong file after a folder
+            # reorganisation, e.g. an import from another install).
             cfg_name = meta.get("model_config")
             try:
                 entries = app.state.config_store.entries()
@@ -1195,9 +1203,27 @@ def create_app(
                 model=meta.get("model"),
                 loras=metadata.parse_lora_entries(meta.get("loras")),
                 config_name=cfg_name if isinstance(cfg_name, str) else None,
+                exact_model=meta.get("format") == "imagagen",
             )
             if hit is not None:
                 meta["config_id"] = hit.id
+            elif meta.get("model"):
+                # The recorded checkpoint is not selectable here (its file
+                # is gone or lives under another path/layout). Mark it so
+                # the UI can report "Checkpoint not found..." and fall
+                # back on the image's family.
+                meta["model_missing"] = True
+                fam = meta.get("model_family")
+                if not (isinstance(fam, str) and fam.strip()):
+                    # imagagen PNGs written before the model_family key:
+                    # the model ID is a path under models/<family>/, so
+                    # its first component is the family when that is a
+                    # family this install actually has (not a basename
+                    # guess -- the recorded path itself says the family)
+                    first = str(meta["model"]).strip().split("/", 1)[0].strip().lower()
+                    known = {m["family"] for m in app.state.registry.list()}
+                    if first in known:
+                        meta["model_family"] = first
         return {"meta": meta, "width": width, "height": height}
 
     @app.post("/api/canvas/thumb")

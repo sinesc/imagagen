@@ -929,6 +929,9 @@ def _result_to_png(
         rotation=p.rotation or None if p is not None else None,
         model_name=backend.name,
         model_hash=backend.model_hash,
+        # the checkpoint family (models/<family>/): an import that cannot
+        # find the checkpoint file falls back on this
+        model_family=backend.family,
         # the configuration NAME (job.model_id is the checkpoint id): an
         # import re-selects the configuration, not just the checkpoint
         model_config=(job.meta_config_name if job is not None else None),

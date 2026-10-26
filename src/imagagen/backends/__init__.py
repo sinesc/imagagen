@@ -254,6 +254,10 @@ class ModelBackend(ABC):
     default_scheduler: str = "Karras"
     #: md5[:16] of the first 100MB of the checkpoint ("" for mocks)
     model_hash: str = ""
+    #: the checkpoint family (the ``models/<family>/`` dir the checkpoint
+    #: lives in; recorded as ``model_family`` in the PNG metadata so an
+    #: import of a moved/renamed checkpoint can still pick the family)
+    family: str | None = None
     #: whether attached LoRAs are actually applied to the weights (False:
     #: they are ignored and kept out of the PNG metadata)
     supports_loras: bool = True
@@ -348,6 +352,7 @@ class MockBackend(ModelBackend):
     def __init__(self, model_id: str = "mock/mock.safetensors", steps_delay: float = 0.0):
         self.model_id = model_id
         self.name = "Mock Model"
+        self.family = "sdxl"  # mirrors _MockRegistry (the mock is an SDXL stand-in)
         self._cancelled = None
         self._steps_delay = steps_delay
 

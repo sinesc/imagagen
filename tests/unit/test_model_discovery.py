@@ -1,7 +1,7 @@
 """Recursive model/LoRA discovery (subdirectories) and id formats."""
 
 from imagagen.config import Config
-from imagagen.models import ModelRegistry, list_loras
+from imagagen.models import ModelRegistry, list_loras, loras_by_family
 
 
 def _touch(root, *parts):
@@ -40,6 +40,17 @@ def test_lora_discovery_is_recursive(tmp_path):
         "test-dir/FuturisticXL",
         "test-dir/old",
     ]
+
+
+def test_loras_by_family(tmp_path):
+    _touch(tmp_path, "loras/sdxl/DMD2fp32XL1.0.safetensors")
+    _touch(tmp_path, "loras/sdxl/test-dir/FuturisticXL.safetensors")
+    _touch(tmp_path, "loras/flux/gamma.safetensors")
+    assert loras_by_family(Config(root=tmp_path)) == {
+        "flux": ["gamma"],
+        "sdxl": ["DMD2fp32XL1.0", "test-dir/FuturisticXL"],
+    }
+    assert loras_by_family(Config(root=tmp_path / "nothing")) == {}
 
 
 def test_symlinked_checkpoint_dir_is_followed(tmp_path):

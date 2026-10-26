@@ -448,6 +448,7 @@ class SdxlBackend(ModelBackend):
 
         self.model_id = info.id
         self.name = info.name
+        self.family = info.family
         self.model_hash = _model_hash(str(info.path))
         self.device = device  # chosen by ModelRegistry (ini/auto-pick)
         # Serializes generate()/unload(): the pipeline is not thread-safe.

@@ -250,13 +250,16 @@ def test_inpaint_mode_uses_i2i_section(client, tmp_path):
 
 def test_lora_discovery(client, tmp_path):
     client, _ = client
-    assert client.get("/api/loras").json() == {"loras": [], "settings": {}}
+    assert client.get("/api/loras").json() == {"loras": [], "settings": {},
+                                               "by_family": {}}
     (tmp_path / "loras" / "sdxl").mkdir(parents=True)
     (tmp_path / "loras" / "sdxl" / "dmd2.safetensors").write_bytes(b"")
     (tmp_path / "loras" / "sd15").mkdir()
     (tmp_path / "loras" / "sd15" / "x.ckpt").write_bytes(b"")
     assert client.get("/api/loras").json() == {"loras": ["x", "dmd2"],
-                                               "settings": {}}
+                                               "settings": {},
+                                               "by_family": {"sd15": ["x"],
+                                                             "sdxl": ["dmd2"]}}
 
 
 def test_lora_settings(client, tmp_path):

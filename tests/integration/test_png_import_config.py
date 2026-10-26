@@ -9,6 +9,7 @@ selects ``meta.config_id``.
 """
 
 import io
+import json
 import time
 
 import pytest
@@ -81,6 +82,7 @@ def test_imagagen_png_records_and_restores_the_configuration(client):
     png = c.get(f"/api/thumb/{job}/0.png").content
     meta = metadata.read_metadata(png)
     assert meta["model_config"] == "Mock + DMD"
+    assert meta["model_family"] == "sdxl"  # MockBackend mirrors the SDXL family
     # the LoRA travels in the metadata (config LoRAs are part of the request)
     assert meta["loras"] == ["DMD2fp32XL1.0@0.7"]
     j = c.post("/api/png-meta", content=png).json()
@@ -150,4 +152,68 @@ def test_forge_import_unknown_model_matches_nothing(client):
         "a cat\nNegative prompt: bad\n"
         "Steps: 20, Sampler: Euler a, CFG scale: 7.0, Seed: 5, "
         "Size: 64x64, Model: someOtherModel")
-    assert c.post("/api/png-meta", content=png).json()["meta"].get("config_id") is None
+    meta = c.post("/api/png-meta", content=png).json()["meta"]
+    assert meta.get("config_id") is None
+    # the UI keeps the current model and shows the "Checkpoint not found"
+    # error; without family info the current model's family is assumed
+    assert meta["model_missing"] is True
+    assert "model_family" not in meta
+
+
+# ---------------------------------------- moved/renamed checkpoints ---
+
+
+def _imagagen_png(meta_doc: dict) -> bytes:
+    """A PNG whose parameters chunk is the given imagagen JSON document
+    (built with metadata.build_parameters, i.e. what a generation writes)."""
+    from PIL import Image
+
+    img, info = metadata.attach_metadata(Image.new("RGB", (64, 64), (1, 2, 3)),
+                                         json.dumps(meta_doc))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", pnginfo=info)
+    return buf.getvalue()
+
+
+def _imagagen_doc(model: str, **kw) -> dict:
+    doc = json.loads(metadata.build_parameters(
+        "a cat", "", 20, "Euler a", "Karras", 7.0, 1, 64, 64,
+        model, "abc123", **kw))
+    return doc
+
+
+def test_imagagen_import_exact_checkpoint_path_required(client):
+    """imagagen records the full model id: a same-named checkpoint in
+    ANOTHER subfolder must not be matched by basename (that silently
+    picks the wrong file after a folder reorganisation); the import is
+    marked model_missing and keeps the family for the UI's fallback."""
+    c, _ = client
+    _config(client, "Mock (plain)", [])
+    png = _imagagen_png(_imagagen_doc("elsewhere/mock",
+                                      model_family="sdxl"))
+    meta = c.post("/api/png-meta", content=png).json()["meta"]
+    assert "config_id" not in meta
+    assert meta["model_missing"] is True
+    assert meta["model_family"] == "sdxl"
+
+
+def test_imagagen_import_derives_family_from_the_model_path(client):
+    """imagagen PNGs written before the model_family key: the model id is
+    a path under models/<family>/, so its first component is the family
+    when this install has that family (not a basename guess)."""
+    c, _ = client
+    doc = _imagagen_doc("sdxl/mock")  # no model_family key (older PNG)
+    assert "model_family" not in doc
+    meta = c.post("/api/png-meta", content=_imagagen_png(doc)).json()["meta"]
+    assert meta["model_missing"] is True
+    assert meta["model_family"] == "sdxl"  # mock registry family
+
+
+def test_imagagen_import_family_not_derived_from_foreign_path(client):
+    # "Optimizer/..." is a LoRA-style subfolder, not a family this install
+    # has: no family is invented, the UI assumes the selected model's one
+    c, _ = client
+    doc = _imagagen_doc("Optimizer/mock")
+    meta = c.post("/api/png-meta", content=_imagagen_png(doc)).json()["meta"]
+    assert meta["model_missing"] is True
+    assert "model_family" not in meta

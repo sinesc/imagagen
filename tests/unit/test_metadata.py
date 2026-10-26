@@ -52,6 +52,25 @@ def test_roundtrip_full():
     assert parsed["loras"] == ["sdxl/dmd2@0.8"]
 
 
+def test_model_family_roundtrip():
+    params = metadata.build_parameters(
+        prompt="p", negative_prompt="", steps=12, sampler="Euler a",
+        scheduler="Karras", cfg=1.5, seed=1, width=64, height=64,
+        model_name="some/dir/model", model_hash="h",
+        model_config="My Config", model_family="sdxl",
+    )
+    parsed = metadata.parse_parameters(params)
+    assert parsed["model_config"] == "My Config"
+    assert parsed["model_family"] == "sdxl"
+    # absent when the family is not given (older callers)
+    params = metadata.build_parameters(
+        prompt="p", negative_prompt="", steps=12, sampler="Euler a",
+        scheduler="Karras", cfg=1.5, seed=1, width=64, height=64,
+        model_name="m", model_hash="h",
+    )
+    assert "model_family" not in metadata.parse_parameters(params)
+
+
 def test_denoise_roundtrip():
     params = metadata.build_parameters(
         prompt="p", negative_prompt="", steps=12, sampler="Euler a",

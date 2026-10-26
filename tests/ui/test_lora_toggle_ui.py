@@ -228,8 +228,17 @@ def test_import_restores_disabled_loras(page, server):
     assert wait_until(
         lambda: page.evaluate("getLoras()") ==
         [["alpha", 0.8, True], ["beta", 0.5, False], ["gamma", -0.3, False]])
+    # beta is a discovered LoRA of the current family: a plain disabled row
     assert _row_state(page, 1) == [False, True]
-    assert _row_state(page, 2) == [False, True]
+    assert _row_full(page, 1) == [False, True, False, "\u25d0", None, "beta"]
+    # gamma's file cannot be found at all: ❌ on the toggle (not a
+    # foreign-family padlock), the row forced off, but the DROPDOWN stays
+    # enabled so the user can point the row at an existing file
+    assert _row_full(page, 2) == [False, False, True, "\u274c", None, "gamma"]
+    assert "could not be found" in page.locator(
+        "#loras .lora-row").nth(2).locator("button.lora-toggle").get_attribute("title")
+    # the found LoRA keeps the normal toggle
+    assert _row_full(page, 0) == [True, False, False, "\u25d0", None, "alpha"]
 
 
 def test_screenshot_alignment(page, server):

@@ -412,6 +412,23 @@ def test_match_normalizes_foreign_model_names(tmp_path):
         assert m is not None and m.name == "epicrealismXL11.0 (DMD)", name
 
 
+def test_match_exact_model_requires_the_recorded_path(tmp_path):
+    """imagagen PNGs record the full model id: with exact_model scoring a
+    basename-only name must NOT match (the app does not guess over
+    same-named checkpoints in other subfolders). The recorded
+    configuration name still wins outright."""
+    entries = _import_store(tmp_path).entries()
+    assert match_entry(entries, model="epicrealismXL11.0",
+                       loras=[("DMD2fp32XL1.0", 0.7)],
+                       exact_model=True) is None
+    m = match_entry(entries, model="sdxl/epicrealismXL11.0",
+                    loras=[("DMD2fp32XL1.0", 0.7)], exact_model=True)
+    assert m is not None and m.name == "epicrealismXL11.0 (DMD)"
+    m = match_entry(entries, model="elsewhere/whatever", loras=[],
+                    config_name="epicrealismXL11.0 (plain)", exact_model=True)
+    assert m is not None and m.name == "epicrealismXL11.0 (plain)"
+
+
 def test_match_unknown_model_returns_none(tmp_path):
     assert match_entry(_import_store(tmp_path).entries(), model="nope",
                        loras=[]) is None

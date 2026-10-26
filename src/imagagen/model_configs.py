@@ -337,6 +337,7 @@ def match_entry(
     model: str | None = None,
     loras: list[tuple[str, float]] | None = None,
     config_name: str | None = None,
+    exact_model: bool = False,
 ) -> ConfigEntry | None:
     """The configuration an imported image was generated with.
 
@@ -352,6 +353,12 @@ def match_entry(
     that only matches the checkpoint. Ties prefer file configurations over
     the in-memory default (a user configuration carries the user's own
     defaults for that checkpoint).
+
+    ``exact_model`` restricts scoring to entries whose model id EQUALS the
+    recorded checkpoint id: imagagen writes the full id (a path under
+    ``models/<family>/``), so a basename match would GUESS across folder
+    layouts (a same-named checkpoint in another subfolder). Foreign images
+    only record the basename, so they must keep the basename match.
 
     Returns None when no configuration covers the checkpoint.
     """
@@ -371,7 +378,10 @@ def match_entry(
     best: ConfigEntry | None = None
     best_key: tuple | None = None
     for e in entries:
-        if _model_key(e.model_id) != key:
+        if exact_model:
+            if e.model_id != model:
+                continue
+        elif _model_key(e.model_id) != key:
             continue
         have = _lora_keys(e.t2i) | _lora_keys(e.i2i)
         rank = (

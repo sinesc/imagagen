@@ -144,6 +144,7 @@ class FluxBackend(ModelBackend):
     def __init__(self, info, device, config=None) -> None:
         self.model_id = info.id
         self.name = info.name
+        self.family = info.family
         self.model_hash = _model_hash(str(info.path))
         self.device = device
         self.config = config

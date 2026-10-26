@@ -14,6 +14,10 @@ const state = {
   samplers: [],
   schedulers: [],
   loras: [], // lora names from /api/loras
+  // family -> LoRA names from /api/loras (by_family), null until loaded:
+  // tells a foreign-family LoRA (padlock) from one whose file is missing
+  // entirely (❌) -- see loraRow's applyFamilyLock
+  lorasByFamily: null,
   loraSettings: {}, // name -> settings .json next to the .safetensors ({"preferred weight", ...})
   presets: [], // preset names
   styles: [], // styles from /api/styles ({name, prompt, negative_prompt, optgroup, temporary})
@@ -181,10 +185,28 @@ function loraRow(name, weight, onChange, enabled = true, withToggle = true) {
   // model is selected and vice versa. The forced disable is remembered
   // (dataset.familyOff) so switching back to a matching model re-enables
   // the row; rows the USER disabled stay disabled (but unlock again).
+  // A name that is not in ANY family's list (state.lorasByFamily) is not
+  // foreign, it simply cannot be FOUND (imported metadata whose LoRA path
+  // no longer exists here): the toggle shows ❌ and the DROPDOWN stays
+  // enabled so the user can point the row at an existing file.
   const applyFamilyLock = () => {
     if (!tog) return;
-    const foreign = !!root.value && !state.loras.includes(root.value);
-    if (foreign) {
+    const notInFamily = !!root.value && !state.loras.includes(root.value);
+    const missing = notInFamily && !!state.lorasByFamily &&
+      !Object.values(state.lorasByFamily).some((ns) => ns.includes(root.value));
+    if (missing) {
+      if (!row.classList.contains("off")) {
+        row.dataset.familyOff = "1";
+        setEnabled(false);
+      }
+      tog.disabled = true;
+      tog.textContent = "\u274c";
+      tog.title =
+        "this LoRA file could not be found " +
+        "(kept in the list, not applied; select a different file in the dropdown, or remove the row)";
+      // unlike the family lock, the dropdown stays openable for a fix-up
+      setInput.disabled = false;
+    } else if (notInFamily) {
       if (!row.classList.contains("off")) {
         row.dataset.familyOff = "1";
         setEnabled(false);
@@ -1416,6 +1438,7 @@ async function refreshLoras() {
     return;
   }
   state.loras = r.loras;
+  if (r.by_family) state.lorasByFamily = r.by_family;
   if (r.settings) state.loraSettings = r.settings;
   const list = $("loras");
   // rows for LoRAs the new family does not offer are KEPT but forced off
@@ -2515,9 +2538,13 @@ async function importPng(file) {
     }
     const { meta, width, height } = await metaRes.json();
     await uploadPngToCanvas(file); // the upload becomes the displayed entity
-    await applyPngMeta(meta, width, height);
+    const note = await applyPngMeta(meta, width, height);
     viewRefresh();
-    setStatus(meta ? `imported ${file.name} (metadata applied)` : `loaded ${file.name} onto the canvas (no metadata)`);
+    // a note (checkpoint not found: kept the selection or replaced it by
+    // family) is the more important message, shown as an error
+    if (note) setStatus(note, true);
+    else
+      setStatus(meta ? `imported ${file.name} (metadata applied)` : `loaded ${file.name} onto the canvas (no metadata)`);
   } catch (e) {
     setStatus(`png import failed: ${e.message}`, true);
   }
@@ -2561,12 +2588,36 @@ async function applyPngMeta(meta, width, height) {
   // generation time (always prepended to the UI selection), so they are
   // dropped from the metadata list before the remaining LoRAs are applied --
   // otherwise they would load twice (once via the config, once via the UI).
-  const matchedEntry = meta.config_id
+  let matchedEntry = meta.config_id
     ? state.entries.find((e) => e.id === meta.config_id) || null
     : meta.model
       ? state.entries.find((e) => e.name === meta.model || e.id === meta.model) ||
         null
       : null;
+  // meta.model_missing (set by /api/png-meta): the recorded checkpoint is
+  // not selectable here -- its file is gone or in another folder layout
+  // (an import from another install). Fall back on the image's family:
+  // keep the current configuration when its family matches the image's
+  // (meta.model_family, written by imagagen PNGs and derived server-side
+  // from the model path for older imagagen PNGs), else select the first
+  // configuration of the image's family. Without any family info (foreign
+  // images), assume the current model's family, i.e. keep it selected.
+  // A plain name/id match (matchedEntry above) found the configuration
+  // already, so no note applies then.
+  let importNote = null;
+  if (!matchedEntry && meta.model_missing) {
+    const current = currentEntry();
+    const fam = meta.model_family || (current ? current.family : null);
+    const alt = current && current.family === fam
+      ? current
+      : state.entries.find((e) => e.family === fam) || null;
+    if (alt && alt !== current) {
+      matchedEntry = alt;
+      importNote = `Checkpoint not found, selected "${alt.name}" (family ${fam})`;
+    } else {
+      importNote = "Checkpoint not found, retaining selected checkpoint";
+    }
+  }
   const targetEntry = matchedEntry || currentEntry();
   if (meta.loras?.length || meta.disabled_loras?.length) {
     let loras = parseMetaLoras(meta.loras || []);
@@ -2612,10 +2663,12 @@ async function applyPngMeta(meta, width, height) {
   // through the PNG under the extension's raw snake_case keys, but is NOT
   // imported: the enabled flag and the option values are model-configuration
   // settings (per direction, SDXL only), not importable UI fields
-  // switch to the image's model (see matchedEntry above)
+  // switch to the image's model (see matchedEntry above); awaited so the
+  // "loading ..." status is finished before the caller sets the import
+  // status (an un-awaited selectModel would clear it afterwards)
   if (matchedEntry) {
     $("model").value = matchedEntry.id;
-    selectModel(matchedEntry.id);
+    await selectModel(matchedEntry.id);
     // same follow-up work as the model dropdown's onchange: the sampler
     // lists, family-specific controls and the LoRA list all follow the
     // model's family (an import can land on another family's model)
@@ -2624,6 +2677,7 @@ async function applyPngMeta(meta, width, height) {
     refreshLoras();
   }
   scheduleSaveUiState();
+  return importNote;
 }
 
 // meta LoRAs travel as "name@weight" strings (A1111/Forge format)
@@ -2880,6 +2934,7 @@ async function init() {
   state.schedulers = s.schedulers;
   state.presets = pr.presets;
   state.loras = lr.loras;  // lora names (str) from /api/loras
+  state.lorasByFamily = lr.by_family || null;  // family -> names (/api/loras)
   state.loraSettings = lr.settings || {};  // name -> settings (file .jsons)
   state.styles = sy.styles;
   // the preset and model fields are searchable comboboxes (makeCombobox):
