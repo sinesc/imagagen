@@ -1774,7 +1774,12 @@ function drawSelectionOverlay(ctx) {
   ctx.save();
   ctx.translate(s.cx, s.cy);
   ctx.rotate(s.angle);
-  ctx.imageSmoothingEnabled = true; // the selection is resampled content
+  // same rule as the base image in viewRedraw: interpolating the display blit
+  // made the selection look blurry/soft at high zoom while the untouched
+  // background underneath stayed crisp. The resample into the selection's own
+  // pixel grid happens in selMaterialize (smooth); the on-screen blit must be
+  // nearest-neighbour once we are zoomed in, so both layers stay pixel-crisp.
+  ctx.imageSmoothingEnabled = view.scale < 4;
   ctx.imageSmoothingQuality = "high";
   const st = view.stroke;
   if (st && st.sel) {

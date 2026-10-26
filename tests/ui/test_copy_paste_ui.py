@@ -740,3 +740,50 @@ def test_selection_history_undo_redo_until_merge(page, server):
     assert wait_until(lambda: canvas_px(base, 154, 95) == BG)
     assert canvas_px(base, 144, 95) == BG
     assert canvas_px(base, 20, 20) == PATCH  # the copied source is intact
+
+
+def test_selection_renders_crisp_pixels_at_high_zoom(page, server):
+    """The selection overlay must NOT interpolate at high zoom.
+
+    The base image is drawn nearest-neighbour once zoomed in (crisp blocks),
+    so the selection blit has to follow the same rule: bilinear made the
+    pasted patch bleed soft gradients into the crisp background around its
+    internal edges.
+    """
+    base, _ = server
+    _open(page, base)
+    _show(page, base)
+    # a clip with an INTERNAL hard edge: BG for local x < 10, PATCH from 10 on
+    _copy(page, base, 0, 0, 60, 60)
+    _paste(page, 100, 100)  # selection spans canvas 70..130; edge at x = 80
+
+    # zoom past the crisp-pixel threshold and pin the view so the sampled
+    # stretch is comfortably inside the display canvas
+    page.evaluate("view.scale = 4; view.ox = 100; view.oy = 10; viewRedraw()")
+    assert page.evaluate("view.scale") >= 4
+
+    row = page.evaluate(
+        """() => {
+            const c = document.getElementById('canvas');
+            const dy = Math.round((view.oy + 100 * view.scale) * view.dpr);
+            const x0 = Math.round((view.ox + 72 * view.scale) * view.dpr);
+            const x1 = Math.round((view.ox + 88 * view.scale) * view.dpr);
+            const d = c.getContext('2d').getImageData(x0, dy, x1 - x0, 1).data;
+            const out = [];
+            for (let i = 0; i < d.length; i += 4) out.push([d[i], d[i+1], d[i+2]]);
+            return out;
+        }"""
+    )
+
+    def close(a, b):
+        return sum(abs(x - y) for x, y in zip(a, b, strict=True))
+
+    # every device pixel along the line is one of the two source colours --
+    # a single blended pixel means the blit interpolated
+    blended = [
+        p for p in row if min(close(p, PATCH), close(p, BG)) > 30
+    ]
+    assert not blended, f"interpolated pixels: {blended[:6]}"
+    # sanity: the line really does cross the edge (both colours present)
+    assert any(close(p, BG) <= 30 for p in row)
+    assert any(close(p, PATCH) <= 30 for p in row)
