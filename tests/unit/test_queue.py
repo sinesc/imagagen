@@ -554,7 +554,7 @@ def test_first_image_warms_primary_then_batch_continues():
 def test_cold_second_image_waits_for_primary():
     # The second image of a cold batch must NOT start on the secondary GPU
     # before the first image has fully generated + decoded.
-    backend = MockBackend(steps_delay=0.15)
+    backend = MockBackend(steps_delay=0.1)
     events = []
     q, _ = _queue(backend, events, gpus=[0, 1])
     job = q.submit("m", GenerateRequest(prompt="x", width=8, height=8, steps=20, seed=1), 2)
@@ -564,8 +564,10 @@ def test_cold_second_image_waits_for_primary():
         for e in events
     ):
         time.sleep(0.01)
-    # first image is in flight (steps=20 @ 0.15s ~ 3s); give the dispatch
-    # time to (incorrectly) start image 2 early, then assert it has not
+    # first image is in flight (steps=20 @ 0.1s ~ 2s); give the dispatch
+    # time to (incorrectly) start image 2 early, then assert it has not.
+    # The 0.5 s guard keeps ~1.3 s of image-1 flight left, so a loaded
+    # machine cannot finish image 1 first and turn this into a false alarm.
     time.sleep(0.5)
     assert q.registry.uses == [(0, 1)]
     _wait_done(q, job.id)
