@@ -52,7 +52,13 @@ const state = {
 
 function setStatus(text, isError = false) {
   const el = $("status-line");
-  el.textContent = text || "";
+  // Message style: status texts start with a capital letter and one that
+  // reports an action still running ends on an ellipsis ("Loading …"). The
+  // ellipsis is up to the sender; the capital is normalised here because
+  // plenty of texts arrive from the server (WS status/phase/error events,
+  // API error messages) where we cannot fix the wording at the source.
+  const t = text ? String(text) : "";
+  el.textContent = t ? t[0].toUpperCase() + t.slice(1) : "";
   el.classList.toggle("error", isError);
 }
 
@@ -901,7 +907,7 @@ async function fetchReferencePreview() {
       // tag row stops spinning instead of showing the placeholder
       state.referenceCaption = "";
       renderPromptTags();
-      setStatus(`reference caption preview failed: ${e.message}`, true);
+      setStatus(`Reference caption preview failed: ${e.message}`, true);
     }
   }
 }
@@ -1066,7 +1072,7 @@ async function doCrop(x, y, w, h) {
     addCropThumbs(r);
     await viewRefresh();
   } catch (e) {
-    setStatus(`crop failed: ${e.message}`, true);
+    setStatus(`Crop failed: ${e.message}`, true);
     viewRedraw();
   }
 }
@@ -1114,7 +1120,7 @@ async function openUpscaleDialog() {
     if (!res.ok) throw new Error(String(res.status));
     upscalers = (await res.json()).upscalers;
   } catch (e) {
-    setStatus(`upscaler list failed: ${e.message}`, true);
+    setStatus(`Upscaler list failed: ${e.message}`, true);
     return;
   }
   const u = state.upscale;
@@ -1216,14 +1222,14 @@ async function openUpscaleDialog() {
       u.tile = tl; u.tileOverlap = ov;
       addUpscaleThumbs(r);
       await viewRefresh();
-      setStatus(`upscaled to ${r.width}\u00d7${r.height} (${upscaler})`);
+      setStatus(`Upscaled to ${r.width}\u00d7${r.height} (${upscaler})`);
       return true;
     } catch (e) {
       if (e.message === "aborted") {
         // the user cancelled mid-run: the dialog STAYS open (only a
         // Cancel while nothing is running closes it) so the upscale can
         // be retried or the dialog closed deliberately
-        setStatus("upscale aborted");
+        setStatus("Upscale aborted");
         return false;
       }
       dialogError(`upscale failed: ${e.message}`);
@@ -1313,7 +1319,7 @@ async function generate() {
   });
   state.currentThumb = -1;
   renderThumbs();
-  setStatus("queued…");
+  setStatus("Queued…");
   saveUiState(); // persist the settings actually about to be used
   try {
     await forceSync(); // the server snapshots the canvas (source, inpaint)
@@ -1335,7 +1341,7 @@ async function generate() {
       setGenerating(true);
     }
   } catch (e) {
-    setStatus(`generate failed: ${e.message}`, true);
+    setStatus(`Generate failed: ${e.message}`, true);
   }
 }
 
@@ -1345,7 +1351,7 @@ function currentEntry() {
 }
 
 async function selectModel(id) {
-  setStatus(`loading ${id}…`);
+  setStatus(`Loading ${id}…`);
   try {
     await api("/api/models/select", { id });
     setStatus("");
@@ -1354,7 +1360,7 @@ async function selectModel(id) {
     // runs or when the feature is off)
     scheduleTextPrefetch();
   } catch (e) {
-    setStatus(`model select failed: ${e.message}`, true);
+    setStatus(`Model select failed: ${e.message}`, true);
   }
 }
 
@@ -1749,7 +1755,7 @@ async function deleteConfig() {
   const cur = currentEntry();
   if (!cur) return;
   if (cur.is_default) {
-    setStatus("in-memory default configurations cannot be deleted");
+    setStatus("In-memory default configurations cannot be deleted");
     return;
   }
   if (!confirm(`Delete model configuration "${cur.name}"?`)) return;
@@ -1758,7 +1764,7 @@ async function deleteConfig() {
     await refreshModels(false);
     scheduleSaveUiState(0);
   } catch (e) {
-    setStatus(`delete config failed: ${e.message}`, true);
+    setStatus(`Delete config failed: ${e.message}`, true);
   }
 }
 
@@ -1811,7 +1817,7 @@ async function applyPreset(name) {
       else $(key.replace(/_/g, "-")).value = p[key];
     }
   } catch (e) {
-    setStatus(`preset "${name}": ${e.message}`, true);
+    setStatus(`Preset "${name}": ${e.message}`, true);
     $("preset").value = ""; // apply failed: don't leave a stale selection
     return false;
   }
@@ -1819,7 +1825,7 @@ async function applyPreset(name) {
   state.activePreset = { name, keys: Object.keys(controls).filter((k) => controls[k]) };
   $("preset").value = name; // keep the selection: the form now matches it
   scheduleSaveUiState(0);
-  setStatus(`preset "${name}" applied`);
+  setStatus(`Preset "${name}" applied`);
   return true;
 }
 
@@ -2142,7 +2148,7 @@ async function maskOp(op) {
     if (op === "clear") await maskClear();
     else await maskMorph(op === "dilate");
   } catch (e) {
-    setStatus(`mask ${op} failed: ${e.message}`, true);
+    setStatus(`Mask ${op} failed: ${e.message}`, true);
   }
 }
 
@@ -2246,7 +2252,7 @@ function openSegDialog() {
       state.segThreshold = thr;
       state.segFeather = fea;
       scheduleSaveUiState(0);
-      setStatus(`mask generated: ${r.pixels.toLocaleString()} px (undo to revert)`);
+      setStatus(`Mask generated: ${r.pixels.toLocaleString()} px (undo to revert)`);
       await viewRefresh();
       // The mask overlay is only rendered in mask mode (canvas.js
       // maskVisible()), so arm the mask tool: the generated mask would
@@ -2255,7 +2261,7 @@ function openSegDialog() {
       if (r.pixels > 0) switchTool("mask");
     } catch (e) {
       statusIsError = true;
-      setStatus(`segmentation failed: ${e.message}`, true);
+      setStatus(`Segmentation failed: ${e.message}`, true);
       return false; // keep the dialog open so the class set can be fixed
     }
   }, "Generate", () => document.removeEventListener("keydown", enterSubmits));
@@ -2544,9 +2550,9 @@ async function importPng(file) {
     // family) is the more important message, shown as an error
     if (note) setStatus(note, true);
     else
-      setStatus(meta ? `imported ${file.name} (metadata applied)` : `loaded ${file.name} onto the canvas (no metadata)`);
+      setStatus(meta ? `Imported ${file.name} (metadata applied)` : `Loaded ${file.name} onto the canvas (no metadata)`);
   } catch (e) {
-    setStatus(`png import failed: ${e.message}`, true);
+    setStatus(`PNG import failed: ${e.message}`, true);
   }
 }
 
@@ -2705,15 +2711,15 @@ function wireCanvasDrop() {
     const files = [...(e.dataTransfer?.files || [])];
     const file = files.find((f) => f.type === "image/png" || /\.png$/i.test(f.name));
     if (!file) {
-      setStatus("drop a PNG file");
+      setStatus("Drop a PNG file");
       return;
     }
     try {
       await uploadPngToCanvas(file);
       viewRefresh();
-      setStatus(`loaded ${file.name} onto the canvas`);
+      setStatus(`Loaded ${file.name} onto the canvas`);
     } catch (err) {
-      setStatus(`canvas drop failed: ${err.message}`, true);
+      setStatus(`Canvas drop failed: ${err.message}`, true);
     }
   });
 }
@@ -2737,7 +2743,7 @@ function wireThumbsDrop() {
     const files = [...(e.dataTransfer?.files || [])];
     const file = files.find((f) => f.type === "image/png" || /\.png$/i.test(f.name));
     if (!file) {
-      setStatus("drop a PNG file");
+      setStatus("Drop a PNG file");
       return;
     }
     try {
@@ -2750,9 +2756,9 @@ function wireThumbsDrop() {
                           url: `/api/canvas/image.png?id=${encodeURIComponent(image_id)}` });
       state.currentThumb = -1;
       renderThumbs();
-      setStatus(`added ${file.name} as a pinned thumbnail`);
+      setStatus(`Added ${file.name} as a pinned thumbnail`);
     } catch (err) {
-      setStatus(`thumbnail drop failed: ${err.message}`, true);
+      setStatus(`Thumbnail drop failed: ${err.message}`, true);
     }
   });
 }
@@ -2772,7 +2778,7 @@ function wirePromptDrop() {
       const files = [...(e.dataTransfer?.files || [])];
       const file = files.find((f) => f.type === "image/png" || /\.png$/i.test(f.name));
       if (!file) {
-        setStatus("drop a PNG file");
+        setStatus("Drop a PNG file");
         return;
       }
       importPng(file);
@@ -2986,7 +2992,7 @@ function connectWS() {
         $("progress-label").textContent = msg.message;
         break;
       case "phase":
-        // "Encoding prompt" / "Inpainting @ 1024x1280" goes to the STATUS
+        // "Encoding prompt…" / "Inpainting @ 1024x1280…" goes to the STATUS
         // line: the progress label belongs to the step counter. An error
         // that surfaced mid-batch keeps the line (a later phase event from
         // another task of the same batch must not hide it).
@@ -3033,11 +3039,11 @@ function connectWS() {
       case "job_interrupted":
         finishedJobs.add(msg.job);
         setGenerating(false);
-        setStatus("interrupted (partial images discarded)");
+        setStatus("Interrupted (partial images discarded)");
         break;
       case "error":
         statusIsError = true;
-        setStatus(`error: ${msg.message}`, true);
+        setStatus(`Error: ${msg.message}`, true);
         break;
     }
   };
@@ -3057,9 +3063,9 @@ $("btn-save").onclick = async () => {
   try {
     await forceSync(); // the server saves ITS copy
     const r = await api("/api/save", { prompt: $("prompt").value });
-    setStatus(`saved ${r.path}`);
+    setStatus(`Saved ${r.path}`);
   } catch (e) {
-    setStatus(`save failed: ${e.message}`, true);
+    setStatus(`Save failed: ${e.message}`, true);
   }
 };
 // the server is best-effort caught up before the tab goes: the 2 s idle
@@ -3086,7 +3092,7 @@ $("btn-undo").onclick = async () => {
   try {
     await undoStep(t); // canvas.js: local stack, no round trip
   } catch (e) {
-    setStatus(`undo failed: ${e.message}`, true);
+    setStatus(`Undo failed: ${e.message}`, true);
   }
 };
 $("btn-redo").onclick = async () => {
@@ -3094,7 +3100,7 @@ $("btn-redo").onclick = async () => {
   try {
     await redoStep(t); // canvas.js: local stack, no round trip
   } catch (e) {
-    setStatus(`redo failed: ${e.message}`, true);
+    setStatus(`Redo failed: ${e.message}`, true);
   }
 };
 $("model").onchange = (e) => {

@@ -869,7 +869,7 @@ function pickBrushColor(p) {
   Tools.state.brush.color = hex;
   scheduleSaveUiState(); // app.js
   syncToolbar(); // app.js: update the swatch
-  setStatus(`picked colour ${hex}`);
+  setStatus(`Picked colour ${hex}`);
 }
 
 // SHIFT gesture (clone tool, a source S is set): the source moves 1:1 with
@@ -1848,7 +1848,7 @@ function drawPasteGhost(ctx) {
 // off the canvas (Apply clips it); a new drop replaces an active selection.
 function pasteAt(p) {
   if (!view.clip) {
-    setStatus("nothing copied yet \u2014 drag a rectangle with the copy tool first");
+    setStatus("Nothing copied yet \u2014 drag a rectangle with the copy tool first");
     return;
   }
   view.stroke = null;
@@ -1860,7 +1860,7 @@ function pasteAt(p) {
   };
   viewRedraw();
   syncUndoButtons(); // app.js: the pair targets the (empty) selection history
-  setStatus("floating selection \u2014 drag its handles, Enter applies, Esc discards");
+  setStatus("Floating selection \u2014 drag its handles, Enter applies, Esc discards");
 }
 
 // copy tool pointerup: store the region of the committed image (the copied
@@ -1875,7 +1875,7 @@ function commitCopy(r) {
   c.getContext("2d").drawImage(view.base, x, y, w, h, 0, 0, w, h);
   view.clip = { img: c, w, h };
   syncToolbar(); // app.js: the paste button becomes enabled
-  setStatus(`copied ${w}\u00d7${h} \u2014 paste tool (E), click to place it`);
+  setStatus(`Copied ${w}\u00d7${h} \u2014 paste tool (E), click to place it`);
 }
 
 // ---------------- selection history (floating-selection undo / redo) ----
@@ -1923,12 +1923,12 @@ function selUndoStep() {
   const s = view.sel;
   const h = s && s.hist.undo.pop();
   if (!h) {
-    setStatus("nothing to undo in the floating selection");
+    setStatus("Nothing to undo in the floating selection");
     return;
   }
   s.hist.redo.push(selSnapshot(s));
   selRestore(s, h);
-  setStatus("undid a selection change");
+  setStatus("Undid a selection change");
   viewRedraw(); // repositions #sel-actions via syncSelActions
   syncUndoButtons();
 }
@@ -1937,7 +1937,7 @@ function selRedoStep() {
   const s = view.sel;
   const h = s && s.hist.redo.pop();
   if (!h) {
-    setStatus("nothing to redo in the floating selection");
+    setStatus("Nothing to redo in the floating selection");
     return;
   }
   // like redoStep: push the current state back onto undo WITHOUT clearing
@@ -1945,7 +1945,7 @@ function selRedoStep() {
   s.hist.undo.push(selSnapshot(s));
   if (s.hist.undo.length > UNDO_SEL) s.hist.undo.shift();
   selRestore(s, h);
-  setStatus("redid a selection change");
+  setStatus("Redid a selection change");
   viewRedraw();
   syncUndoButtons();
 }
@@ -1964,7 +1964,7 @@ function cropSelection(r) {
   const y1 = clampN(Math.round(Math.max(...cs.map((q) => q[1]))), y0 + 1, s.sh);
   const w = x1 - x0, h = y1 - y0;
   if (w < 2 || h < 2) {
-    setStatus("the crop must keep at least 2\u00d72 px of the selection");
+    setStatus("The crop must keep at least 2\u00d72 px of the selection");
     return;
   }
   pushSelUndo(s); // one history step (the rejected crop changes nothing)
@@ -1980,7 +1980,7 @@ function cropSelection(r) {
   s.cx = centre[0];
   s.cy = centre[1];
   viewRedraw();
-  setStatus(`cropped the selection to ${w}\u00d7${h}`);
+  setStatus(`Cropped the selection to ${w}\u00d7${h}`);
 }
 
 // Flip the floating selection in place (horizontal: left <-> right, vertical:
@@ -2006,7 +2006,7 @@ function flipSel(horiz) {
   ctx.restore();
   s.img = c;
   viewRedraw();
-  setStatus(horiz ? "flipped the selection horizontally" : "flipped the selection vertically");
+  setStatus(horiz ? "Flipped the selection horizontally" : "Flipped the selection vertically");
 }
 
 // Apply: composite the selection (stretched + rotated, resampled once) onto
@@ -2033,7 +2033,7 @@ async function commitSelection() {
   syncUndoButtons(); // app.js
   if (Tools.current === "paste") switchTool("copy"); // app.js
   viewRedraw();
-  setStatus("applied the floating selection");
+  setStatus("Applied the floating selection");
 }
 
 // Cancel: throw the selection away (no history step, the base never changed)
@@ -2047,7 +2047,7 @@ function cancelSelection() {
   if (Tools.current === "paste") switchTool("copy"); // app.js
   viewRedraw();
   syncUndoButtons(); // back to the canvas stacks
-  setStatus("discarded the floating selection");
+  setStatus("Discarded the floating selection");
 }
 
 // the apply / discard pair, centred on the selection (holder-relative
@@ -2256,7 +2256,7 @@ function setupCanvasInput() {
       }
       const src = cloneSourcePoint();
       if (!src) {
-        setStatus("clone: ctrl-click to pick a source point first");
+        setStatus("Clone: ctrl-click to pick a source point first");
         return;
       }
       const srcL = onSel ? selLocal(src) : src;

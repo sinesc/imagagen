@@ -136,7 +136,7 @@ def test_copy_stores_the_area_only(page, server):
     assert _canvas_size(base) == (200, 150)
     assert canvas_px(base, 100, 100) == BG
     assert page.evaluate("view.sel") is None
-    assert "copied 40" in page.text_content("#status-line")
+    assert "Copied 40" in page.text_content("#status-line")
 
 
 def test_paste_drop_is_an_overlay_until_applied(page, server):

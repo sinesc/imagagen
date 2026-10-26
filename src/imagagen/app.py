@@ -22,6 +22,7 @@ from .backends import (
     PHASE_REFERENCE,
     PHASE_REFERENCE_DONE,
     PHASE_REFERENCE_LOADING,
+    PHASE_TEXT,
     GenerateRequest,
     ModelBackend,
 )
@@ -1304,7 +1305,8 @@ def create_app(
                       "fraction": (done / total) if total else 1.0,
                       "message": f"tile {done} / {total}"})
 
-        hub.emit({"type": "phase", "message": f"Upscaling @ {dw}x{dh}"})
+        hub.emit({"type": "phase",
+                  "message": f"Upscaling @ {dw}x{dh}…"})
         # no lock when the upscaler runs on CPU (mock server, GPU-less
         # host): there is no GPU state to serialize against
         lock = (registry.gpu_lock(registry.primary)
@@ -1394,11 +1396,7 @@ def create_app(
                 status_code=400)
         try:
             def _preview_progress(_frac, message):
-                text = {
-                    PHASE_REFERENCE_LOADING: "Loading captioning model",
-                    PHASE_REFERENCE: "Describing reference image",
-                    PHASE_REFERENCE_DONE: "Reference caption ready",
-                }.get(message)
+                text = PHASE_TEXT.get(message)
                 if text:
                     hub.emit({"type": "phase", "message": text})
             caption = registry.caption(_decode_png(png),

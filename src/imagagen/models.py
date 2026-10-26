@@ -446,7 +446,7 @@ class ModelRegistry:
                          also_parked=state.parked_id)
             started = time.monotonic()
             self.emit({"type": "status",
-                       "message": f"loading {info.name} on GPU {state.gpu} …"})
+                       "message": f"Loading {info.name} on GPU {state.gpu}…"})
             state.backend.load()
             with self._meta_lock:
                 self._current_id = model_id
@@ -455,7 +455,7 @@ class ModelRegistry:
             memdbg.stamp("restore-end", gpu=state.gpu, model=model_id,
                          secs=round(time.monotonic() - started, 1))
             self.emit({"type": "status",
-                       "message": f"loaded {info.name} on GPU {state.gpu}"})
+                       "message": f"Loaded {info.name} on GPU {state.gpu}"})
             return state.backend
         # Normal path: park whatever is resident, then read the checkpoint.
         self._park_state_locked(state)
@@ -465,7 +465,7 @@ class ModelRegistry:
                  info.name, state.gpu, format_loras(loras or []))
         started = time.monotonic()
         self.emit({"type": "status",
-                   "message": f"loading {info.name} on GPU {state.gpu} …"})
+                   "message": f"Loading {info.name} on GPU {state.gpu}…"})
         memdbg.stamp("read-checkpoint-begin", gpu=state.gpu, model=model_id)
         state.backend = self._new_backend(info, torch.device(f"cuda:{state.gpu}"))
         memdbg.track(state.backend, f"backend[{model_id}@gpu{state.gpu}]")
@@ -482,7 +482,7 @@ class ModelRegistry:
         log.info("model load done: %s on GPU %d (%.1fs)",
                  info.name, state.gpu, time.monotonic() - started)
         self.emit({"type": "status",
-                   "message": f"loaded {info.name} on GPU {state.gpu}"})
+                   "message": f"Loaded {info.name} on GPU {state.gpu}"})
         return state.backend
 
     def backend_for(self, model_id: str, gpu: int | None = None):

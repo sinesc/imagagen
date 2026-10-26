@@ -187,14 +187,14 @@ def test_upscale_cancel_aborts_running_upscale(page, server):
     page.wait_for_timeout(1200)  # let the run actually start (model load)
 
     # Cancel mid-run aborts but does NOT close the dialog: the request
-    # settles with an "upscale aborted" STATUS line note (the in-dialog
+    # settles with an "Upscale aborted" STATUS line note (the in-dialog
     # error message was removed deliberately: an abort is a user action,
     # not a failure) while the dialog stays open
     page.click("#dialog-cancel")
     page.wait_for_function(
         "!document.getElementById('dialog').hidden"
         " && document.getElementById('status-line').textContent"
-        " === 'upscale aborted'", timeout=30000)
+        " === 'Upscale aborted'", timeout=30000)
     # Ok is enabled again (retry possible)... Cancel now closes (idle)
     assert page.evaluate(
         "document.getElementById('dialog-ok').disabled") is False

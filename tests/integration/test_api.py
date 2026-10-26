@@ -346,9 +346,9 @@ def test_interrupt_drops_partial(client, tmp_path):
 
 
 def test_generate_reports_phase_and_completion_messages(client):
-    # The UI's status texts come from the queue: "Encoding prompt" while the
-    # text encoder runs, "<verb> @ WxH" while the transformer samples, and
-    # the batch summary on the done event.
+    # The UI's status texts come from the queue: "Encoding prompt…" while
+    # the text encoder runs, "<verb> @ WxH…" while the transformer samples,
+    # and the batch summary on the done event.
     with client.websocket_connect("/api/ws") as ws:
         r = client.post("/api/generate", json={
             "prompt": "a turtle", "width": 64, "height": 80, "steps": 3,
@@ -366,8 +366,8 @@ def test_generate_reports_phase_and_completion_messages(client):
             elif msg["type"] == "done":
                 done = msg["message"]
         assert done is not None, "no done event within 15s"
-        assert phases[0] == "Encoding prompt"
-        assert "Generating @ 64x80" in phases
+        assert phases[0] == "Encoding prompt\u2026"
+        assert "Generating @ 64x80\u2026" in phases
         assert re.fullmatch(r"Completed 1 images in \d+\.\ds", done)
 
 

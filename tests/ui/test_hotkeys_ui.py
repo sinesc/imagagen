@@ -103,7 +103,7 @@ def test_save_and_generate_hotkeys(page, server):
     # Ctrl+S saves the server's canvas copy into the output directory
     page.keyboard.press("Control+s")
     status = page.locator("#status-line")
-    assert wait_until(lambda: status.evaluate("e => e.textContent").startswith("saved "))
+    assert wait_until(lambda: status.evaluate("e => e.textContent").startswith("Saved "))
     assert list((root / "output").glob("*.png"))
 
 

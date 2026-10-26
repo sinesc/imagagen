@@ -252,9 +252,9 @@ def test_progress_events_report_fraction():
 
 def test_phase_events_report_encoding_and_sampling():
     # The backends' phase markers reach the UI as user-facing status text:
-    # "Encoding prompt" while the text encoder runs, then the mode verb with
-    # the size the model generates at. They carry no fraction (the bar keeps
-    # its value), so they are their own event type, not progress events.
+    # "Encoding prompt…" while the text encoder runs, then the mode verb
+    # with the size the model generates at (a status text that reports a
+    # running stage ends on an ellipsis).
     backend = MockBackend()
     events = []
     q, _ = _queue(backend, events)
@@ -262,7 +262,7 @@ def test_phase_events_report_encoding_and_sampling():
                                         steps=2, seed=1), 1)
     _wait_done(q, job.id)
     phases = [e["message"] for e in events if e["type"] == "phase"]
-    assert phases == ["Encoding prompt", "Generating @ 64x48"]
+    assert phases == ["Encoding prompt\u2026", "Generating @ 64x48\u2026"]
     assert all("fraction" not in e for e in events if e["type"] == "phase")
 
 
@@ -283,7 +283,7 @@ def test_phase_event_verb_follows_the_job_mode():
                                             steps=1, seed=1), 1, plan=plan)
         _wait_done(q, job.id)
         sampling = [e["message"] for e in events if e["type"] == "phase"][-1]
-        assert sampling == f"{verb} @ 64x32", mode
+        assert sampling == f"{verb} @ 64x32\u2026", mode
 
 
 def test_done_event_reports_the_batch_summary():

@@ -41,6 +41,7 @@ from .backends import (
     PHASE_REFERENCE,
     PHASE_REFERENCE_DONE,
     PHASE_REFERENCE_LOADING,
+    PHASE_TEXT,
     GenerateRequest,
     ModelBackend,
     format_loras,
@@ -56,10 +57,11 @@ log = logging.getLogger(__name__)
 _STEP_RE = re.compile(r"step (\d+)/(\d+)")
 
 # The generation-phase status texts the queue renders from the backends'
-# phase messages. "<verb> @ <width>x<height>" uses the mode word of the
+# phase messages. "<verb> @ <width>x<height>…" uses the mode word of the
 # job's plan and the request's W x H, i.e. the size the model generates at
 # (for a rotated generate / outpaint job that is the extended working-frame
-# size, not the final canvas size -- see InpaintPlan).
+# size, not the final canvas size -- see InpaintPlan). The trailing
+# ellipsis marks the stage as still running (see backends.PHASE_TEXT).
 _MODE_WORDS = {
     "generate": "Generating",
     "inpaint_masked": "Inpainting",
@@ -558,20 +560,18 @@ class GenerationQueue:
                            PHASE_REFERENCE_LOADING, PHASE_REFERENCE_DONE):
                 # A generation-phase marker, not step progress: it carries no
                 # fraction (the bar keeps its value), so it goes out as a
-                # "phase" event with the user-facing text -- "Encoding prompt"
-                # while the text encoder runs, "Inpainting @ 1024x1280" while
-                # the transformer samples, "Describing reference image" while
-                # the VLM captions the reference image.
-                if message == PHASE_ENCODING:
-                    text = "Encoding prompt"
-                elif message == PHASE_REFERENCE:
-                    text = "Describing reference image"
-                elif message == PHASE_REFERENCE_LOADING:
-                    text = "Loading captioning model"
-                elif message == PHASE_REFERENCE_DONE:
-                    text = "Reference caption ready"
-                else:
-                    text = f"{_mode_word(job.plan)} @ {req.width}x{req.height}"
+                # "phase" event with the user-facing text -- "Encoding
+                # prompt…" while the text encoder runs, "Inpainting @
+                # 1024x1280…" while the transformer samples, "Describing
+                # reference image…" while the VLM captions the reference
+                # image. The texts live in backends.PHASE_TEXT: every one
+                # starts with a capital letter and ends on an ellipsis while
+                # its stage is still running. The sampling text is built
+                # here because only the queue knows the mode verb and the
+                # size the model generates at.
+                text = PHASE_TEXT.get(message)
+                if text is None:
+                    text = f"{_mode_word(job.plan)} @ {req.width}x{req.height}…"
                 self.emit({"type": "phase", "job": job.id,
                            "index": task.index, "message": text})
                 return
@@ -723,7 +723,7 @@ class GenerationQueue:
             # the encode is the slow part of a wildcard batch (the encoder
             # crosses the bus once for the whole batch here), so announce it
             self.emit({"type": "phase", "job": job.id, "index": None,
-                       "message": "Encoding prompt"})
+                       "message": PHASE_TEXT[PHASE_ENCODING]})
             self.registry.pre_encode(job.model_id, gpu,
                                      list(job.resolved.values()),
                                      reserve=len(job.resolved))

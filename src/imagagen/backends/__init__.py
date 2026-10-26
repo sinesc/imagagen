@@ -182,8 +182,8 @@ ProgressCallback = Callable[[float, str], None]  # fraction 0..1, message
 
 # Phase messages a backend reports through the progress callback to mark the
 # start of a generation stage. They are not step progress: the queue renders
-# them as user-facing status text ("Encoding prompt", "Inpainting @
-# 1024x1280") and they carry no fraction, so the fraction passed with them
+# them as user-facing status text ("Encoding prompt…", "Inpainting @
+# 1024x1280…") and they carry no fraction, so the fraction passed with them
 # is ignored (the bar keeps its current value).
 PHASE_ENCODING = "phase:encoding"
 PHASE_DENOISING = "phase:denoising"
@@ -194,6 +194,19 @@ PHASE_REFERENCE = "phase:reference"
 PHASE_REFERENCE_LOADING = "phase:reference_loading"
 #: the caption is complete (marks the end of the preview/caption span)
 PHASE_REFERENCE_DONE = "phase:reference_done"
+
+#: User-facing status text for the phase markers (the toolbar status line).
+#: Every text starts with a capital letter, and a text that reports an
+#: action still running ends on an ellipsis; only PHASE_REFERENCE_DONE
+#: reports a finished step. PHASE_DENOISING is not listed: its text is the
+#: job's mode verb plus the size the model generates at, which only the
+#: queue knows (queue._mode_word + the request's W x H).
+PHASE_TEXT = {
+    PHASE_ENCODING: "Encoding prompt…",
+    PHASE_REFERENCE: "Describing reference image…",
+    PHASE_REFERENCE_LOADING: "Loading captioning model…",
+    PHASE_REFERENCE_DONE: "Reference caption ready",
+}
 
 #: MockBackend's caption: carries the section structure real VLM
 #: captions have (unlabeled preamble, **Title:** block, trailing
@@ -281,8 +294,8 @@ class ModelBackend(ABC):
         :data:`PHASE_ENCODING` right before an actual text-encoder run (a
         cache hit is instantaneous, so it is skipped there) and
         :data:`PHASE_DENOISING` right before the sampling loop. The queue
-        turns them into the UI's status texts ("Encoding prompt",
-        "Inpainting @ 1024x1280"); per-step progress goes through the same
+        turns them into the UI's status texts ("Encoding prompt…",
+        "Inpainting @ 1024x1280…"); per-step progress goes through the same
         callback as `"step <done>/<total>"`.
         """
 

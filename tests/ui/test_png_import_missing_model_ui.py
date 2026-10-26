@@ -192,7 +192,7 @@ def test_missing_lora_shows_error_toggle(page, server):
         loras=[("alpha", 0.8), ("Optimizer/DMD2fp32XL1.0", 0.7)]))
     assert wait_until(lambda: page.evaluate("getLoras().length") == 2)
     # no checkpoint complaint: the import itself succeeded normally
-    assert wait_until(lambda: "imported" in _status(page)[0] and
+    assert wait_until(lambda: "Imported" in _status(page)[0] and
                       _status(page)[1] is False)
     assert _row_full(page, 0) == [True, False, False, "\u25d0", None, "alpha"]
     missing_row = wait_until(
