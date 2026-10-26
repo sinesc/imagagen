@@ -70,18 +70,37 @@ def server(tmp_path: Path):
             proc.kill()
 
 
-@pytest.fixture()
-def page():
+@pytest.fixture(scope="module")
+def browser():
+    """One Chromium per test MODULE (the `page` fixture hands out a fresh
+    tab per test).
+
+    Launching a browser per test cost ~0.5 s of every UI test's setup. A
+    fresh page still means a fresh document, and the app keeps no
+    browser-side state (no localStorage/sessionStorage; ui-state lives on
+    the server), so sharing the process is safe.
+
+    Module- and NOT session-scoped: a live sync-Playwright browser breaks
+    pytest-asyncio's runner for the async tests that run later in the same
+    session (see tests/ui/test_loading_overlay_slow_api.py), so the browser
+    has to go away at the end of the module that created it.
+    """
     try:
         from playwright.sync_api import sync_playwright
         pw = sync_playwright().start()
-        browser = pw.chromium.launch()
+        b = pw.chromium.launch()
     except Exception as e:  # ImportError, missing browser build, no libs
         pytest.skip(f"playwright/chromium not available: {e}")
+    yield b
+    b.close()
+    pw.stop()
+
+
+@pytest.fixture()
+def page(browser):
     pg = browser.new_page(viewport={"width": 1280, "height": 800})
     yield pg
-    browser.close()
-    pw.stop()
+    pg.close()
 
 
 # ---------------- searchable combobox (makeCombobox) helpers ----------------
@@ -213,6 +232,36 @@ def stroke(page, pts, shift: bool = False, ctrl: bool = False, button: str = "le
 def dot(page, x: float, y: float, shift: bool = False, ctrl: bool = False):
     """A single-point stroke (one stamp)."""
     stroke(page, [[x, y]], shift=shift, ctrl=ctrl)
+
+
+def sync(page):
+    """Push the client's pending canvas/mask edits to the server right now.
+
+    The client does this on its own after SYNC_IDLE_MS (2 s) of idleness, so
+    tests that assert on SERVER state after a non-stroke action (mask ops,
+    undo/redo, paste, rotation) call this instead of paying that 2 s idle
+    timer in a wait_until loop. It never weakens an assertion: the sync is
+    either already scheduled or forced here, and the server-side state the
+    assertions read is the same either way.
+    """
+    page.evaluate("forceSync()")
+
+
+def flush(page, timeout: int = 1500):
+    """sync() for edits that land ASYNCHRONOUSLY (undo/redo, mask ops, the
+    selection composite).
+
+    Their handlers await (morph worker, history restore), so the canvas is
+    re-dirtied a tick AFTER the click/keypress: a bare sync() would push the
+    PRE-edit state, and the assertion would then wait on the 2 s idle timer.
+    Wait for the re-dirty first, then force the sync.
+    """
+    try:
+        page.wait_for_function(
+            "() => canvasDirty || syncTimer !== null || syncPromise", timeout=timeout)
+    except Exception:
+        pass  # nothing re-dirtied: forceSync below + the idle timer still run
+    page.evaluate("forceSync()")
 
 
 def set_input(page, selector: str, value):

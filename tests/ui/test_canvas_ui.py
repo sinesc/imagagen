@@ -16,11 +16,13 @@ from conftest import (
     canvas_px,
     combo_pick,
     dot,
+    flush,
     mask_arr,
     screen_pos,
     set_canvas,
     set_input,
     stroke,
+    sync,
     wait_until,
 )
 from PIL import Image
@@ -111,6 +113,7 @@ def test_brush_opacity_is_not_stacked(page, server):
     assert all(abs(g - e) <= 1 for g, e in zip(got, exp, strict=True)), \
         f"live preview stacked: {got}, want ~{exp}"
     page.mouse.up()
+    sync(page)
     assert wait_until(
         lambda: all(abs(int(g) - e) <= 1
                     for g, e in zip(canvas_px(base, 100, 75), exp, strict=True))), \
@@ -139,6 +142,7 @@ def test_brush_preview_clipped_at_image_edge(page, server):
     corner = _screen_px(page, 8, 62)
     assert corner[0] < 100, f"preview shows the opaque square: {corner}"
     page.mouse.up()
+    sync(page)
     # the commit agrees (the server was never affected)
     assert wait_until(lambda: canvas_px(base, 0, 75)[0] > 200)
     assert canvas_px(base, 8, 62)[0] < 100
@@ -195,6 +199,7 @@ def test_mask_tool_shift_erase_and_morph(page, server):
     # dilate button grows the mask (px field = 4)
     set_input(page, "#mask-px", "4")
     page.click("#mask-dilate")
+    flush(page)
     assert wait_until(lambda: int((mask_arr(base) > 0).sum()) > ring + 100)
     # the dilated ring renders as the GREY overlay, not black: (50, 24) was
     # OUTSIDE the original disc (alpha 0) and only became masked by the
@@ -207,12 +212,15 @@ def test_mask_tool_shift_erase_and_morph(page, server):
 
     # clear mask button empties it
     page.click("#mask-clear")
+    flush(page)
     assert wait_until(lambda: bool((mask_arr(base) == 0).all()))
 
     # toolbar undo/redo restore it
     page.click("#btn-undo")
+    flush(page)
     assert wait_until(lambda: int((mask_arr(base) > 0).sum()) > ring + 100)
     page.click("#btn-redo")
+    flush(page)
     assert wait_until(lambda: bool((mask_arr(base) == 0).all()))
 
 
@@ -358,6 +366,7 @@ def test_mask_preview_matches_commit(page, server):
     assert abs(got[0] - exp_r) <= 1, \
         f"preview overlay not the 0.9 committed factor: {got}, want r~{exp_r}"
     page.mouse.up()
+    sync(page)
     assert wait_until(lambda: mask_arr(base) is not None and mask_arr(base)[40, 50] == 255)
     # the committed overlay lands with the same look (no jump on refresh)
     assert wait_until(
@@ -663,6 +672,7 @@ def test_rapid_strokes_stay_visible_locally(page, server):
     assert _screen_px(page, 100, 110) == [0, 0, 0], \
         f"live preview of stroke 2 missing: {_screen_px(page, 100, 110)}"
     page.mouse.up()
+    sync(page)
 
     # both strokes visible on screen AND in the server state (synced)
     assert _screen_px(page, 100, 40) == [0, 0, 0]
@@ -695,6 +705,7 @@ def test_brush_screen_size_mode(page, server):
     assert stamp_radius() == pytest.approx(15, rel=0.1)
 
     page.click("#mask-clear")
+    flush(page)
     assert wait_until(lambda: bool((mask_arr(base) == 0).all()))
 
     # screen mode: the 30 px slider value means 30 SCREEN px -> the canvas
@@ -908,6 +919,7 @@ def test_clone_drag_copies_pixels(page, server):
     assert ring_bright_at(50, 75) > 400  # ring at the live sample point
     assert ring_bright_at(30, 75) < 400  # not at the picked source
     page.mouse.up()
+    sync(page)
     assert wait_until(lambda: canvas_px(base, 150, 75) == LEFT), \
         f"clone centre: {canvas_px(base, 150, 75)}"
     assert canvas_px(base, 10, 10) == LEFT  # left band untouched
@@ -935,6 +947,7 @@ def test_clone_opacity_is_not_stacked(page, server):
     assert all(abs(g - e) <= 1 for g, e in zip(got, exp, strict=True)), \
         f"live preview stacked: {got}, want ~{exp}"
     page.mouse.up()
+    sync(page)
     assert wait_until(
         lambda: all(abs(int(g) - e) <= 1
                     for g, e in zip(canvas_px(base, 150, 75), exp, strict=True))), \
@@ -1099,6 +1112,7 @@ def test_smudge_drag_smears(page, server):
     assert _screen_px(page, 105, 75)[0] > 40, \
         f"live preview past boundary: {_screen_px(page, 105, 75)}"
     page.mouse.up()
+    sync(page)
     assert wait_until(lambda: canvas_px(base, 105, 75)[0] > 40), \
         f"smudge trail: {canvas_px(base, 105, 75)}"
     # the drag moved RIGHT: the smear still decreases toward the right
@@ -1273,6 +1287,7 @@ def test_soft_brush_preview_respects_shape(page, server):
         f"preview rim should show the soft falloff, not a hard disc: {rim}"
 
     page.mouse.up()
+    sync(page)
     assert wait_until(lambda: canvas_px(base, 100, 75)[0] > 200)
     # the commit matches the preview: soft at the rim, not a hard disc
     rim_s = canvas_px(base, 100, 93)

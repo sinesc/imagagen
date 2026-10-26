@@ -12,7 +12,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from conftest import mask_arr, wait_until
+from conftest import flush, mask_arr, wait_until
 
 REPO = Path(__file__).resolve().parents[2]
 MODEL = REPO / "models" / "segmentation" / "selfie_multiclass_256x256.tflite"
@@ -93,6 +93,7 @@ def test_segment_mask_flow(seg_env, page):
     # the mask write is one undo step. Undo follows the active tool, which
     # segmentation just made the mask tool (so its stack holds the write).
     page.click("#btn-undo")
+    flush(page)  # undo re-dirties asynchronously
     assert wait_until(
         lambda: (m := mask_arr(base)) is not None and m.max() == 0)
 

@@ -10,7 +10,15 @@ when it is applied.
 import io
 
 import httpx
-from conftest import canvas_px, dot, screen_pos, set_canvas, stroke, wait_until
+from conftest import (
+    canvas_px,
+    dot,
+    flush,
+    screen_pos,
+    set_canvas,
+    stroke,
+    wait_until,
+)
 from PIL import Image
 
 BG = (20, 30, 40)
@@ -186,6 +194,7 @@ def test_paste_drop_is_an_overlay_until_applied(page, server):
     assert _canvas_size(base) == (200, 150)
 
     page.keyboard.press("Control+z")
+    flush(page)  # undo re-dirties asynchronously
     assert wait_until(lambda: canvas_px(base, 150, 100) == BG)
 
 
@@ -605,7 +614,7 @@ def test_selection_flip_buttons(page, server):
     assert canvas_px(base, 49, 49) == (0, 0, 255)
 
     page.keyboard.press("Control+z")
-    page.evaluate("forceSync()")
+    flush(page)
     assert wait_until(lambda: canvas_px(base, 10, 10) == (255, 0, 0))
 
     # V-flip: top <-> bottom (the copied area is still loaded)
@@ -619,7 +628,7 @@ def test_selection_flip_buttons(page, server):
 
     # flipping edits the SELECTION only: discarding leaves the image untouched
     page.keyboard.press("Control+z")
-    page.evaluate("forceSync()")
+    flush(page)
     assert wait_until(lambda: canvas_px(base, 10, 10) == (255, 0, 0))
     _paste(page, 30, 30)
     page.click("#sel-flip-h")
@@ -737,6 +746,7 @@ def test_selection_history_undo_redo_until_merge(page, server):
 
     # one Ctrl+Z undoes the ENTIRE paste, internal history and all
     page.keyboard.press("Control+z")
+    flush(page)
     assert wait_until(lambda: canvas_px(base, 154, 95) == BG)
     assert canvas_px(base, 144, 95) == BG
     assert canvas_px(base, 20, 20) == PATCH  # the copied source is intact

@@ -60,9 +60,11 @@ def test_create_and_edit_model_config(page, server):
     wait_until(lambda: page.text_content("#dialog-title") == "Model configuration")
     assert page.locator(".cfg-name").input_value() == "Mock tuned"
     assert page.locator(".cfg-mode").count() == 2
-    wait_until(lambda: any("Mock tuned" in (t or "")
-                           for t in page.eval_on_selector_all(
-                               "#model option", "els => els.map(e => e.textContent)")))
+    # the model field is a searchable combobox, NOT a <select>: assert on the
+    # loaded model list (an "#model option" selector never matched anything,
+    # so this check silently never ran -- and the edit dialog still covers the
+    # combobox here, so opening its list is not an option either)
+    wait_until(lambda: "Mock tuned" in page.evaluate("state.entries.map(e => e.name)"))
     assert (root / "user" / "model-configs" / "mock-tuned.json").is_file()
     assert page.evaluate("document.getElementById('model').value") == "mock-tuned"
 
@@ -475,7 +477,11 @@ def test_preset_dialog_has_no_soft_inpaint_row(page, server):
     # model configuration dialog)
     assert page.locator("#soft-inpaint, #soft-inpaint-cfg").count() == 0
     page.click("#dialog-cancel")
-    wait_until(lambda: page.evaluate("document.getElementById('dialog').hidden"))
+    # cancelling the new-preset dialog returns to the preset manager (that
+    # dialog's onClose re-opens the list), so #dialog stays visible: the old
+    # "dialog is hidden again" wait never succeeded (10 s dead timeout)
+    wait_until(lambda: page.text_content("#dialog-title") == "Setting presets")
+    assert page.locator(".preset-dialog").count() == 0
 
 
 def test_preset_multiword_name_select(page, server):
