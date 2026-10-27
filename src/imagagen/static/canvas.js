@@ -412,12 +412,16 @@ function drawOutpaintOverlay(ctx) {
     const inset = 2 * u;
     ctx.fillText(`${g.W}x${g.H}`, g.bx + inset, g.by + inset);
   }
-  const hs = 8 * u; // handle square: 16 screen px
+  const hs = 4 * u; // handle square: 8 screen px
   ctx.shadowBlur = 0;
   ctx.shadowOffsetY = 0;
-  ctx.fillStyle = "rgba(128,128,128,0.85)";
-  for (const h of outpaintHandles(g))
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  for (const h of outpaintHandles(g)) {
     ctx.fillRect(h.x - hs, h.y - hs, hs * 2, hs * 2);
+    ctx.lineWidth = u;
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.strokeRect(h.x - hs, h.y - hs, hs * 2, hs * 2);
+  }
   ctx.restore();
 }
 
@@ -1709,6 +1713,14 @@ function wheelDelta(e) {
 const SEL_MIN = 8;
 const SEL_MAX = 8192;
 
+// floating-selection handle fill colors by kind: red = rotate, green =
+// aspect-locked corner scale, blue = free per-edge scaling
+const SEL_HANDLE_FILL = {
+  rot: "rgba(255,70,70,0.95)",
+  scale: "rgba(70,220,70,0.95)",
+  edge: "rgba(70,130,255,0.95)",
+};
+
 // tools whose strokes land on the selection while one is active
 function selStrokeTool(tool) {
   return !!view.sel && (tool === "brush" || tool === "clone" || tool === "smudge");
@@ -1970,7 +1982,7 @@ function drawSelectionOverlay(ctx) {
   ctx.strokeRect(-s.sw / 2, -s.sh / 2, s.sw, s.sh);
   const hs = 7 / view.scale;
   for (const h of selHandles(s)) {
-    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.fillStyle = SEL_HANDLE_FILL[h.kind];
     ctx.fillRect(h.x - hs / 2, h.y - hs / 2, hs, hs);
     ctx.lineWidth = 1 / view.scale;
     ctx.strokeStyle = "rgba(0,0,0,0.6)";
