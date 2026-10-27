@@ -136,6 +136,7 @@ function viewRedraw() {
     ctx.drawImage(view.mask, 0, 0, view.w, view.h);
   if (view.stroke && !view.stroke.sel) drawStrokePreview(ctx, view.stroke);
   drawMaskOutline(ctx);
+  drawOutpaintOverlay(ctx);
   if (view.crop) drawCropOverlay(ctx);
   if (view.sel) drawSelectionOverlay(ctx);
   drawCursor(ctx);
@@ -313,6 +314,133 @@ function drawMaskOutline(ctx) {
   ctx.restore();
 }
 
+// ---------------- outpaint source placement overlay -----------------------
+//
+// "Inpaint not masked" (outpaint) AR-scales the source so it TOUCHES the
+// target and positions it in the leftover slack per the normalized placement
+// (see generation.fit_ar). When the source/target aspects differ, show the
+// target bounding box on the canvas plus a drag handle on each side where
+// the source has slack (the box touches the source on the other axes); the
+// handles sit slightly OUTSIDE the source edge so they never cover the
+// image. Dragging a handle moves the source inside the box (placement in
+// [0,1], 0 flush left/top, 1 flush right/bottom).
+//
+// All geometry is canvas px in viewRedraw's base transform; `u = 1/scale`
+// keeps lines/handles/labels screen-constant like the mask outline. The
+// mirror of the server's target-size resolution (oversample + 16-round-up,
+// generation._resolve_gen_size) makes the box match what is generated; the
+// -1 auto-size sentinel cannot be previewed client-side (mask-derived,
+// server-side) so the overlay hides then.
+
+function outpaintGeom() {
+  if (!view.has || $("mode").value !== "inpaint_not_masked") return null;
+  const W0 = parseInt($("width").value, 10);
+  const H0 = parseInt($("height").value, 10);
+  if (!(W0 > 0 && H0 > 0) || !view.w || !view.h) return null;
+  const ov = parseFloat($("oversample").value) || 1;
+  const r16 = (v) => Math.min(4096, Math.max(64, Math.ceil((v * ov) / 16) * 16));
+  const W = r16(W0), H = r16(H0);
+  const s = Math.min(W / view.w, H / view.h);
+  const sw = Math.max(1, Math.round(view.w * s));
+  const sh = Math.max(1, Math.round(view.h * s));
+  const gx = W - sw, gy = H - sh;
+  if (gx <= 0 && gy <= 0) return null; // same AR: box == source, nothing to place
+  const pl = state.outpaintPlacement || { x: 0.5, y: 0.5 };
+  const ox = Math.floor(Math.min(1, Math.max(0, pl.x)) * gx);
+  const oy = Math.floor(Math.min(1, Math.max(0, pl.y)) * gy);
+  // 1 canvas display px == s target px: the box is the target at the scale
+  // where the scaled source fills the source's own display rect
+  return { W, H, s, gx, gy, ox, oy,
+    bx: -ox / s, by: -oy / s, bw: W / s, bh: H / s };
+}
+
+function outpaintHandles(g) {
+  const u = 1 / view.scale;
+  // Slightly OUTSIDE the source edge, but clamped into the element's
+  // letterbox margin: at fit zoom the image fills the element, so a fixed
+  // 9 px offset would land off the element (unclickable). 2*u floor keeps
+  // the handle outside the image at any zoom.
+  const r = cv().getBoundingClientRect();
+  const off = (margin) => Math.min(9 * u, Math.max(2 * u, margin * 0.8));
+  const oxo = off((r.width / view.scale - view.w) / 2);
+  const oyo = off((r.height / view.scale - view.h) / 2);
+  const out = [];
+  if (g.gx > 0) {
+    out.push({ axis: "x", x: -oxo, y: view.h / 2, cursor: "ew-resize" });
+    out.push({ axis: "x", x: view.w + oxo, y: view.h / 2, cursor: "ew-resize" });
+  }
+  if (g.gy > 0) {
+    out.push({ axis: "y", x: view.w / 2, y: -oyo, cursor: "ns-resize" });
+    out.push({ axis: "y", x: view.w / 2, y: view.h + oyo, cursor: "ns-resize" });
+  }
+  return out;
+}
+
+// canvas px -> handle or null (screen-constant tolerance, like hitSelHandle)
+function hitOutpaintHandle(p) {
+  const g = outpaintGeom();
+  if (!g) return null;
+  const tol = 8 / view.scale;
+  return outpaintHandles(g).find(
+    (h) => Math.abs(p[0] - h.x) <= tol && Math.abs(p[1] - h.y) <= tol) || null;
+}
+
+function drawOutpaintOverlay(ctx) {
+  const g = outpaintGeom();
+  if (!g) return;
+  const u = 1 / view.scale;
+  ctx.save();
+  ctx.lineWidth = u;
+  ctx.strokeStyle = "rgba(128,128,128,0.6)";
+  ctx.strokeRect(g.bx, g.by, g.bw, g.bh);
+  {
+    // resolved target size tucked inside the box's top-left corner
+    const fs = 15 / view.scale; // ~15 screen px
+    ctx.font = `${fs}px system-ui, sans-serif`;
+    ctx.fillStyle = "rgba(128,128,128,0.9)";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.shadowColor = "rgba(0,0,0,0.85)";
+    ctx.shadowBlur = 1;
+    ctx.shadowOffsetY = 1;
+    const inset = 2 * u;
+    ctx.fillText(`${g.W}x${g.H}`, g.bx + inset, g.by + inset);
+  }
+  const hs = 8 * u; // handle square: 16 screen px
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.fillStyle = "rgba(128,128,128,0.85)";
+  for (const h of outpaintHandles(g))
+    ctx.fillRect(h.x - hs, h.y - hs, hs * 2, hs * 2);
+  ctx.restore();
+}
+
+// start a placement drag: freeze the geometry (gx/gy/s) and the starting
+// placement so the mapping is stable across the drag
+function startOutpaintDrag(h, p) {
+  const g = outpaintGeom();
+  if (!g) return false;
+  view.outDrag = {
+    axis: h.axis, cursor: h.cursor, x0: p[0], y0: p[1], g,
+    base: { ...(state.outpaintPlacement || { x: 0.5, y: 0.5 }) },
+  };
+  return true;
+}
+
+// pointermove delta: 1 canvas display px moves the source s target px, i.e.
+// shifts the normalized placement by s/gap
+function applyOutpaintDrag(p) {
+  const d = view.outDrag;
+  const g = d.g;
+  if (d.axis === "x") {
+    const v = d.base.x + (p[0] - d.x0) * g.s / g.gx;
+    state.outpaintPlacement.x = Math.min(1, Math.max(0, v));
+  } else {
+    const v = d.base.y + (p[1] - d.y0) * g.s / g.gy;
+    state.outpaintPlacement.y = Math.min(1, Math.max(0, v));
+  }
+}
+
 // fetch image + mask from the server and re-render. The server's state
 // REPLACES the local state: a fresh entity (entity switch, generation
 // result, upload, crop, boot) or a server-side op (segmentation) landed, so
@@ -338,6 +466,7 @@ async function viewRefresh() {
   // OLD image, so it is dropped with it (the copied area survives -- it is
   // the client's own buffer, not canvas state)
   view.sel = null;
+  view.outDrag = null; // an in-flight placement drag rides on the OLD geometry
   view.selDrag = null;
   view.crop = null;
   cancelSync();
@@ -1659,12 +1788,20 @@ function syncCanvasCursor() {
   if (view.selDrag) {
     const d = view.selDrag;
     cur = d.kind === "move" ? "move" : selHandleCursor(d);
+  } else if (view.outDrag) {
+    cur = view.outDrag.cursor;
   } else if (view.sel && view.cursor) {
     const p = [(view.cursor[0] - view.ox) / view.scale,
                (view.cursor[1] - view.oy) / view.scale];
     const h = hitSelHandle(p);
     if (h) cur = selHandleCursor(h);
     else if (Tools.current === "paste" && selContains(p)) cur = "move";
+  }
+  if (!cur && view.cursor) {
+    const p = [(view.cursor[0] - view.ox) / view.scale,
+               (view.cursor[1] - view.oy) / view.scale];
+    const h = hitOutpaintHandle(p);
+    if (h) cur = h.cursor;
   }
   if (c.style.cursor !== cur) c.style.cursor = cur;
 }
@@ -2199,6 +2336,13 @@ function setupCanvasInput() {
       viewRedraw();
       return;
     }
+    // outpaint placement handles grab the pointer before any tool arms
+    const oh = hitOutpaintHandle(p);
+    if (oh && startOutpaintDrag(oh, p)) {
+      c.setPointerCapture(e.pointerId);
+      viewRedraw();
+      return;
+    }
     if (tool === "paste") {
       // an active selection owns the canvas: a drag INSIDE it moves it, and a
       // click outside it is refused -- the user positioned that selection, so
@@ -2340,6 +2484,11 @@ function setupCanvasInput() {
       viewRedraw();
       return;
     }
+    if (view.outDrag) {
+      applyOutpaintDrag(p);
+      viewRedraw();
+      return;
+    }
     if (view.crop) {
       view.crop.ex = p[0];
       view.crop.ey = p[1];
@@ -2416,12 +2565,28 @@ function setupCanvasInput() {
       endSelDrag(); // the transform is live: nothing to resample
       return;
     }
+    if (view.outDrag) {
+      view.outDrag = null; // placement lives in ui-state (app.js schedules)
+      onUserFieldChange("placement_x");
+      onUserFieldChange("placement_y");
+      scheduleSaveUiState();
+      viewRedraw();
+      return;
+    }
     if (view.crop) { commitCrop(); return; }
     endStroke();
   });
   c.addEventListener("pointercancel", (e) => {
     if (view.selDrag) {
       endSelDrag(); // the drag moved the selection: keep it, one step back
+      return;
+    }
+    if (view.outDrag) {
+      view.outDrag = null;
+      onUserFieldChange("placement_x");
+      onUserFieldChange("placement_y");
+      scheduleSaveUiState();
+      viewRedraw();
       return;
     }
     if (view.crop) { abortCrop(); return; }

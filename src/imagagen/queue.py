@@ -927,6 +927,15 @@ def _result_to_png(
         # the source rotation (0/None = absent; a rotated generate job's PNG
         # must carry it so an import regenerates the same extended size)
         rotation=p.rotation or None if p is not None else None,
+        # outpaint source placement: recorded only for a non-centered outpaint
+        # job (the centered default is the historical behavior, keep metadata
+        # clean); importing restores the source position in the target
+        placement=(
+            tuple(p.placement)
+            if (p is not None and p.mode == "inpaint_not_masked"
+                and tuple(p.placement) != (0.5, 0.5))
+            else None
+        ),
         model_name=backend.name,
         model_hash=backend.model_hash,
         # the checkpoint family (models/<family>/): an import that cannot

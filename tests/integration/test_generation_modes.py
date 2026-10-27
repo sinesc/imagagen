@@ -516,9 +516,6 @@ def test_inpaint_unknown_mode_rejected(client):
     assert r.status_code == 400
 
 
-# ------------------------------------------------------------ state + ui --
-
-
 def test_uistate_persists_denoise_but_not_mode_or_preset(client):
     # the generation mode and the preset selection are never persisted
     # (the UI always opens in "generate" mode with the preset dropdown at
@@ -560,6 +557,86 @@ def _canvas_meta(client) -> dict | None:
     r = client.get("/api/canvas.png")
     assert r.status_code == 200
     return md.read_metadata(r.content)
+
+
+# ----------------------------------------------------------- outpaint placement --
+
+
+def _set_canvas_band(client):
+    # flat 7 fill with a wide bright CENTRE band: at low denoise the mock
+    # keeps most of the init image, so the band marks where the scaled
+    # source landed in the 128x64 target (gx = 64)
+    img = Image.new("RGB", (32, 32), (7, 7, 7))
+    px = img.load()
+    for y in range(32):
+        for x in range(12, 20):
+            px[x, y] = (200, 200, 200)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    assert client.post("/api/canvas/upload", content=buf.getvalue()).status_code == 200
+
+
+def _outpaint_select(client, ws, **kw) -> np.ndarray:
+    job = _generate(client, ws, width=128, height=64, denoise=0.2,
+                    mode="inpaint_not_masked", **kw)
+    r = client.post("/api/canvas/thumb",
+                    json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    return _img(client)
+
+
+def test_outpaint_placement_positions_the_source(client):
+    _set_canvas_band(client)
+    with client.websocket_connect("/api/ws") as ws:
+        out = _outpaint_select(client, ws, placement=[0.0, 0.5])
+    assert out.shape == (64, 128, 3)
+    # flush left: band at x~24..40, the right border replicates the
+    # source's right edge (7)
+    assert out[8:24, 24:41, 0].mean() > 120
+    assert out[8:24, 60:, 0].mean() < 60
+
+    _set_canvas_band(client)
+    with client.websocket_connect("/api/ws") as ws:
+        out = _outpaint_select(client, ws, placement=[1.0, 0.5])
+    # flush right: band shifted 64 px right, left border replicates 7
+    assert out[8:24, 88:105, 0].mean() > 120
+    assert out[8:24, :60, 0].mean() < 60
+
+    meta = _canvas_meta(client)
+    assert meta is not None
+    assert [round(v, 3) for v in meta["outpaint_placement"]] == [1.0, 0.5]
+
+
+def test_outpaint_centered_placement_omits_metadata(client):
+    # the centered default is the historical behavior: no metadata key
+    _set_canvas_band(client)
+    with client.websocket_connect("/api/ws") as ws:
+        out = _outpaint_select(client, ws)
+    assert out.shape == (64, 128, 3)
+    assert out[8:24, 56:73, 0].mean() > 120  # band centered at x~64
+    meta = _canvas_meta(client)
+    assert meta is not None and "outpaint_placement" not in meta
+
+
+def test_outpaint_placement_clamped(client):
+    # out-of-range components are clamped to [0,1] (no rejection)
+    _set_canvas(client)
+    r = client.post("/api/generate", json={
+        "prompt": "x", "width": 128, "height": 64,
+        "mode": "inpaint_not_masked", "placement": [-2.0, 3.0]})
+    assert r.status_code == 200
+
+
+# ------------------------------------------------------------ state + ui --
+
+
+def test_uistate_persists_clamped_placement(client):
+    r = client.post("/api/ui-state", json={"placement": [0.25, 1.4]})
+    assert r.status_code == 200
+    st = client.get("/api/ui-state").json()["state"]
+    assert st["placement"] == [0.25, 1.0]
+    on_disk = json.loads(client.app.state.ui_state.path.read_text())
+    assert on_disk["placement"] == [0.25, 1.0]
 
 
 def test_generate_carries_metadata_to_canvas_and_save(client, tmp_path):

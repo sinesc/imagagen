@@ -118,6 +118,14 @@ class UiState(BaseModel):
     oversample: float = Field(default=1.0, ge=0.1, le=4.0)
     # rotate the source before generating (UI dropdown; 0 = default)
     rotation: int = Field(default=0, ge=-180, le=180)
+    # normalized outpaint source placement (px, py) in [0,1]: the canvas
+    # overlay's handle position, persisted like the other generation knobs
+    placement: tuple[float, float] = (0.5, 0.5)
+
+    @field_validator("placement")
+    @classmethod
+    def _placement_clamped(cls, v: tuple[float, float]) -> tuple[float, float]:
+        return tuple(min(1.0, max(0.0, float(c))) for c in v)  # type: ignore[return-value]
 
     @field_validator("rotation")
     @classmethod

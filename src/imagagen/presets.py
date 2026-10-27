@@ -41,6 +41,8 @@ PRESET_FIELDS = (
     "denoise",
     "mask_padding",
     "oversample",
+    "placement_x",
+    "placement_y",
     "loras",
 )
 
@@ -70,6 +72,10 @@ class Preset(BaseModel):
     denoise: float | None = Field(default=None, ge=0.0, le=1.0)
     mask_padding: int | None = Field(default=None, ge=0, le=2048)
     oversample: float | None = Field(default=None, ge=0.1, le=4.0)
+    # normalized outpaint source placement ("inpaint not masked" only):
+    # 0 = flush left/top, 1 = flush right/bottom, 0.5 = centered
+    placement_x: float | None = Field(default=None, ge=0.0, le=1.0)
+    placement_y: float | None = Field(default=None, ge=0.0, le=1.0)
     loras: list[tuple[str, float]] | None = None
     controls: dict[str, bool] = Field(default_factory=dict)
 

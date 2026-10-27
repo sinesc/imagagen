@@ -115,6 +115,7 @@ def build_parameters(
     reference_caption: str | None = None,
     reference_sections: list[str] | None = None,
     activation_tags: list[str] | None = None,
+    placement: tuple[float, float] | None = None,
 ) -> str:
     """Serialize the `parameters` text chunk as a JSON document.
 
@@ -165,6 +166,9 @@ def build_parameters(
       plain ``activation text`` always applies and is never listed here).
       Tags the UI switched off are absent; like the reference sections this
       documents the prompt, it is not re-imported.
+    * ``outpaint_placement``: the normalized outpaint source placement
+      ``[px, py]`` (written only for a non-centered outpaint job; importing
+      restores the source position in the target).
     """
     doc: dict[str, Any] = {
         "format": _FORMAT,
@@ -238,6 +242,10 @@ def build_parameters(
         # the optional-activation-text tags that were applied (the tag row
         # under the negative prompt; switched-off tags are missing here)
         doc["activation_tags"] = activation_tags
+    if placement is not None:
+        # outpaint source placement (normalized [0,1], only written for a
+        # non-centered outpaint job): importing restores the source position
+        doc["outpaint_placement"] = [placement[0], placement[1]]
     if sag is not None:
         # written unconditionally, so a dropped image can restore the
         # checkbox in BOTH states

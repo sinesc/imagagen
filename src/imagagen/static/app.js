@@ -35,6 +35,12 @@ const state = {
   // enabled control keys. While set, the preset stays selected; a user edit of
   // any covered field clears it (clearActivePreset).
   activePreset: null,
+  // normalized outpaint source placement in the target ("inpaint not
+  // masked" only): 0 = flush left/top, 1 = flush right/bottom, 0.5 =
+  // centered. The canvas overlay's drag handles edit it (canvas.js);
+  // persisted in ui-state, written to the PNG metadata (non-default),
+  // restored on PNG import
+  outpaintPlacement: { x: 0.5, y: 0.5 },
   // the thumbnail checked as "reference image" (canvas entity id; exactly
   // one at a time — checking a new one clears the previous). The
   // generation describes that image with the VLM and injects the caption
@@ -1304,6 +1310,8 @@ async function generate() {
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
     oversample: parseFloat($("oversample").value) || 1,
+    // outpaint source placement (normalized [0,1], canvas overlay)
+    placement: [state.outpaintPlacement.x, state.outpaintPlacement.y],
   };
   // THIS is where thumbnails are removed: unpinning alone never deletes
   // one, the generation drops every unpinned entry now (the server evicts
@@ -1770,7 +1778,8 @@ async function deleteConfig() {
 
 // ---------------- presets (Phase 4) ----------------
 const PRESET_KEYS = ["width", "height", "rotation", "steps", "cfg", "seed", "batch",
-  "sampler", "scheduler", "mode", "denoise", "mask_padding", "oversample", "loras"];
+  "sampler", "scheduler", "mode", "denoise", "mask_padding", "oversample",
+  "placement_x", "placement_y", "loras"];
 // enable/disable of the sidebar checkboxes (soft inpainting and SAG are not
 // preset fields: their flags live in the model configuration)
 
@@ -1812,6 +1821,9 @@ async function applyPreset(name) {
         $("mode").value = p[key];
         syncMode();
       }
+      // outpaint placement lives in JS state (no form input of its own)
+      else if (key === "placement_x") state.outpaintPlacement.x = p[key];
+      else if (key === "placement_y") state.outpaintPlacement.y = p[key];
       // sidebar ids are hyphenated but preset keys use underscores
       // (e.g. mask_padding -> #mask-padding); the rest map 1:1
       else $(key.replace(/_/g, "-")).value = p[key];
@@ -1824,6 +1836,7 @@ async function applyPreset(name) {
   // remember what we applied so later user edits of these fields clear the box
   state.activePreset = { name, keys: Object.keys(controls).filter((k) => controls[k]) };
   $("preset").value = name; // keep the selection: the form now matches it
+  viewRedraw(); // a placement-controlled preset moves the overlay box
   scheduleSaveUiState(0);
   setStatus(`Preset "${name}" applied`);
   return true;
@@ -1914,6 +1927,8 @@ function openPresetDialog(existing, onClose = null, isClone = false) {
     ["denoise", "Denoise strength", "number", p.denoise],
     ["mask_padding", "Mask padding", "number", p.mask_padding],
     ["oversample", "Scale", "number", p.oversample],
+    ["placement_x", "Placement X", "number", p.placement_x],
+    ["placement_y", "Placement Y", "number", p.placement_y],
     ["loras", "LORAs", "loras", p.loras],
   ];
   const rows = el("div", { class: "preset-rows" });
@@ -1939,6 +1954,10 @@ function openPresetDialog(existing, onClose = null, isClone = false) {
     }
     input.dataset.presetKey = key;
     input.dataset.presetKind = kind;
+    if (key === "placement_x" || key === "placement_y") {
+      // normalized outpaint placement: 0..1 in coarse steps
+      input.min = "0"; input.max = "1"; input.step = "0.05";
+    }
     rows.append(el("div", { class: "preset-row" }, cb, el("label", { class: "preset-label", for: `preset-cb-${key}` }, label), input));
   }
   const box = el("div", { class: "preset-dialog" },
@@ -2282,6 +2301,7 @@ function syncMode() {
   $("mask-padding").disabled = $("mode").value !== "inpaint_masked";
   $("oversample").disabled = gen;
   syncGenerateEnabled();
+  viewRedraw(); // the outpaint placement overlay appears/disappears
 }
 
 // Inpaint with an empty mask is a server-side no-op (rejected with
@@ -2580,6 +2600,17 @@ async function applyPngMeta(meta, width, height) {
   // the source rotation round-trips through the PNG (absent = leave as-is)
   if (meta.rotation !== undefined && meta.rotation !== null)
     $("rotation").value = String(meta.rotation);
+  // the outpaint source placement (written only for a non-centered outpaint
+  // job): restore the source position in the target overlay
+  if (Array.isArray(meta.outpaint_placement) &&
+      meta.outpaint_placement.length === 2) {
+    const [px, py] = meta.outpaint_placement.map(Number);
+    if (Number.isFinite(px) && Number.isFinite(py)) {
+      state.outpaintPlacement = { x: px, y: py };
+      viewRedraw();
+      scheduleSaveUiState();
+    }
+  }
   for (const id of ["sampler", "scheduler"]) {
     const sel = $(id);
     if (meta[id] && [...sel.options].some((o) => o.value === meta[id])) sel.value = meta[id];
@@ -2806,6 +2837,7 @@ function readUiState() {
     denoise: parseFloat($("denoise").value),
     mask_padding: parseInt($("mask-padding").value, 10) || 0,
     oversample: parseFloat($("oversample").value) || 1,
+    placement: [state.outpaintPlacement.x, state.outpaintPlacement.y],
     // soft inpainting (enable flag + options) and self attention guidance
     // are model configuration settings, not persisted here
     loras: getLoras().filter((x) => x[2]).map(([n, w]) => [n, w]),
@@ -2878,6 +2910,13 @@ function applyUiState(st) {
   if (Array.isArray(st.disabled_activation_tags))
     state.disabledActivationTags = st.disabled_activation_tags;
   if (state.referenceImageId) fetchReferencePreview(); // renders the tag row
+  // outpaint source placement: [px, py] normalized (null-guarded like the
+  // tool settings); the canvas overlay re-renders on the next viewRedraw
+  if (Array.isArray(st.placement) && st.placement.length === 2 &&
+      Number.isFinite(st.placement[0]) && Number.isFinite(st.placement[1])) {
+    state.outpaintPlacement = { x: st.placement[0], y: st.placement[1] };
+    viewRedraw();
+  }
   // soft inpainting and self attention guidance (enable flags + options)
   // are model configuration settings, not persisted in the ui-state
   // sidebar width set by dragging its right border
@@ -3311,6 +3350,9 @@ $("prompt").addEventListener("input", schedulePromptTokens);
 $("negative").addEventListener("input", scheduleTextPrefetch);
 // the mask bbox outline is grown by this field: redraw as it changes
 $("mask-padding").addEventListener("input", viewRedraw);
+// the outpaint placement overlay sizes its box by these fields
+["width", "height", "oversample"].forEach((id) =>
+  $(id).addEventListener("input", viewRedraw));
 $("seed-reset").onclick = () => {
   // -1 = the form's "new random seed for every image" state
   $("seed").value = "-1";

@@ -16,11 +16,12 @@ Three modes (concept.md):
   size and mask are unchanged.
 - "inpaint not masked": scale the canvas AR-preserving so it "touches" the
   inside of the requested size (100x100 -> 250x200 scales to 200x200 and is
-  centered at offset 25 right / 0 down), paste it onto a fresh target canvas
-  (borders edge-replicated), and inpaint the whole target with the mask
-  region protected. The canvas resizes to the requested size and the mask is
-  scaled/shifted identically to the image. With no mask and unchanged AR this
-  is plain img2img; a larger target is outpainting.
+  centered at offset 25 right / 0 down; the ``placement`` parameter moves it
+  in the slack -- 0 flush left/top, 1 flush right/bottom), paste it onto a
+  fresh target canvas (borders edge-replicated), and inpaint the whole target
+  with the mask region protected. The canvas resizes to the requested size and
+  the mask is scaled/shifted identically to the image. With no mask and
+  unchanged AR this is plain img2img; a larger target is outpainting.
 
 The backend always generates at the request's width x height with
 ``init_mask`` marking the *inpaint region* (255 = regenerate, the standard
@@ -163,15 +164,22 @@ def masked_bbox(
     return x0, y0, int(round(bw)), int(round(bh))
 
 
-def fit_ar(w: int, h: int, W: int, H: int) -> tuple[int, int, int, int]:
+def fit_ar(
+    w: int, h: int, W: int, H: int,
+    px: float = 0.5, py: float = 0.5,
+) -> tuple[int, int, int, int]:
     """AR-preserving scale of (w,h) so it "touches" the inside of (W,H):
-    the largest size that fits, centered. Returns ``(sw, sh, ox, oy)``.
+    the largest size that fits. Returns ``(sw, sh, ox, oy)`` where the
+    normalized placement ``(px, py)`` in [0,1] positions the scaled source
+    in the target slack: 0 = flush left/top, 1 = flush right/bottom,
+    0.5 = centered (``floor(0.5*gap) == gap//2``, so the default reproduces
+    the original centering exactly).
 
     e.g. (100,100) -> (250,200) gives (200,200,25,0)."""
     scale = min(W / w, H / h)
     sw = max(1, int(round(w * scale)))
     sh = max(1, int(round(h * scale)))
-    return sw, sh, (W - sw) // 2, (H - sh) // 2
+    return sw, sh, int(px * (W - sw)), int(py * (H - sh))
 
 
 def crop_padded(img: np.ndarray, x0: int, y0: int, w: int, h: int) -> np.ndarray:
@@ -215,12 +223,13 @@ def resize_shift_mask(
     return out
 
 
-def paste_centered(scaled: np.ndarray, W: int, H: int) -> np.ndarray:
-    """Center a scaled image on a fresh (H,W) canvas; the empty border is
-    edge-replicated (a low-denoise outpaint then continues plausibly
-    instead of showing a black halo)."""
+def paste_at(
+    scaled: np.ndarray, W: int, H: int, ox: int, oy: int
+) -> np.ndarray:
+    """Place a scaled image on a fresh (H,W) canvas at (ox,oy); the empty
+    border is edge-replicated (a low-denoise outpaint then continues
+    plausibly instead of showing a black halo)."""
     h, w = scaled.shape[:2]
-    ox, oy = (W - w) // 2, (H - h) // 2
     return np.pad(
         scaled, ((oy, H - oy - h), (ox, W - ox - w), (0, 0)), mode="edge"
     )
@@ -253,6 +262,10 @@ class InpaintPlan:
     # inpaint_masked: the unrotated source canvas (w, h) — the final canvas
     # size (the requested W×H only sizes the generation in this mode)
     canvas_size: tuple[int, int] | None = None
+    # inpaint_not_masked: normalized source placement (px, py) in [0,1] in
+    # the target (the geometry is baked into init_image; the value rides
+    # along for the PNG metadata round-trip)
+    placement: tuple[float, float] = (0.5, 0.5)
 
     def postprocess(self, gen: np.ndarray) -> np.ndarray:
         """Backend output -> canvas image (the inpaint_masked blend, or the
@@ -332,6 +345,7 @@ def with_inpaint(
     rotation: int = 0,
     padding: int = INPAINT_PADDING,
     oversample: float = 1.0,
+    placement: tuple[float, float] = (0.5, 0.5),
 ) -> InpaintPlan | None:
     """Populate ``request.init_image``/``init_mask``/``denoise`` and return
     the post-processing plan (None only for a rotation-0 "generate").
@@ -360,7 +374,13 @@ def with_inpaint(
     scaled by ``oversample`` and rounded up to a multiple of 16; auto-
     computed sizes additionally get ``MIN_GEN_SIDE`` on the shorter side
     (longer side scaled to keep the AR). The resolved size is what the
-    plan and the PNG metadata record."""
+    plan and the PNG metadata record.
+
+    ``placement`` (normalized (px, py), clamped to [0,1]) positions the
+    scaled source inside the outpaint target's slack: 0 = flush left/top,
+    1 = flush right/bottom, 0.5 = centered. It applies in the *display*
+    frame (before the target rotation) and only in "inpaint_not_masked";
+    the mask shifts with the source (``resize_shift_mask``)."""
     if rotation not in ROTATIONS:
         raise GenerationError(f"invalid rotation {rotation!r}")
     if mode == "generate":
@@ -426,9 +446,11 @@ def with_inpaint(
 
     # inpaint_not_masked
     ch, cw = image.shape[:2]
-    sw, sh, ox, oy = fit_ar(cw, ch, request.width, request.height)
-    target = paste_centered(
-        resize_image(image, sw, sh), request.width, request.height)
+    px = min(1.0, max(0.0, float(placement[0])))
+    py = min(1.0, max(0.0, float(placement[1])))
+    sw, sh, ox, oy = fit_ar(cw, ch, request.width, request.height, px, py)
+    target = paste_at(
+        resize_image(image, sw, sh), request.width, request.height, ox, oy)
     new_mask = (
         resize_shift_mask(mask, sw, sh, ox, oy, request.width, request.height)
         if mask.any()
@@ -447,4 +469,5 @@ def with_inpaint(
         work_mask = new_mask
     request.init_mask = np.uint8(255) - work_mask  # protect the mask region
     return InpaintPlan("inpaint_not_masked", requested_size=(fw, fh),
-                       rotation=rotation, work_mask=work_mask)
+                       rotation=rotation, work_mask=work_mask,
+                       placement=(px, py))

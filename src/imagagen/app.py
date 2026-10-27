@@ -259,6 +259,15 @@ class GenerateBody(BaseModel):
     # counter-rotate the result (positive = clockwise); 0 = no rotation.
     # ±45/±135 extend the generate/outpaint generation size
     rotation: int = Field(default=0, ge=-180, le=180)
+    # normalized source placement in the outpaint target ("inpaint_not_masked"
+    # only): (px, py) in [0,1], 0 = flush left/top, 1 = flush right/bottom,
+    # (0.5, 0.5) = centered (the historical behavior)
+    placement: tuple[float, float] = (0.5, 0.5)
+
+    @field_validator("placement")
+    @classmethod
+    def _placement_clamped(cls, v: tuple[float, float]) -> tuple[float, float]:
+        return tuple(min(1.0, max(0.0, float(c))) for c in v)  # type: ignore[return-value]
 
     @field_validator("rotation")
     @classmethod
@@ -915,7 +924,8 @@ def create_app(
             plan = with_inpaint(req, body.mode, canvas, body.denoise,
                                 rotation=body.rotation,
                                 padding=body.mask_padding,
-                                oversample=body.oversample)
+                                oversample=body.oversample,
+                                placement=body.placement)
         except GenerationError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         job = queue.submit(model_id, req, body.batch_size, plan=plan,

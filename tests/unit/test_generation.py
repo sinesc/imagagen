@@ -14,7 +14,7 @@ from imagagen.generation import (
     crop_padded,
     fit_ar,
     masked_bbox,
-    paste_centered,
+    paste_at,
     resize_shift_mask,
     rotate_canvas,
     rotation_size,
@@ -87,6 +87,24 @@ def test_fit_ar_ar_preserved_both_axes():
     assert (sw, sh, ox, oy) == (100, 33, 0, 33)
 
 
+def test_fit_ar_placement_ends():
+    # 100x100 -> 250x200: slack is horizontal only (50 px)
+    assert fit_ar(100, 100, 250, 200, 0, 0.5) == (200, 200, 0, 0)
+    assert fit_ar(100, 100, 250, 200, 1, 0.5) == (200, 200, 50, 0)
+    # vertical slack: 100x100 -> 200x250 (50 px)
+    assert fit_ar(100, 100, 200, 250, 0.5, 0) == (200, 200, 0, 0)
+    assert fit_ar(100, 100, 200, 250, 0.5, 1) == (200, 200, 0, 50)
+    # a placement axis WITHOUT slack stays at 0 (the target axis is filled)
+    assert fit_ar(100, 100, 250, 200, 0.5, 1) == (200, 200, 25, 0)
+    assert fit_ar(100, 100, 200, 250, 1, 0.5) == (200, 200, 0, 25)
+
+
+def test_fit_ar_default_centering_odd_gap():
+    # the 0.5 default reproduces the historical (W-sw)//2 centering exactly,
+    # on an ODD gap too (floor(0.5*67) == 67//2 == 33)
+    assert fit_ar(300, 100, 100, 100) == (100, 33, 0, 33)
+
+
 # ------------------------------------------------------------- crop helpers --
 
 
@@ -140,14 +158,14 @@ def test_resize_shift_mask_spec_example():
     assert out[:, 226:].max() == 0  # right of the placement
 
 
-def test_paste_centered_edge_replicated_border():
+def test_paste_at_edge_replicated_border():
     # R = per-column gradient, bottom row overridden: makes every
     # replicated edge distinct
     scaled = np.zeros((4, 4, 3), dtype=np.uint8)
     for x in range(4):
         scaled[:, x, 0] = x * 10
     scaled[3, :, 0] = 99
-    out = paste_centered(scaled, 8, 6)
+    out = paste_at(scaled, 8, 6, 2, 1)
     assert out.shape == (6, 8, 3)
     np.testing.assert_array_equal(out[1:5, 2:6, 0], scaled[:, :, 0])
     # left/right borders replicate the edge column *of that row* (the bottom
@@ -158,7 +176,7 @@ def test_paste_centered_edge_replicated_border():
     np.testing.assert_array_equal(out[0, :, 0], [0, 0, 0, 10, 20, 30, 30, 30])
     np.testing.assert_array_equal(out[5, :, 0], [99, 99, 99, 99, 99, 99, 99, 99])
     # no border: identity
-    np.testing.assert_array_equal(paste_centered(scaled, 4, 4), scaled)
+    np.testing.assert_array_equal(paste_at(scaled, 4, 4, 0, 0), scaled)
 
 
 # -------------------------------------------------------------------- plans --
@@ -374,6 +392,65 @@ def test_inpaint_not_masked_postprocess_resizes_rounded_output():
     gen = np.full((96, 96, 3), 42, dtype=np.uint8)
     out = plan.postprocess(gen)
     assert out.shape == (100, 100, 3)
+
+
+def test_inpaint_not_masked_placement_offsets_init_image():
+    # a 32x32 source with a bright CENTRE column scaled 2x into a 128x64
+    # target: the bright band lands at ox + 30..35 (ox = px * 64)
+    c = Canvas()
+    img = np.full((32, 32, 3), 7, dtype=np.uint8)
+    img[:, 15:18] = 200
+    c.import_image(_png(img))
+
+    # flush left: band near x=32, right border replicates the source's
+    # right edge (7)
+    req = GenerateRequest(prompt="x", width=128, height=64)
+    plan = with_inpaint(req, "inpaint_not_masked", c, 1.0,
+                        placement=(0.0, 0.5))
+    assert req.init_image.shape == (64, 128, 3)
+    assert req.init_image[:, 28:42, 0].max() > 150
+    assert req.init_image[:, 60:, 0].max() < 100
+    assert plan.placement == (0.0, 0.5)
+
+    # flush right: band near x=96, left border replicates the source's
+    # left edge (7)
+    req = GenerateRequest(prompt="x", width=128, height=64)
+    plan = with_inpaint(req, "inpaint_not_masked", c, 1.0,
+                        placement=(1.0, 0.5))
+    assert req.init_image[:, 92:106, 0].max() > 150
+    assert req.init_image[:, :68, 0].max() < 100
+    assert plan.placement == (1.0, 0.5)
+
+    # centered (0.5): band near x=64 -- the historical centering
+    req = GenerateRequest(prompt="x", width=128, height=64)
+    plan = with_inpaint(req, "inpaint_not_masked", c, 1.0)
+    assert req.init_image[:, 60:74, 0].max() > 150
+    assert req.init_image[:, :36, 0].max() < 100
+    assert req.init_image[:, 92:, 0].max() < 100
+    assert plan.placement == (0.5, 0.5)
+
+
+def test_inpaint_not_masked_placement_shifts_the_mask():
+    # the mask travels with the source (it shares the source's transform)
+    c = Canvas()
+    img = np.full((32, 32, 3), 7, dtype=np.uint8)
+    c.import_image(_png(img))
+    m = np.zeros((32, 32), dtype=np.uint8)
+    m[8:16, 14:18] = 255
+    c.set_mask(m)
+    req = GenerateRequest(prompt="x", width=128, height=64)
+    with_inpaint(req, "inpaint_not_masked", c, 1.0, placement=(1.0, 0.5))
+    # init_mask is inverted (255 = regenerate): the masked source region is
+    # protected (0) and travels 64 px further right than the centered spot
+    prot = np.uint8(255) - req.init_mask
+    cols = np.where((prot > 128).any(axis=0))[0]
+    assert cols.min() >= 90 and cols.min() < 100
+    # with the centered default the protected band sits around x=62..70
+    req2 = GenerateRequest(prompt="x", width=128, height=64)
+    with_inpaint(req2, "inpaint_not_masked", c, 1.0)
+    prot2 = np.uint8(255) - req2.init_mask
+    cols2 = np.where((prot2 > 128).any(axis=0))[0]
+    assert cols2.min() >= 58 and cols2.min() < 70
 
 
 # ----------------------------------------------------------------- rotation --
