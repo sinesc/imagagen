@@ -248,10 +248,27 @@ button.mini.icon {
   gap: 0.4rem;
 }
 #thumbs[hidden] { display: none; }
-/* empty strip: a dashed placeholder over the whole stretched area */
+/* empty strip: a dashed placeholder over the whole stretched area with
+   hint text, styled like the #canvas-empty message (.muted grey, centred) */
 #thumbs.empty:not([hidden]) {
+  position: relative;
   border: 1px dashed #444;
   border-radius: 4px;
+}
+#thumbs.empty:not([hidden])::before {
+  content: "No thumbnails yet\A Drop PNGs here to use as source or reference images";
+  white-space: pre-line;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  color: #888;
+  font-size: 0.8rem;
+  text-align: center;
+  pointer-events: none; /* the strip below stays the dropzone */
 }
 #thumbs.drop {  /* file dragged over the strip */
   outline: 2px dashed #7ab;
