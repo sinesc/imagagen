@@ -134,6 +134,17 @@ def _drag_handle(page, axis, sign, dx, dy):
     return started
 
 
+def _anchor(page):
+    """(view.ox, view.oy, box-screen-left, box-screen-top): the box's
+    screen anchor must stay put across a placement drag."""
+    return page.evaluate(
+        """() => {
+            const g = outpaintGeom();
+            return [view.ox, view.oy,
+                    view.ox + g.bx * view.scale, view.oy + g.by * view.scale];
+        }""")
+
+
 def test_placement_drag_moves_source(page, server):
     base, _root = server
     _open(page, base)
@@ -142,12 +153,26 @@ def test_placement_drag_moves_source(page, server):
     set_input(page, "#height", "64")
     page.select_option("#mode", "inpaint_not_masked")
     assert _placement(page) == {"x": 0.5, "y": 0.5}
+    ox0, oy0, bl0, bt0 = _anchor(page)
     assert _drag_handle(page, "x", 1, 40, 0)
-    # 40 screen px at the current scale == 40/scale canvas px; 1 canvas px
-    # moves the source s target px, i.e. placement by s/gx per canvas px
+    ox1, oy1, bl1, bt1 = _anchor(page)
+    # the source (canvas pixels) follow the cursor 1:1: the view pans by
+    # exactly the dragged screen delta
+    assert abs((ox1 - ox0) - 40) < 1e-6
+    assert oy1 == oy0  # an x-axis drag never touches the vertical offset
+    # the box keeps its screen anchor: ox pans by the same amount the box
+    # slides in world px, cancelling it. Tolerance: the box position is a
+    # quantized TARGET-PX offset (int), i.e. 1 canvas px = view.scale
+    # screen px of residual box jitter during the drag
+    sc = page.evaluate("view.scale")
+    assert abs(bl1 - bl0) <= 0.6 * sc and abs(bt1 - bt0) <= 0.6 * sc
+    # placement mapping: 1 canvas display px (dx/scale) moves the source s
+    # target px, i.e. placement by s/gx per canvas px
     exp = page.evaluate(
         """(dx) => 0.5 + dx / view.scale * outpaintGeom().s / outpaintGeom().gx""",
         40)
+    assert abs(_placement(page)["x"] - exp) < 1e-6
+    assert _placement(page)["y"] == 0.5
     # the vertical axis has no slack -> no vertical handles
     assert _handle_screen(page, "y", 1) is None
     assert _handle_screen(page, "y", -1) is None
@@ -160,12 +185,22 @@ def test_placement_drag_moves_source(page, server):
     g = _geom(page)
     assert g["gx"] == 0 and g["gy"] == 64
     assert _handle_screen(page, "x", 1) is None
+    a1 = _anchor(page)  # re-anchor: the target change rebuilt the box, the
+    ox1, oy1 = a1[0], a1[1]  # pre-change anchors no longer apply
     _drag_handle(page, "y", 1, 0, 40)
     exp = page.evaluate(
         "(dy) => 0.5 + dy / view.scale * outpaintGeom().s / outpaintGeom().gy",
         40)
     assert abs(_placement(page)["y"] - exp) < 1e-6
     assert _placement(page)["x"] == x_before  # the y drag never touches x
+    # vertical source movement: box anchored, source follows the handle
+    ox2, oy2, bl2, bt2 = _anchor(page)
+    assert abs(ox2 - ox1) < 1e-6  # a y drag never pans horizontally
+    assert abs((oy2 - oy1) - 40) < 1e-6
+    # the box keeps its screen anchor during the drag (same quantization
+    # tolerance as the x-axis case; the box is square here, so both edges
+    # are anchored)
+    assert abs(bl2 - a1[2]) <= 0.6 * sc and abs(bt2 - a1[3]) <= 0.6 * sc
 
 
 def test_placement_drag_clamps(page, server):
@@ -181,7 +216,10 @@ def test_placement_drag_clamps(page, server):
     # ... and at 0 via the left handle
     _drag_handle(page, "x", -1, -3000, 0)
     assert _placement(page)["x"] == 0
-    # the brush tool arms as usual when NOT grabbing a handle
+    # the drags panned the viewport (the source moved); refit so the canvas
+    # centre is clear of the edge handles, then check the brush tool arms
+    # as usual when NOT grabbing a handle
+    page.evaluate("viewFit()")
     page.mouse.move(*_centre(page))
     page.mouse.down()
     assert page.evaluate("view.stroke !== null")

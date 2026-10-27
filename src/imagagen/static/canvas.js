@@ -322,8 +322,10 @@ function drawMaskOutline(ctx) {
 // target bounding box on the canvas plus a drag handle on each side where
 // the source has slack (the box touches the source on the other axes); the
 // handles sit slightly OUTSIDE the source edge so they never cover the
-// image. Dragging a handle moves the source inside the box (placement in
-// [0,1], 0 flush left/top, 1 flush right/bottom).
+// image. Dragging a handle moves the SOURCE inside the box (placement in
+// [0,1], 0 flush left/top, 1 flush right/bottom): the drag compensates the
+// viewport by exactly the placement delta, so the box STAYS PUT on screen
+// and the source (the canvas pixels) slides under it, following the handle.
 //
 // All geometry is canvas px in viewRedraw's base transform; `u = 1/scale`
 // keeps lines/handles/labels screen-constant like the mask outline. The
@@ -346,8 +348,12 @@ function outpaintGeom() {
   const gx = W - sw, gy = H - sh;
   if (gx <= 0 && gy <= 0) return null; // same AR: box == source, nothing to place
   const pl = state.outpaintPlacement || { x: 0.5, y: 0.5 };
-  const ox = Math.floor(Math.min(1, Math.max(0, pl.x)) * gx);
-  const oy = Math.floor(Math.min(1, Math.max(0, pl.y)) * gy);
+  // round (not the server's floor): the preview slides in half-pixel
+  // steps, so the box keeps its screen anchor within ~0.5 canvas px
+  // during a placement drag (the server floors the target-px offsets; the
+  // preview is <=1 canvas px off at an odd gap, invisible at fit zoom)
+  const ox = Math.round(Math.min(1, Math.max(0, pl.x)) * gx);
+  const oy = Math.round(Math.min(1, Math.max(0, pl.y)) * gy);
   // 1 canvas display px == s target px: the box is the target at the scale
   // where the scaled source fills the source's own display rect
   return { W, H, s, gx, gy, ox, oy,
@@ -421,23 +427,35 @@ function startOutpaintDrag(h, p) {
   const g = outpaintGeom();
   if (!g) return false;
   view.outDrag = {
-    axis: h.axis, cursor: h.cursor, x0: p[0], y0: p[1], g,
+    axis: h.axis, cursor: h.cursor, g,
+    // screen-px start (the canvas-px mapping drifts mid-drag: the view
+    // compensates below, so canvas px would feed back on itself) + the
+    // viewport offsets the compensation is measured from
+    sx0: view.cursor[0], sy0: view.cursor[1], ox0: view.ox, oy0: view.oy,
     base: { ...(state.outpaintPlacement || { x: 0.5, y: 0.5 }) },
   };
   return true;
 }
 
-// pointermove delta: 1 canvas display px moves the source s target px, i.e.
-// shifts the normalized placement by s/gap
-function applyOutpaintDrag(p) {
+// pointermove delta: the SOURCE (canvas pixels) follows the cursor 1:1 and
+// the target box stays put on screen -- the box is anchored to the canvas,
+// so shifting the placement by d(px) moves it d(px)*gap/s canvas px, and
+// the viewport is panned by exactly that in screen px, cancelling it. The
+// placement advances by d(screen)/scale * s/gap (1 canvas display px = s
+// target px), so a full handle run spans the placement range.
+function applyOutpaintDrag() {
   const d = view.outDrag;
   const g = d.g;
   if (d.axis === "x") {
-    const v = d.base.x + (p[0] - d.x0) * g.s / g.gx;
-    state.outpaintPlacement.x = Math.min(1, Math.max(0, v));
+    const v = d.base.x + (view.cursor[0] - d.sx0) / view.scale * g.s / g.gx;
+    const px = Math.min(1, Math.max(0, v));
+    state.outpaintPlacement.x = px;
+    view.ox = d.ox0 + (px - d.base.x) * (g.gx / g.s) * view.scale;
   } else {
-    const v = d.base.y + (p[1] - d.y0) * g.s / g.gy;
-    state.outpaintPlacement.y = Math.min(1, Math.max(0, v));
+    const v = d.base.y + (view.cursor[1] - d.sy0) / view.scale * g.s / g.gy;
+    const py = Math.min(1, Math.max(0, v));
+    state.outpaintPlacement.y = py;
+    view.oy = d.oy0 + (py - d.base.y) * (g.gy / g.s) * view.scale;
   }
 }
 
@@ -2485,7 +2503,7 @@ function setupCanvasInput() {
       return;
     }
     if (view.outDrag) {
-      applyOutpaintDrag(p);
+      applyOutpaintDrag();
       viewRedraw();
       return;
     }
