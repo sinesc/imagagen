@@ -308,6 +308,26 @@ class InpaintPlan:
             out = unrotate(out, self.rotation, fw, fh)
         return out
 
+    def result_mask(self) -> np.ndarray | None:
+        """The outpaint result's mask at the result image's size: the
+        source mask scaled and shifted EXACTLY like the source content
+        (placement-aware), counter-rotated to the requested size. The
+        result entity must not re-center it via ``transform_mask`` — the
+        mask covers the same subject it covered on the source, wherever
+        the placement put that subject in the target. None for the other
+        modes (plain size-matched inheritance is correct there: "inpaint
+        masked" keeps the source canvas, "generate" has no placement)."""
+        if self.mode != "inpaint_not_masked" or self.work_mask is None:
+            return None
+        fw, fh = self.requested_size
+        if self.rotation:
+            # work_mask lives in the rotated working frame at the extended
+            # size; the image takes the identical counter-rotation + center
+            # crop, so the mask keeps covering the same content
+            return unrotate(self.work_mask.astype(np.uint8), self.rotation,
+                            fw, fh)
+        return self.work_mask.copy()
+
 
 def _round16_up(px: float) -> int:
     """Generation dimension rounded UP to a multiple of 16, clamped to the

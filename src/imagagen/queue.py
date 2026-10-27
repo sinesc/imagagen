@@ -688,7 +688,12 @@ class GenerationQueue:
         # + history) from the job's source image (the green-bordered
         # source thumbnail)
         eid = self.canvas.add_result(job.id, task.index, png, info,
-                                     source_id=job.source_image_id)
+                                     source_id=job.source_image_id,
+                                     # outpaint: the plan's placement-aware
+                                     # mask travels with the content (never
+                                     # re-centered); None inherits normally
+                                     mask=(job.plan.result_mask()
+                                           if job.plan is not None else None))
         self.emit({"type": "image", "job": job.id, "index": task.index,
                    "seed": result.seed, "image_id": eid,
                    "url": f"/api/thumb/{job.id}/{task.index}.png"})

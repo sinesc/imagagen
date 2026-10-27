@@ -194,6 +194,7 @@ class Canvas:
     def add_result(
         self, job_id: int, index: int, png: bytes, info: dict | None,
         source_id: str | None = None,
+        mask: np.ndarray | None = None,
     ) -> str:
         """Register a generation result as a (cold) entity; returns its id.
 
@@ -201,7 +202,10 @@ class Canvas:
         source image, the green-bordered source thumbnail); see
         ``_inherit_mask_locked``. A result entity is always referenced by
         its (still live) job, so it is anchored immediately and won't be
-        evicted until the job is dropped.
+        evicted until the job is dropped. ``mask`` overrides the inherited
+        mask (outpaint jobs: the plan's placement-aware mask, already at
+        the result size — re-centering the source mask would detach it
+        from the content it now covers).
         """
         eid = f"job:{job_id}:{index}"
         with self._lock:
@@ -210,7 +214,8 @@ class Canvas:
                 id=eid,
                 png=png,
                 info=dict(info or {}),
-                mask=self._inherit_mask_locked(source_id, w, h),
+                mask=(np.ascontiguousarray(mask) if mask is not None
+                      else self._inherit_mask_locked(source_id, w, h)),
             )
             self._anchored.add(eid)
         return eid

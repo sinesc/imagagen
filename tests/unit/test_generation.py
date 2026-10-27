@@ -453,6 +453,68 @@ def test_inpaint_not_masked_placement_shifts_the_mask():
     assert cols2.min() >= 58 and cols2.min() < 70
 
 
+def test_inpaint_not_masked_result_mask_follows_placement():
+    # the outpaint RESULT entity's mask must travel with the source content
+    # (result_mask), not be re-centered by the size-change inheritance
+    c = Canvas()
+    img = np.full((32, 32, 3), 7, dtype=np.uint8)
+    c.import_image(_png(img))
+    m = np.zeros((32, 32), dtype=np.uint8)
+    m[8:16, 14:18] = 255
+    c.set_mask(m)
+
+    req = GenerateRequest(prompt="x", width=128, height=64)
+    plan = with_inpaint(req, "inpaint_not_masked", c, 1.0,
+                        placement=(1.0, 0.5))
+    rm = plan.result_mask()
+    assert rm is not None and rm.shape == (64, 128)
+    # source mask scaled 2x and shifted flush right: band around x=88..104
+    cols = np.where((rm > 128).any(axis=0))[0]
+    assert 84 <= cols.min() and cols.max() <= 108
+
+    # centered default: band around x=56..72 (the historical centering)
+    req2 = GenerateRequest(prompt="x", width=128, height=64)
+    plan2 = with_inpaint(req2, "inpaint_not_masked", c, 1.0)
+    rm2 = plan2.result_mask()
+    cols2 = np.where((rm2 > 128).any(axis=0))[0]
+    assert 56 <= cols2.min() and cols2.max() <= 76
+
+
+def test_inpaint_not_masked_result_mask_rotates_back():
+    # rotated outpaint: work_mask lives in the extended working frame and
+    # takes the image's counter-rotation + center crop back to W x H
+    c = Canvas()
+    img = np.full((32, 32, 3), 7, dtype=np.uint8)
+    c.import_image(_png(img))
+    m = np.zeros((32, 32), dtype=np.uint8)
+    m[8:16, 14:18] = 255
+    c.set_mask(m)
+    req = GenerateRequest(prompt="x", width=128, height=64)
+    plan = with_inpaint(req, "inpaint_not_masked", c, 1.0, rotation=90,
+                        placement=(1.0, 0.5))
+    rm = plan.result_mask()
+    assert rm is not None and rm.shape == (64, 128)
+    # the mask rode the source (scaled 2x, shifted right, then the whole
+    # target rotated 90 and counter-rotated back) -> same band as unrotated
+    cols = np.where((rm > 128).any(axis=0))[0]
+    assert 84 <= cols.min() and cols.max() <= 108
+
+
+def test_result_mask_is_none_for_the_other_modes():
+    c = Canvas()
+    img = np.full((48, 64, 3), 100, dtype=np.uint8)
+    c.import_image(_png(img))
+    m = np.zeros((48, 64), dtype=np.uint8)
+    m[10:20, 12:32] = 255
+    c.set_mask(m)
+    req = GenerateRequest(prompt="x", width=64, height=64)
+    plan = with_inpaint(req, "inpaint_masked", c, 1.0)
+    assert plan.result_mask() is None  # canvas/mask unchanged -> inherit
+    req = GenerateRequest(prompt="x", width=64, height=64)
+    plan = with_inpaint(req, "generate", c, 1.0, rotation=90)
+    assert plan.result_mask() is None
+
+
 # ----------------------------------------------------------------- rotation --
 
 

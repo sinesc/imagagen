@@ -618,6 +618,31 @@ def test_outpaint_centered_placement_omits_metadata(client):
     assert meta is not None and "outpaint_placement" not in meta
 
 
+def test_outpaint_placement_shifts_the_result_mask(client):
+    # regression: the result entity's mask must travel with the source
+    # content (plan.result_mask), NOT get re-centered by the inheritance
+    _set_canvas(client, 32, 32, 7)
+    _mask_dot(client, 16, 16, 8)  # mask square ~rows/cols 12..20
+    with client.websocket_connect("/api/ws") as ws:
+        job = _generate(client, ws, width=128, height=64,
+                        mode="inpaint_not_masked", placement=[1.0, 0.5])
+    r = client.post("/api/canvas/thumb",
+                    json={"job": job["job_id"], "index": 0})
+    assert r.status_code == 200
+    m = _mask(client)
+    assert m is not None and m.shape == (64, 128)
+    # scaled 2x, shifted flush right: the dot centre lands at (32, 96)
+    assert m[32, 96] == 255
+    assert m[32, 32] == 0  # the centered spot is NOT covered any more
+    cols = np.where((m > 128).any(axis=0))[0]
+    assert 84 <= cols.min() and cols.max() <= 108
+    # the source entity keeps its own mask at its own size
+    r = client.post("/api/canvas/select", json={"id": "upload:0"})
+    assert r.status_code == 200
+    m0 = _mask(client)
+    assert m0 is not None and m0.shape == (32, 32) and m0[16, 16] == 255
+
+
 def test_outpaint_placement_clamped(client):
     # out-of-range components are clamped to [0,1] (no rejection)
     _set_canvas(client)
