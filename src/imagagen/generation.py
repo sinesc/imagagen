@@ -28,6 +28,12 @@ The backend always generates at the request's width x height with
 SD/A1111 convention). "inpaint not masked" therefore passes the *inverted*
 mask. The plan maps the backend output back into canvas space afterwards.
 
+``init_mask`` is quantized to whole latent cells
+(:func:`~imagagen.generation.dilate_to_latent_cells`): the backends sample it
+at the latent grid, so a mask boundary landing mid-cell would lock that cell
+partially and leave the outermost rows/columns of the inpaint region (most
+visibly where the mask touches the canvas edge) unchanged.
+
 A job may additionally carry a source rotation (``with_inpaint``,
 ``rotation``): the source is rotated into an upright *working frame* before
 generation and the output is counter-rotated afterwards — back to the
@@ -211,6 +217,47 @@ def resize_image(arr: np.ndarray, w: int, h: int) -> np.ndarray:
     return np.asarray(Image.fromarray(arr).resize((w, h), Image.LANCZOS))
 
 
+#: every backend's VAE downsamples 8x, so one latent cell covers 8 generation
+#: pixels (the lock operates on that grid; the patch-2 token merging of the
+#: flow models does not change it -- the lock is applied per latent pixel).
+LATENT_CELL_PX = 8
+
+
+def dilate_to_latent_cells(
+    mask: np.ndarray, cell: int = LATENT_CELL_PX
+) -> np.ndarray:
+    """Grow a mask so it covers every latent cell it touches (max-pool over
+    top-left-aligned ``cell`` blocks, broadcast back to the input size).
+
+    The backends build the per-step content lock by sampling ``init_mask`` at
+    the latent grid (one bilinear sample at each cell centre), so a mask whose
+    boundary lands mid-cell locks that cell *partially*: the outermost rows /
+    columns of the inpaint region keep most of the init content. With
+    "inpaint masked" that shows up as the last rows/columns of the masked area
+    staying unchanged (worst where the mask touches the canvas edge -- the
+    inpaint region's boundary then coincides with it -- and it grows with the
+    box->generation downscale factor and the padding ring). Quantizing the
+    mask to whole cells removes the partial lock:
+
+    - "inpaint masked" passes the mask as the inpaint region, so the region
+      grows by <1 cell: the extra pixels sit in the context ring and are
+      discarded by the final pixel composite (blend alpha 0 there).
+    - "inpaint not masked" inverts it, so the *protected* region grows by <1
+      cell: the subject's edge is never repainted and the unregenerated ring
+      lands in the outpaint border, continuous with the subject.
+
+    Padding (zeros) makes a trailing partial cell count as touched, matching
+    the backends' latent grid (cell ``i`` covers pixels ``[cell*i, cell*i+cell)``).
+    """
+    h, w = mask.shape[:2]
+    ph, pw = (-h) % cell, (-w) % cell
+    m = mask if not (ph or pw) else np.pad(mask, ((0, ph), (0, pw)))
+    ch, cw = m.shape[0] // cell, m.shape[1] // cell
+    cells = m[:ch * cell, :cw * cell].reshape(ch, cell, cw, cell).max(axis=(1, 3))
+    out = np.repeat(np.repeat(cells, cell, axis=0), cell, axis=1)
+    return out[:h, :w].astype(np.uint8)
+
+
 def resize_shift_mask(
     mask: np.ndarray, sw: int, sh: int, ox: int, oy: int, W: int, H: int
 ) -> np.ndarray:
@@ -388,6 +435,14 @@ def with_inpaint(
     ``padding`` is the context ring around the mask box for "inpaint
     masked" (see ``INPAINT_PADDING``, capped at the mask's largest extent).
 
+    ``init_mask`` is quantized to whole latent cells (8 generation px, see
+    :func:`dilate_to_latent_cells`): "inpaint masked" grows the inpaint
+    region (the extra pixels land in the context ring and the pixel composite
+    discards them), "inpaint not masked" grows the protected region (the
+    subject's edge is never repainted). Without it a mask boundary landing in
+    the middle of a latent cell locks that cell partially and the outermost
+    rows of the inpaint region keep the original content.
+
     ``width``/``height`` == -1 on the request is the auto-size sentinel:
     the dimension is taken from the mask bounding box (display frame). In
     the inpaint modes every dimension (auto-computed or user-specified) is
@@ -456,8 +511,8 @@ def with_inpaint(
         request.width, request.height = gw, gh
         request.init_image = resize_image(
             crop_padded(work_image, x0, y0, w, h), gw, gh)
-        request.init_mask = resize_image(
-            crop_mask(work_mask, x0, y0, w, h), gw, gh)
+        request.init_mask = dilate_to_latent_cells(resize_image(
+            crop_mask(work_mask, x0, y0, w, h), gw, gh))
         return InpaintPlan("inpaint_masked",
                            requested_size=(fw, fh),
                            rotation=rotation, bbox=(x0, y0, w, h),
@@ -487,7 +542,10 @@ def with_inpaint(
     else:
         request.init_image = target
         work_mask = new_mask
-    request.init_mask = np.uint8(255) - work_mask  # protect the mask region
+    # protect the mask region (the inverted mask marks the inpaint region);
+    # dilating the *protected* mask grows protection by <1 latent cell so the
+    # subject's edge is never repainted (see dilate_to_latent_cells)
+    request.init_mask = np.uint8(255) - dilate_to_latent_cells(work_mask)
     return InpaintPlan("inpaint_not_masked", requested_size=(fw, fh),
                        rotation=rotation, work_mask=work_mask,
                        placement=(px, py))

@@ -12,6 +12,7 @@ from imagagen.generation import (
     InpaintPlan,
     crop_mask,
     crop_padded,
+    dilate_to_latent_cells,
     fit_ar,
     masked_bbox,
     paste_at,
@@ -21,6 +22,36 @@ from imagagen.generation import (
     unrotate,
     with_inpaint,
 )
+
+# ------------------------------------------------ dilate_to_latent_cells --
+
+
+def test_dilate_to_latent_cells_grows_partial_cells():
+    # a 4x4 mask covers only the middle of the cell containing it; the cell
+    # is grown to fully covered (the backend samples init_mask at cell centres,
+    # so only a fully covered cell is regenerated)
+    m = np.zeros((16, 16), dtype=np.uint8)
+    m[4:8, 4:8] = 255
+    out = dilate_to_latent_cells(m, cell=8)
+    np.testing.assert_array_equal(out[0:8, 0:8], 255)
+    np.testing.assert_array_equal(out[8:, :], 0)
+    np.testing.assert_array_equal(out[:, 8:], 0)
+
+
+def test_dilate_to_latent_cells_is_cell_aligned():
+    # cells are aligned to the backend's latent grid (cell i covers pixels
+    # [8i, 8i+8)); a mask crossing a cell border grows both cells; the size
+    # is kept (a trailing partial cell counts as touched and is padded)
+    m = np.zeros((20, 20), dtype=np.uint8)
+    m[3:11, 5:9] = 255
+    out = dilate_to_latent_cells(m, cell=8)
+    assert out.shape == (20, 20)
+    np.testing.assert_array_equal(out[0:16, 0:16], 255)
+    np.testing.assert_array_equal(out[16:, :], 0)
+    np.testing.assert_array_equal(out[:, 16:], 0)
+    # idempotent: the result is constant on whole cells
+    np.testing.assert_array_equal(out, dilate_to_latent_cells(out, cell=8))
+
 
 # ------------------------------------------------------------- masked_bbox --
 
@@ -338,6 +369,35 @@ def test_inpaint_masked_context_padding():
     assert x0 == 50 - INPAINT_PADDING and y0 == 100 - INPAINT_PADDING
 
 
+def test_inpaint_masked_mask_touching_canvas_edge_is_fully_covered():
+    """A mask flush with the canvas edge is the worst case for the mask->latent
+    quantization: the inpaint region's boundary coincides with the canvas
+    edge, so a latent cell landing half inside the mask locks the outermost
+    canvas rows to the init content (visible unchanged rows). The init mask is
+    quantized to whole cells, so every masked pixel ends up inside a fully
+    unlocked cell."""
+    c = _canvas(64, 64)
+    m = np.zeros((64, 64), dtype=np.uint8)
+    m[56:64, 16:48] = 255  # flush with the bottom edge
+    c.set_mask(m)
+    req = GenerateRequest(prompt="x", width=64, height=64)
+    plan = with_inpaint(req, "inpaint_masked", c, 1.0, padding=8)
+    im = req.init_mask
+    # cell-constant (idempotent quantization)
+    np.testing.assert_array_equal(im, dilate_to_latent_cells(im))
+
+    x0, y0, bw, bh = plan.bbox
+    gh, gw = im.shape[:2]
+
+    def gen_coord(cpx, origin, boxlen, genlen):
+        # canvas px -> generation px (the box is resized to the gen size)
+        return min(genlen - 1, int((cpx - origin + 0.5) * genlen / boxlen))
+
+    for cy in (56, 63):  # first and LAST (canvas edge) masked rows
+        for cx in (16, 47):
+            assert im[gen_coord(cy, y0, bh, gh), gen_coord(cx, x0, bw, gw)] == 255
+
+
 def test_inpaint_masked_postprocess_blends_only_mask_region():
     c = _canvas()
     m = np.zeros((48, 64), dtype=np.uint8)
@@ -366,8 +426,13 @@ def test_inpaint_not_masked_populates_request():
     assert plan.work_mask.shape == (64, 64)
     np.testing.assert_array_equal(plan.work_mask, m)
     assert req.init_image.shape == (64, 64, 3)
-    # init mask is inverted: protect where the user masked
-    np.testing.assert_array_equal(req.init_mask, 255 - m)
+    # init mask is inverted: protect where the user masked, quantized to whole
+    # latent cells (the protected region covers the mask and grows by <1 cell
+    # so the subject's edge is never repainted)
+    prot = np.uint8(255) - req.init_mask
+    np.testing.assert_array_equal(prot, dilate_to_latent_cells(m))
+    assert (prot[m > 0] == 255).all()
+    assert prot.sum() > m.sum()  # strictly larger: partial cells are protected
 
 
 def test_inpaint_not_masked_outpaint_geometry():
@@ -441,16 +506,21 @@ def test_inpaint_not_masked_placement_shifts_the_mask():
     req = GenerateRequest(prompt="x", width=128, height=64)
     with_inpaint(req, "inpaint_not_masked", c, 1.0, placement=(1.0, 0.5))
     # init_mask is inverted (255 = regenerate): the masked source region is
-    # protected (0) and travels 64 px further right than the centered spot
+    # protected (0) and travels 32 px further right than the centered spot.
+    # The protection is cell-quantized, so its edges lead the mask by up to a
+    # latent cell (8 gen px = 4 px here, the source is scaled 2x).
     prot = np.uint8(255) - req.init_mask
     cols = np.where((prot > 128).any(axis=0))[0]
-    assert cols.min() >= 90 and cols.min() < 100
+    assert cols.min() >= 86 and cols.min() < 100
     # with the centered default the protected band sits around x=62..70
     req2 = GenerateRequest(prompt="x", width=128, height=64)
     with_inpaint(req2, "inpaint_not_masked", c, 1.0)
     prot2 = np.uint8(255) - req2.init_mask
     cols2 = np.where((prot2 > 128).any(axis=0))[0]
-    assert cols2.min() >= 58 and cols2.min() < 70
+    assert cols2.min() >= 54 and cols2.min() < 70
+    # the placement shift itself is unaffected by the quantization (ox moves
+    # by half the slack = 32 px between the centered and flush-right spots)
+    assert 28 <= cols.min() - cols2.min() <= 36
 
 
 def test_inpaint_not_masked_result_mask_follows_placement():
